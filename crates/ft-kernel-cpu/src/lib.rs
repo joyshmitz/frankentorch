@@ -7957,16 +7957,39 @@ pub fn gather_tensor_contiguous_f64(
     let data = &input[offset..];
     let idx_offset = index_meta.storage_offset();
     let index_data = &index[idx_offset..];
-    let mut output = Vec::with_capacity(out_numel);
 
-    for outer in 0..outer_size {
+    // Each `outer` owns an INDEPENDENT contiguous output block of idx_dim*inner
+    // elements gathered from input block `outer`; parallelizing over outer is
+    // BIT-FOR-BIT equal to the serial triple loop (each block runs the same r,inner
+    // scan with running indices — no per-element div/mod). An out-of-range index
+    // errors identically. frankentorch-kgs4.54.
+    let out_block = idx_dim_size * inner_size;
+    let in_block = dim_size * inner_size;
+    let mut output = vec![0.0_f64; out_numel];
+    let fill = |outer: usize, chunk: &mut [f64]| -> Result<(), KernelError> {
+        let idx_base = outer * out_block;
+        let in_base = outer * in_block;
+        let mut w = 0usize;
         for r in 0..idx_dim_size {
             for inner in 0..inner_size {
-                let idx_pos = outer * idx_dim_size * inner_size + r * inner_size + inner;
-                let selected = normalize_strict_index_value(index_data[idx_pos], dim_size)?;
-                let src = outer * dim_size * inner_size + selected * inner_size + inner;
-                output.push(data[src]);
+                let selected = normalize_strict_index_value(
+                    index_data[idx_base + r * inner_size + inner],
+                    dim_size,
+                )?;
+                chunk[w] = data[in_base + selected * inner_size + inner];
+                w += 1;
             }
+        }
+        Ok(())
+    };
+    if outer_size > 1 && out_numel >= PARALLEL_THRESHOLD && rayon::current_num_threads() > 1 {
+        output
+            .par_chunks_mut(out_block)
+            .enumerate()
+            .try_for_each(|(outer, chunk)| fill(outer, chunk))?;
+    } else {
+        for (outer, chunk) in output.chunks_mut(out_block).enumerate() {
+            fill(outer, chunk)?;
         }
     }
 
@@ -19384,15 +19407,36 @@ pub fn gather_tensor_contiguous_f32(
     let data = &input[offset..];
     let idx_offset = index_meta.storage_offset();
     let index_data = &index[idx_offset..];
-    let mut output = Vec::with_capacity(out_numel);
-    for outer in 0..outer_size {
+    // f32 mirror of gather_tensor_contiguous_f64: parallelize over independent outer
+    // blocks (running r,inner indices, no per-element div/mod), bit-exact.
+    // frankentorch-kgs4.54.
+    let out_block = idx_dim_size * inner_size;
+    let in_block = dim_size * inner_size;
+    let mut output = vec![0.0_f32; out_numel];
+    let fill = |outer: usize, chunk: &mut [f32]| -> Result<(), KernelError> {
+        let idx_base = outer * out_block;
+        let in_base = outer * in_block;
+        let mut w = 0usize;
         for r in 0..idx_dim_size {
             for inner in 0..inner_size {
-                let idx_pos = outer * idx_dim_size * inner_size + r * inner_size + inner;
-                let selected = normalize_strict_index_value(index_data[idx_pos], dim_size)?;
-                let src = outer * dim_size * inner_size + selected * inner_size + inner;
-                output.push(data[src]);
+                let selected = normalize_strict_index_value(
+                    index_data[idx_base + r * inner_size + inner],
+                    dim_size,
+                )?;
+                chunk[w] = data[in_base + selected * inner_size + inner];
+                w += 1;
             }
+        }
+        Ok(())
+    };
+    if outer_size > 1 && out_numel >= PARALLEL_THRESHOLD && rayon::current_num_threads() > 1 {
+        output
+            .par_chunks_mut(out_block)
+            .enumerate()
+            .try_for_each(|(outer, chunk)| fill(outer, chunk))?;
+    } else {
+        for (outer, chunk) in output.chunks_mut(out_block).enumerate() {
+            fill(outer, chunk)?;
         }
     }
     Ok(output)
@@ -20728,6 +20772,40 @@ mod tests {
         let par_min = super::argmin_dim_tensor_contiguous_f64(&data, &meta, 1).unwrap();
         assert_eq!(par_max, serial_arg(false), "argmax parallel != serial");
         assert_eq!(par_min, serial_arg(true), "argmin parallel != serial");
+    }
+
+    // The parallel gather (frankentorch-kgs4.54) must match a serial reference
+    // bit-for-bit (independent per-outer gather), and out-of-range indices must
+    // still error.
+    #[test]
+    fn parallel_gather_matches_serial_and_errors() {
+        use ft_core::{DType, Device, TensorMeta};
+        let (rows, cols) = (96usize, 112usize); // out_numel 10752 >= 8192
+        let d: Vec<f64> = (0..rows * cols).map(|i| (i as f64) * 0.5 - 7.0).collect();
+        let gidx: Vec<f64> = (0..rows * cols).map(|i| ((i * 37) % cols) as f64).collect();
+        let m = TensorMeta::from_shape(vec![rows, cols], DType::F64, Device::Cpu);
+        let im = TensorMeta::from_shape(vec![rows, cols], DType::F64, Device::Cpu);
+        let mut serial = Vec::with_capacity(rows * cols);
+        for o in 0..rows {
+            for r in 0..cols {
+                serial.push(d[o * cols + gidx[o * cols + r] as usize]);
+            }
+        }
+        let got = super::gather_tensor_contiguous_f64(&d, &m, 1, &gidx, &im).unwrap();
+        assert!(
+            got.iter()
+                .zip(&serial)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "gather parallel != serial"
+        );
+        // f32 path matches the f64 reference (same indices).
+        let d32: Vec<f32> = d.iter().map(|&x| x as f32).collect();
+        let got32 = super::gather_tensor_contiguous_f32(&d32, &m, 1, &gidx, &im).unwrap();
+        assert!(got32.iter().zip(&serial).all(|(a, b)| *a == *b as f32));
+        // Out-of-range index still errors.
+        let mut bad = gidx.clone();
+        bad[5000] = cols as f64; // out of range
+        assert!(super::gather_tensor_contiguous_f64(&d, &m, 1, &bad, &im).is_err());
     }
 
     // The parallel var/std dim-reductions (frankentorch-kgs4.53) must match the

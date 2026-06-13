@@ -1,0 +1,2 @@
+threads=8
+gather1: serial 25.794ms | parallel 12.665ms | 2.04x
