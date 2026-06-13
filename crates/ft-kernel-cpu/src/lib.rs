@@ -6886,41 +6886,42 @@ pub fn var_dim_tensor_contiguous_f64(
     let offset = meta.storage_offset();
     let data = &input[offset..];
 
-    // Push-based output skips the zero-init pass; (outer, inner)
-    // loop matches output index outer * inner_size + inner
-    // (frankentorch-suw1).
-    let mut output = Vec::with_capacity(out_numel);
     #[allow(clippy::cast_precision_loss)]
     let correction = (reduce_size - 1) as f64; // Bessel's correction
     #[allow(clippy::cast_precision_loss)]
     let n_div = reduce_size as f64;
 
-    // Reuse a single scratch buffer for the inner reduce-axis values
-    // across all (outer, inner) pairs. Gathering the strided slice
-    // into a contiguous Vec lets us pairwise-sum the mean and the
-    // squared-deviation accumulator (O(log N · ε) error) instead of
-    // accumulating sequentially through strided reads (O(N · ε)).
-    // For large reduce_size with squared deviations — which double
-    // the relative error of each addend — the pairwise variant is
-    // visibly tighter; for small reduce_size the BLOCK = 128 base
-    // case keeps the helper bit-equivalent to the prior sequential
-    // body.
-    let mut scratch = vec![0.0_f64; reduce_size];
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            // Gather the strided values for this (outer, inner) into
-            // contiguous scratch.
-            for r in 0..reduce_size {
-                scratch[r] = data[outer * reduce_size * inner_size + r * inner_size + inner];
-            }
-            let mean = pairwise_sum_f64(&scratch) / n_div;
-            let var_sum = pairwise_sum_map_f64(&scratch, |x| {
-                let d = x - mean;
-                d * d
-            });
-            output.push(var_sum / correction);
+    // Each output lane is an INDEPENDENT two-pass reduction: gather the strided
+    // column into contiguous scratch, pairwise-sum the mean, then pairwise-sum the
+    // squared deviations. The per-lane order is unchanged by scheduling, so
+    // parallelizing over lanes (map_init gives one scratch per worker thread) is
+    // BIT-FOR-BIT equal to the serial double loop (collect preserves the
+    // outer*inner_size+inner index order). frankentorch-kgs4.53.
+    let lane = |scratch: &mut Vec<f64>, out_idx: usize| -> f64 {
+        let outer = out_idx / inner_size;
+        let inner = out_idx % inner_size;
+        let base = outer * reduce_size * inner_size + inner;
+        for (r, s) in scratch.iter_mut().enumerate() {
+            *s = data[base + r * inner_size];
         }
-    }
+        let mean = pairwise_sum_f64(scratch) / n_div;
+        let var_sum = pairwise_sum_map_f64(scratch, |x| {
+            let d = x - mean;
+            d * d
+        });
+        var_sum / correction
+    };
+    let output: Vec<f64> = if out_numel.saturating_mul(reduce_size) >= PARALLEL_THRESHOLD
+        && rayon::current_num_threads() > 1
+    {
+        (0..out_numel)
+            .into_par_iter()
+            .map_init(|| vec![0.0_f64; reduce_size], |scratch, i| lane(scratch, i))
+            .collect()
+    } else {
+        let mut scratch = vec![0.0_f64; reduce_size];
+        (0..out_numel).map(|i| lane(&mut scratch, i)).collect()
+    };
 
     Ok(output)
 }
@@ -18542,35 +18543,39 @@ pub fn var_dim_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let data = &input[offset..];
-    // Push-based output mirrors the f64 fix (frankentorch-bv1n).
-    let mut output = Vec::with_capacity(out_numel);
     #[allow(clippy::cast_precision_loss)]
     let correction = (reduce_size - 1) as f32;
     #[allow(clippy::cast_precision_loss)]
     let n_div = reduce_size as f32;
 
-    // F32 mirror of `var_dim_tensor_contiguous_f64`: gather the
-    // strided values into a scratch buffer, then pairwise-sum both
-    // the mean accumulator and the squared-deviation accumulator.
-    // F32 has a 24-bit mantissa so the precision win vs sequential
-    // accumulation is even more pronounced than f64 — squaring
-    // halves the effective precision per term, and pairwise keeps
-    // the cumulative error bounded by O(log N · ε) instead of
-    // O(N · ε).
-    let mut scratch = vec![0.0f32; reduce_size];
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            for r in 0..reduce_size {
-                scratch[r] = data[outer * reduce_size * inner_size + r * inner_size + inner];
-            }
-            let mean = pairwise_sum_f32(&scratch) / n_div;
-            let var_sum = pairwise_sum_map_f32(&scratch, |x| {
-                let d = x - mean;
-                d * d
-            });
-            output.push(var_sum / correction);
+    // F32 mirror of the parallel var_dim_f64 (frankentorch-kgs4.53): per-lane
+    // gather + pairwise mean + pairwise squared-deviation; parallelized over lanes
+    // (map_init scratch per worker), bit-exact vs the serial loop.
+    let lane = |scratch: &mut Vec<f32>, out_idx: usize| -> f32 {
+        let outer = out_idx / inner_size;
+        let inner = out_idx % inner_size;
+        let base = outer * reduce_size * inner_size + inner;
+        for (r, s) in scratch.iter_mut().enumerate() {
+            *s = data[base + r * inner_size];
         }
-    }
+        let mean = pairwise_sum_f32(scratch) / n_div;
+        let var_sum = pairwise_sum_map_f32(scratch, |x| {
+            let d = x - mean;
+            d * d
+        });
+        var_sum / correction
+    };
+    let output: Vec<f32> = if out_numel.saturating_mul(reduce_size) >= PARALLEL_THRESHOLD
+        && rayon::current_num_threads() > 1
+    {
+        (0..out_numel)
+            .into_par_iter()
+            .map_init(|| vec![0.0f32; reduce_size], |scratch, i| lane(scratch, i))
+            .collect()
+    } else {
+        let mut scratch = vec![0.0f32; reduce_size];
+        (0..out_numel).map(|i| lane(&mut scratch, i)).collect()
+    };
     Ok(output)
 }
 
@@ -20723,6 +20728,54 @@ mod tests {
         let par_min = super::argmin_dim_tensor_contiguous_f64(&data, &meta, 1).unwrap();
         assert_eq!(par_max, serial_arg(false), "argmax parallel != serial");
         assert_eq!(par_min, serial_arg(true), "argmin parallel != serial");
+    }
+
+    // The parallel var/std dim-reductions (frankentorch-kgs4.53) must match the
+    // serial reference bit-for-bit (per-lane gather + pairwise mean + pairwise
+    // squared-deviation), covering dim=1 (inner_size=1) and dim=0 (strided).
+    #[test]
+    fn parallel_var_std_dim_matches_serial() {
+        use ft_core::{DType, Device, TensorMeta};
+        let (a, b) = (96usize, 112usize); // numel 10752 >= 8192
+        let data: Vec<f64> = (0..a * b)
+            .map(|i| (((i * 40503usize) % 9973) as f64 - 4096.0) * 1e-3)
+            .collect();
+        let meta = TensorMeta::from_shape(vec![a, b], DType::F64, Device::Cpu);
+        let serial_var = |dim: usize| -> Vec<f64> {
+            let (red, outer, inner) = if dim == 1 { (b, a, 1) } else { (a, 1, b) };
+            let n_div = red as f64;
+            let corr = (red - 1) as f64;
+            let mut out = Vec::new();
+            let mut scratch = vec![0.0; red];
+            for oi in 0..outer * inner {
+                let o = oi / inner;
+                let ii = oi % inner;
+                for (r, s) in scratch.iter_mut().enumerate() {
+                    *s = data[o * red * inner + r * inner + ii];
+                }
+                let mean = super::pairwise_sum_f64(&scratch) / n_div;
+                let vs = super::pairwise_sum_map_f64(&scratch, |x| {
+                    let d = x - mean;
+                    d * d
+                });
+                out.push(vs / corr);
+            }
+            out
+        };
+        for dim in [1usize, 0] {
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(
+                bits(&super::var_dim_tensor_contiguous_f64(&data, &meta, dim).unwrap()),
+                bits(&serial_var(dim)),
+                "var_dim parallel != serial dim={dim}"
+            );
+            let serial_std: Vec<f64> = serial_var(dim).iter().map(|v| v.sqrt()).collect();
+            assert_eq!(
+                bits(&super::std_dim_tensor_contiguous_f64(&data, &meta, dim).unwrap()),
+                bits(&serial_std),
+                "std_dim parallel != serial dim={dim}"
+            );
+        }
     }
 
     // The parallel arithmetic dim-reductions (frankentorch-kgs4.52) must match the

@@ -1,0 +1,4 @@
+threads=10
+var_d1  1.710 ms
+std_d1  1.584 ms
+idxsel0 14.375 ms
