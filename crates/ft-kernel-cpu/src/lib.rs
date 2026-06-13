@@ -63,12 +63,20 @@ mod gemm {
         if should_parallelize_cols(m, k, n) {
             dgemm_col_parallel(m, k, n, a, b, c);
         } else if should_parallelize(m, k, n) {
-            let br = block_rows(m);
-            c.par_chunks_mut(br * n)
-                .zip(a.par_chunks(br * k))
-                .for_each(|(c_blk, a_blk)| {
-                    dgemm_block(c_blk.len() / n, k, n, a_blk, b, c_blk);
-                });
+            if n >= 2 * MIN_BLOCK_COLS {
+                // Square/wide-enough: 2-D tiling avoids the row-split's full-B
+                // re-streaming per thread (memory-bandwidth bound).
+                dgemm_2d_parallel(m, k, n, a, b, c);
+            } else {
+                // Tall-skinny (small n): keep the 1-D row split — too few columns
+                // to tile, and B is already small.
+                let br = block_rows(m);
+                c.par_chunks_mut(br * n)
+                    .zip(a.par_chunks(br * k))
+                    .for_each(|(c_blk, a_blk)| {
+                        dgemm_block(c_blk.len() / n, k, n, a_blk, b, c_blk);
+                    });
+            }
         } else {
             dgemm_block(m, k, n, a, b, c);
         }
@@ -218,6 +226,105 @@ mod gemm {
             let bw = ct.len() / m;
             for i in 0..m {
                 c[i * n + n0..i * n + n0 + bw].copy_from_slice(&ct[i * bw..i * bw + bw]);
+            }
+        }
+    }
+
+    // 2-D (M×N) tiled parallelism. The 1-D row split makes EVERY thread stream
+    // the full B (k*n) from DRAM, so a square GEMM saturates memory bandwidth at
+    // ~3.5x even on 16 cores. Tiling BOTH M and N into ~sqrt(threads) blocks each
+    // cuts B re-streaming from (#row-strips) down to (#M-blocks) — total A+B DRAM
+    // traffic drops ~2x — lifting the bandwidth ceiling. Each output tile
+    // C[i0:i1, j0:j1] = A[i0:i1, :] @ B[:, j0:j1]; K is NEVER split, so
+    // matrixmultiply's accumulation order is identical to the single call and the
+    // result is BIT-FOR-BIT equal to dgemm_block (the same invariant the existing
+    // row/column splits rely on).
+    fn dgemm_2d_parallel(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], c: &mut [f64]) {
+        let threads = rayon::current_num_threads().max(1);
+        let p = (threads as f64).sqrt().floor().max(1.0) as usize; // M-blocks
+        let q = threads.div_ceil(p); // N-blocks
+        let mb = m.div_ceil(p).max(MIN_BLOCK_ROWS);
+        let nb = n.div_ceil(q).max(MIN_BLOCK_COLS);
+        let mut tiles: Vec<(usize, usize)> = Vec::new();
+        let mut i0 = 0;
+        while i0 < m {
+            let mut j0 = 0;
+            while j0 < n {
+                tiles.push((i0, j0));
+                j0 += nb;
+            }
+            i0 += mb;
+        }
+        let results: Vec<(usize, usize, usize, Vec<f64>)> = tiles
+            .into_par_iter()
+            .map(|(i0, j0)| {
+                let bi = (i0 + mb).min(m) - i0;
+                let bj = (j0 + nb).min(n) - j0;
+                let mut ct = vec![0.0f64; bi * bj];
+                // SAFETY: A's row window [i0,i0+bi) is a[i0*k..(i0+bi)*k] (contiguous,
+                // row stride k); B's column window [j0,j0+bj) is b.add(j0) with row
+                // stride n, bj cols, k rows — both in bounds. ct is the exact bi*bj
+                // owned output (row stride bj). K is not tiled → ct[i][j] equals the
+                // single call's c[(i0+i)*n + j0+j] bit-for-bit.
+                unsafe {
+                    dgemm_mm(
+                        bi,
+                        k,
+                        bj,
+                        1.0,
+                        a.as_ptr().add(i0 * k),
+                        k as isize,
+                        1,
+                        b.as_ptr().add(j0),
+                        n as isize,
+                        1,
+                        0.0,
+                        ct.as_mut_ptr(),
+                        bj as isize,
+                        1,
+                    );
+                }
+                (i0, j0, bj, ct)
+            })
+            .collect();
+        for (i0, j0, bj, ct) in &results {
+            let bi = ct.len() / bj;
+            for i in 0..bi {
+                c[(i0 + i) * n + j0..(i0 + i) * n + j0 + bj]
+                    .copy_from_slice(&ct[i * bj..i * bj + bj]);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tile_iso_tests {
+        use super::{dgemm_2d_parallel, dgemm_block};
+
+        // The 2-D tile parallel path must be BIT-FOR-BIT identical to a single
+        // serial dgemm_block call (K is never split, so matrixmultiply's
+        // accumulation order is unchanged). Cover square + non-square shapes.
+        #[test]
+        fn dgemm_2d_parallel_is_bit_exact_vs_serial() {
+            for &(m, k, n) in &[
+                (512usize, 512usize, 512usize),
+                (256, 384, 512),
+                (640, 128, 384),
+                (300, 257, 259),
+                (8, 1024, 1024),
+            ] {
+                let a: Vec<f64> = (0..m * k).map(|i| (i as f64 * 0.001).sin()).collect();
+                let b: Vec<f64> = (0..k * n).map(|i| (i as f64 * 0.0017).cos()).collect();
+                let mut serial = vec![0.0_f64; m * n];
+                dgemm_block(m, k, n, &a, &b, &mut serial);
+                let mut tiled = vec![0.0_f64; m * n];
+                dgemm_2d_parallel(m, k, n, &a, &b, &mut tiled);
+                for i in 0..m * n {
+                    assert_eq!(
+                        serial[i].to_bits(),
+                        tiled[i].to_bits(),
+                        "2d-tile mismatch at idx {i} for {m}x{k}x{n}"
+                    );
+                }
             }
         }
     }

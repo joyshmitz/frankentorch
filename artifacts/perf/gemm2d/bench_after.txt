@@ -1,0 +1,4 @@
+threads = 16
+n= 512:    1.415 ms    189.7 GFLOP/s
+n=1024:    8.556 ms    251.0 GFLOP/s
+n=2048:   74.409 ms    230.9 GFLOP/s
