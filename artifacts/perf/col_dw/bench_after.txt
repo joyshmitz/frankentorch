@@ -1,0 +1,4 @@
+threads = 10
+wide m256 k64 n16384: 13.027 ms  41 GFLOP/s
+wide m128 k1024 n4096: 8.987 ms  119 GFLOP/s
+wide m64 k256 n8192: 3.674 ms  73 GFLOP/s

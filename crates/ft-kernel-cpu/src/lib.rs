@@ -124,43 +124,38 @@ mod gemm {
         let b = &b[..n * k];
         let c = &mut c[..m * n];
         if should_parallelize_cols(m, k, n) {
-            // Split N (= B's rows). Block [n0,n1) is the contiguous B rows
-            // b[n0*k .. n1*k]; multiply A by their transpose into an owned buffer.
+            // Split N (= B's rows), direct-write. Block [n0,n0+bw) reads the
+            // contiguous B rows b[n0*k ..] (B^T via rsb=1,csb=k) and writes the
+            // disjoint output column window straight into C via cp.0.add(n0)
+            // (rsc=n,csc=1) — no owned buffer, no serial scatter. K not split →
+            // bit-for-bit equal to dgemm_bt_block. frankentorch-kgs4.49.
             let nb = block_cols(n);
-            let blocks: Vec<(usize, Vec<f64>)> = (0..n.div_ceil(nb))
-                .into_par_iter()
-                .map(|blk| {
-                    let n0 = blk * nb;
-                    let bw = (n0 + nb).min(n) - n0;
-                    let mut ct = vec![0.0f64; m * bw];
-                    // SAFETY: a is m*k; b[n0*k ..] holds bw rows of k; ct is m*bw.
-                    unsafe {
-                        dgemm_mm(
-                            m,
-                            k,
-                            bw,
-                            1.0,
-                            a.as_ptr(),
-                            k as isize,
-                            1,
-                            b.as_ptr().add(n0 * k),
-                            1,
-                            k as isize,
-                            0.0,
-                            ct.as_mut_ptr(),
-                            bw as isize,
-                            1,
-                        );
-                    }
-                    (n0, ct)
-                })
-                .collect();
-            for (n0, ct) in &blocks {
-                let bw = ct.len() / m;
-                for i in 0..m {
-                    c[i * n + n0..i * n + n0 + bw].copy_from_slice(&ct[i * bw..i * bw + bw]);
+            let cp = TilePtr(c.as_mut_ptr());
+            (0..n.div_ceil(nb)).into_par_iter().for_each(|blk| {
+                let cp = &cp;
+                let n0 = blk * nb;
+                let bw = (n0 + nb).min(n) - n0;
+                // SAFETY: a is m*k; b[n0*k..] holds bw rows of k; output window
+                // [n0,n0+bw) is disjoint across blocks (last elem (m-1)*n+n0+bw-1 <= m*n-1).
+                unsafe {
+                    dgemm_mm(
+                        m,
+                        k,
+                        bw,
+                        1.0,
+                        a.as_ptr(),
+                        k as isize,
+                        1,
+                        b.as_ptr().add(n0 * k),
+                        1,
+                        k as isize,
+                        0.0,
+                        cp.0.add(n0),
+                        n as isize,
+                        1,
+                    );
                 }
-            }
+            });
         } else if should_parallelize(m, k, n) {
             if n >= 2 * MIN_BLOCK_COLS {
                 dgemm_bt_2d_parallel(m, k, n, a, b, c);
@@ -199,45 +194,43 @@ mod gemm {
         }
     }
 
+    // Column (N) parallelism, direct-write: each thread computes the m×bw output for
+    // its DISJOINT column window [n0,n0+bw) and writes it straight into C via
+    // cp.0.add(n0) (rsc=n,csc=1) — no owned buffer and no serial O(m*n) scatter pass
+    // (which did not parallelize and dominated wide small-K matmuls: measured up to
+    // 1.89x on m256 k64 n16384). K is not split, so matrixmultiply's accumulation
+    // order is unchanged and the result is BIT-FOR-BIT equal to the single
+    // dgemm_block call. frankentorch-kgs4.49.
     fn dgemm_col_parallel(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], c: &mut [f64]) {
         let nb = block_cols(n);
-        let blocks: Vec<(usize, Vec<f64>)> = (0..n.div_ceil(nb))
-            .into_par_iter()
-            .map(|blk| {
-                let n0 = blk * nb;
-                let bw = (n0 + nb).min(n) - n0;
-                let mut ct = vec![0.0f64; m * bw];
-                // SAFETY: a is m*k; b is k*n, so the strided column window starting
-                // at `n0` with row stride n and `bw` columns is in bounds; ct is the
-                // exact m*bw owned output. matrixmultiply's K order is independent of
-                // the N tiling, so ct[i][j] == the single call's c[i][n0+j] bit-for-bit.
-                unsafe {
-                    dgemm_mm(
-                        m,
-                        k,
-                        bw,
-                        1.0,
-                        a.as_ptr(),
-                        k as isize,
-                        1,
-                        b.as_ptr().add(n0),
-                        n as isize,
-                        1,
-                        0.0,
-                        ct.as_mut_ptr(),
-                        bw as isize,
-                        1,
-                    );
-                }
-                (n0, ct)
-            })
-            .collect();
-        for (n0, ct) in &blocks {
-            let bw = ct.len() / m;
-            for i in 0..m {
-                c[i * n + n0..i * n + n0 + bw].copy_from_slice(&ct[i * bw..i * bw + bw]);
+        let cp = TilePtr(c.as_mut_ptr());
+        (0..n.div_ceil(nb)).into_par_iter().for_each(|blk| {
+            let cp = &cp;
+            let n0 = blk * nb;
+            let bw = (n0 + nb).min(n) - n0;
+            // SAFETY: a is m*k; B's strided column window b.add(n0) (rsb=n,csb=1, bw
+            // cols, k rows) is in bounds. Output column window [n0,n0+bw) is disjoint
+            // across blocks; cp.0.add(n0) (rsc=n,csc=1) writes the m×bw tile whose last
+            // element (m-1)*n+n0+bw-1 <= m*n-1.
+            unsafe {
+                dgemm_mm(
+                    m,
+                    k,
+                    bw,
+                    1.0,
+                    a.as_ptr(),
+                    k as isize,
+                    1,
+                    b.as_ptr().add(n0),
+                    n as isize,
+                    1,
+                    0.0,
+                    cp.0.add(n0),
+                    n as isize,
+                    1,
+                );
             }
-        }
+        });
     }
 
     // 2-D (M×N) tiled parallelism. The 1-D row split makes EVERY thread stream the
@@ -411,7 +404,8 @@ mod gemm {
     mod tile_iso_tests {
         use super::{
             dgemm_2d_parallel, dgemm_block, dgemm_bt_2d_parallel, dgemm_bt_block,
-            sgemm_2d_parallel, sgemm_block, sgemm_bt_2d_parallel, sgemm_bt_block,
+            dgemm_col_parallel, sgemm_2d_parallel, sgemm_block, sgemm_bt_2d_parallel,
+            sgemm_bt_block, sgemm_col_parallel,
         };
 
         const SHAPES: &[(usize, usize, usize)] = &[
@@ -464,6 +458,38 @@ mod gemm {
                 assert!(
                     s3.iter().zip(&t3).all(|(x, y)| x.to_bits() == y.to_bits()),
                     "sgemm_bt {m}x{k}x{n}"
+                );
+            }
+        }
+
+        // The direct-write column-parallel path (wide matmuls, B is [k,n]) must be
+        // BIT-FOR-BIT identical to the single serial *_block call. frankentorch-kgs4.49.
+        #[test]
+        fn gemm_col_parallel_is_bit_exact_vs_serial() {
+            for &(m, k, n) in &[
+                (64usize, 256usize, 2048usize),
+                (8, 512, 4096),
+                (256, 64, 2048),
+            ] {
+                let a: Vec<f64> = (0..m * k).map(|i| (i as f64 * 0.001).sin()).collect();
+                let b: Vec<f64> = (0..k * n).map(|i| (i as f64 * 0.0017).cos()).collect();
+                let mut s = vec![0.0_f64; m * n];
+                let mut t = vec![0.0_f64; m * n];
+                dgemm_block(m, k, n, &a, &b, &mut s);
+                dgemm_col_parallel(m, k, n, &a, &b, &mut t);
+                assert!(
+                    s.iter().zip(&t).all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "dgemm_col {m}x{k}x{n}"
+                );
+                let a32: Vec<f32> = a.iter().map(|&x| x as f32).collect();
+                let b32: Vec<f32> = b.iter().map(|&x| x as f32).collect();
+                let mut s3 = vec![0.0_f32; m * n];
+                let mut t3 = vec![0.0_f32; m * n];
+                sgemm_block(m, k, n, &a32, &b32, &mut s3);
+                sgemm_col_parallel(m, k, n, &a32, &b32, &mut t3);
+                assert!(
+                    s3.iter().zip(&t3).all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "sgemm_col {m}x{k}x{n}"
                 );
             }
         }
@@ -523,45 +549,34 @@ mod gemm {
         }
     }
 
+    // f32 mirror of dgemm_col_parallel: direct-write disjoint column windows.
     fn sgemm_col_parallel(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
         let nb = block_cols(n);
-        let blocks: Vec<(usize, Vec<f32>)> = (0..n.div_ceil(nb))
-            .into_par_iter()
-            .map(|blk| {
-                let n0 = blk * nb;
-                let bw = (n0 + nb).min(n) - n0;
-                let mut ct = vec![0.0f32; m * bw];
-                // SAFETY: mirror of dgemm_col_parallel — a is m*k; b's strided
-                // column window at n0 (row stride n, bw cols) is in bounds; ct is
-                // the exact m*bw owned output. K order is independent of N tiling,
-                // so ct[i][j] == the single call's c[i][n0+j] bit-for-bit.
-                unsafe {
-                    sgemm_mm(
-                        m,
-                        k,
-                        bw,
-                        1.0,
-                        a.as_ptr(),
-                        k as isize,
-                        1,
-                        b.as_ptr().add(n0),
-                        n as isize,
-                        1,
-                        0.0,
-                        ct.as_mut_ptr(),
-                        bw as isize,
-                        1,
-                    );
-                }
-                (n0, ct)
-            })
-            .collect();
-        for (n0, ct) in &blocks {
-            let bw = ct.len() / m;
-            for i in 0..m {
-                c[i * n + n0..i * n + n0 + bw].copy_from_slice(&ct[i * bw..i * bw + bw]);
+        let cp = TilePtr(c.as_mut_ptr());
+        (0..n.div_ceil(nb)).into_par_iter().for_each(|blk| {
+            let cp = &cp;
+            let n0 = blk * nb;
+            let bw = (n0 + nb).min(n) - n0;
+            // SAFETY: see dgemm_col_parallel; disjoint output column window [n0,n0+bw).
+            unsafe {
+                sgemm_mm(
+                    m,
+                    k,
+                    bw,
+                    1.0,
+                    a.as_ptr(),
+                    k as isize,
+                    1,
+                    b.as_ptr().add(n0),
+                    n as isize,
+                    1,
+                    0.0,
+                    cp.0.add(n0),
+                    n as isize,
+                    1,
+                );
             }
-        }
+        });
     }
 
     /// f32 mirror of `dgemm_bt`: `C[m,n] = A[m,k] @ B^T` where `B` is `[n,k]`.
@@ -573,41 +588,34 @@ mod gemm {
         let b = &b[..n * k];
         let c = &mut c[..m * n];
         if should_parallelize_cols(m, k, n) {
+            // f32 mirror of dgemm_bt col path: direct-write disjoint column windows.
             let nb = block_cols(n);
-            let blocks: Vec<(usize, Vec<f32>)> = (0..n.div_ceil(nb))
-                .into_par_iter()
-                .map(|blk| {
-                    let n0 = blk * nb;
-                    let bw = (n0 + nb).min(n) - n0;
-                    let mut ct = vec![0.0f32; m * bw];
-                    // SAFETY: a is m*k; b[n0*k ..] holds bw rows of k; ct is m*bw.
-                    unsafe {
-                        sgemm_mm(
-                            m,
-                            k,
-                            bw,
-                            1.0,
-                            a.as_ptr(),
-                            k as isize,
-                            1,
-                            b.as_ptr().add(n0 * k),
-                            1,
-                            k as isize,
-                            0.0,
-                            ct.as_mut_ptr(),
-                            bw as isize,
-                            1,
-                        );
-                    }
-                    (n0, ct)
-                })
-                .collect();
-            for (n0, ct) in &blocks {
-                let bw = ct.len() / m;
-                for i in 0..m {
-                    c[i * n + n0..i * n + n0 + bw].copy_from_slice(&ct[i * bw..i * bw + bw]);
+            let cp = TilePtr(c.as_mut_ptr());
+            (0..n.div_ceil(nb)).into_par_iter().for_each(|blk| {
+                let cp = &cp;
+                let n0 = blk * nb;
+                let bw = (n0 + nb).min(n) - n0;
+                // SAFETY: a is m*k; b[n0*k..] holds bw rows of k; disjoint output
+                // column window [n0,n0+bw) written via cp.0.add(n0) (rsc=n,csc=1).
+                unsafe {
+                    sgemm_mm(
+                        m,
+                        k,
+                        bw,
+                        1.0,
+                        a.as_ptr(),
+                        k as isize,
+                        1,
+                        b.as_ptr().add(n0 * k),
+                        1,
+                        k as isize,
+                        0.0,
+                        cp.0.add(n0),
+                        n as isize,
+                        1,
+                    );
                 }
-            }
+            });
         } else if should_parallelize(m, k, n) {
             if n >= 2 * MIN_BLOCK_COLS && k <= F32_2D_MAX_K {
                 // See sgemm: K-gated 2-D tiling for the bandwidth-bound regime.
