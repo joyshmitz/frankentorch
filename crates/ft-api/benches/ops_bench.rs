@@ -1927,9 +1927,34 @@ fn bench_unique(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_quantile_dim_multi(c: &mut Criterion) {
+    let mut group = c.benchmark_group("quantile_dim_multi");
+    let rows = 256usize;
+    let cols = 4096usize;
+    let data: Vec<f64> = (0..rows * cols)
+        .map(|i| (((i as f64) * 0.013 + 0.7).sin()) * 0.5 + ((i % 97) as f64) * 1.0e-4)
+        .collect();
+    let qs = [0.10, 0.25, 0.50, 0.75, 0.90];
+    group.throughput(Throughput::Elements((rows * cols * qs.len()) as u64));
+    group.bench_function("f64_256x4096_q5_dim1", |bch| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(data.clone(), vec![rows, cols], false)
+            .unwrap();
+        bch.iter(|| {
+            black_box(
+                s.tensor_quantile_dim_multi(black_box(t), black_box(&qs), 1, false, "linear")
+                    .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_unique,
+    bench_quantile_dim_multi,
     bench_einsum,
     bench_multi_dot,
     bench_triangular_solve,
