@@ -225,6 +225,105 @@ mod gemm {
         });
     }
 
+    /// Fused trailing-update: `C_sub -= A · B` (B NOT transposed, contiguous
+    /// [k×n]), accumulating straight into a STRIDED submatrix of `c` (start
+    /// `c_off`, row stride `ldc`) via matrixmultiply with alpha=-1, beta=1 — no temp
+    /// product buffer and no scalar subtract pass. Parallelised over disjoint N
+    /// column-blocks. Used by the blocked LU trailing update (A22 -= L21·U12).
+    /// frankentorch-kgs4.62.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dgemm_sub_into(
+        m: usize,
+        k: usize,
+        n: usize,
+        a: &[f64],
+        b: &[f64],
+        c: &mut [f64],
+        c_off: usize,
+        ldc: usize,
+    ) {
+        if m == 0 || n == 0 {
+            return;
+        }
+        let a = &a[..m * k];
+        let b = &b[..k * n];
+        let nb = block_cols(n);
+        let cp = TilePtr(c.as_mut_ptr());
+        (0..n.div_ceil(nb)).into_par_iter().for_each(|blk| {
+            let cp = &cp;
+            let n0 = blk * nb;
+            let bw = (n0 + nb).min(n) - n0;
+            // SAFETY: a is m*k; B is the contiguous [k×n] matrix, so its column
+            // window [n0,n0+bw) is b.add(n0) read with rsb=n,csb=1. Output window
+            // row i col (n0+j) -> c_off + i*ldc + n0 + j; column windows are disjoint
+            // across blocks so writes never race. beta=1 accumulates, alpha=-1.
+            unsafe {
+                dgemm_mm(
+                    m,
+                    k,
+                    bw,
+                    -1.0,
+                    a.as_ptr(),
+                    k as isize,
+                    1,
+                    b.as_ptr().add(n0),
+                    n as isize,
+                    1,
+                    1.0,
+                    cp.0.add(c_off + n0),
+                    ldc as isize,
+                    1,
+                );
+            }
+        });
+    }
+
+    /// f32 analogue of `dgemm_sub_into`: `C_sub -= A · B` (B contiguous [k×n]).
+    /// frankentorch-kgs4.62.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sgemm_sub_into(
+        m: usize,
+        k: usize,
+        n: usize,
+        a: &[f32],
+        b: &[f32],
+        c: &mut [f32],
+        c_off: usize,
+        ldc: usize,
+    ) {
+        if m == 0 || n == 0 {
+            return;
+        }
+        let a = &a[..m * k];
+        let b = &b[..k * n];
+        let nb = block_cols(n);
+        let cp = TilePtr(c.as_mut_ptr());
+        (0..n.div_ceil(nb)).into_par_iter().for_each(|blk| {
+            let cp = &cp;
+            let n0 = blk * nb;
+            let bw = (n0 + nb).min(n) - n0;
+            // SAFETY: as dgemm_sub_into; disjoint column windows, beta=1, alpha=-1.
+            unsafe {
+                sgemm_mm(
+                    m,
+                    k,
+                    bw,
+                    -1.0,
+                    a.as_ptr(),
+                    k as isize,
+                    1,
+                    b.as_ptr().add(n0),
+                    n as isize,
+                    1,
+                    1.0,
+                    cp.0.add(c_off + n0),
+                    ldc as isize,
+                    1,
+                );
+            }
+        });
+    }
+
     /// f32 analogue of `dgemm_bt_sub_into`: `C_sub -= A · B^T` accumulated straight
     /// into a strided submatrix of `c` (start `c_off`, row stride `ldc`) via
     /// matrixmultiply with alpha=-1, beta=1. frankentorch-kgs4.61.
@@ -270,6 +369,97 @@ mod gemm {
                     ldc as isize,
                     1,
                 );
+            }
+        });
+    }
+
+    /// Blocked-LU panel triangular solve U12 = L11^{-1} · A12 IN PLACE within `lu`
+    /// (row-major, dim n): L11 is the unit-lower block (rows/cols [k0,pe)), A12/U12
+    /// occupy rows [k0,pe) cols [pe,n). Each trailing column is an independent
+    /// forward substitution, so the work is parallelised over disjoint trailing
+    /// column-blocks. The per-column update order is identical to the serial solve,
+    /// so the result is BIT-FOR-BIT equal. frankentorch-kgs4.62.
+    pub fn ltrsm_unit_lower_panel_f64(lu: &mut [f64], n: usize, k0: usize, pe: usize) {
+        let tcols = n - pe;
+        if tcols == 0 {
+            return;
+        }
+        if tcols < 64 || rayon::current_num_threads() <= 1 {
+            for i in k0..pe {
+                for t in k0..i {
+                    let lit = lu[i * n + t];
+                    if lit != 0.0 {
+                        for j in pe..n {
+                            lu[i * n + j] -= lit * lu[t * n + j];
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        let base = TilePtr(lu.as_mut_ptr());
+        let cb = tcols.div_ceil(rayon::current_num_threads() * 4).max(16);
+        (0..tcols.div_ceil(cb)).into_par_iter().for_each(|blk| {
+            let base = &base;
+            let j0 = pe + blk * cb;
+            let j1 = (j0 + cb).min(n);
+            for i in k0..pe {
+                for t in k0..i {
+                    // SAFETY: i*n+t indexes L11 (read-only this step). j ∈ [j0,j1) is
+                    // this block's EXCLUSIVE trailing-column window (rows t,i ∈ [k0,pe)),
+                    // disjoint across blocks, so the writes never race.
+                    let lit = unsafe { *base.0.add(i * n + t) };
+                    if lit != 0.0 {
+                        for j in j0..j1 {
+                            unsafe {
+                                let src = *base.0.add(t * n + j);
+                                *base.0.add(i * n + j) -= lit * src;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// f32 analogue of `ltrsm_unit_lower_panel_f64`. frankentorch-kgs4.62.
+    pub fn ltrsm_unit_lower_panel_f32(lu: &mut [f32], n: usize, k0: usize, pe: usize) {
+        let tcols = n - pe;
+        if tcols == 0 {
+            return;
+        }
+        if tcols < 64 || rayon::current_num_threads() <= 1 {
+            for i in k0..pe {
+                for t in k0..i {
+                    let lit = lu[i * n + t];
+                    if lit != 0.0 {
+                        for j in pe..n {
+                            lu[i * n + j] -= lit * lu[t * n + j];
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        let base = TilePtr(lu.as_mut_ptr());
+        let cb = tcols.div_ceil(rayon::current_num_threads() * 4).max(16);
+        (0..tcols.div_ceil(cb)).into_par_iter().for_each(|blk| {
+            let base = &base;
+            let j0 = pe + blk * cb;
+            let j1 = (j0 + cb).min(n);
+            for i in k0..pe {
+                for t in k0..i {
+                    // SAFETY: as ltrsm_unit_lower_panel_f64 — disjoint column windows.
+                    let lit = unsafe { *base.0.add(i * n + t) };
+                    if lit != 0.0 {
+                        for j in j0..j1 {
+                            unsafe {
+                                let src = *base.0.add(t * n + j);
+                                *base.0.add(i * n + j) -= lit * src;
+                            }
+                        }
+                    }
+                }
             }
         });
     }
@@ -9158,43 +9348,32 @@ pub fn lu_factor_contiguous_f64(
         }
 
         // --- 2. Triangular solve U12 = L11^{-1} * A12 (unit-lower L11) ---
-        // Forward substitution over panel rows in increasing order, so lu[t][j]
-        // already holds U[t][j] when row i (> t) consumes it.
-        for i in k0..pe {
-            for t in k0..i {
-                let lit = lu[i * n + t];
-                if lit != 0.0 {
-                    for j in pe..n {
-                        lu[i * n + j] -= lit * lu[t * n + j];
-                    }
-                }
-            }
-        }
+        // Each trailing column j ∈ [pe,n) is an INDEPENDENT forward substitution
+        // against the shared unit-lower L11, so the solve parallelises over disjoint
+        // trailing-column blocks (bit-for-bit identical to the serial order).
+        // frankentorch-kgs4.62.
+        gemm::ltrsm_unit_lower_panel_f64(&mut lu, n, k0, pe);
 
-        // --- 3. GEMM trailing update A22 -= L21 * U12 ---
+        // --- 3. Trailing update A22 -= L21 * U12, FUSED directly into lu ---
+        // Pack L21 (rows pe..n, cols k0..pe) -> contiguous [trows x kb] and U12
+        // (rows k0..pe, cols pe..n) -> contiguous [kb x tcols], then one
+        // accumulate-GEMM (alpha=-1, beta=1) writes -L21·U12 straight into lu's
+        // strided trailing block A22 — no temp product buffer and no scalar O(n^3)
+        // subtract pass (which dominated the wall; the GEMM FLOPs were already
+        // cheap). The packed L21/U12 are separate buffers, so the GEMM output (lu)
+        // never aliases its inputs. frankentorch-kgs4.62.
         let trows = n - pe;
-        // Pack L21 (rows pe..n, cols k0..pe) -> contiguous [trows x kb].
         let mut l21 = vec![0.0f64; trows * kb];
         for ii in 0..trows {
             let src = (pe + ii) * n + k0;
             l21[ii * kb..ii * kb + kb].copy_from_slice(&lu[src..src + kb]);
         }
-        // Pack U12 (rows k0..pe, cols pe..n) -> contiguous [kb x tcols].
         let mut u12 = vec![0.0f64; kb * tcols];
         for ii in 0..kb {
             let src = (k0 + ii) * n + pe;
             u12[ii * tcols..ii * tcols + tcols].copy_from_slice(&lu[src..src + tcols]);
         }
-        // product = L21 * U12  -> [trows x tcols], then A22 -= product.
-        let mut prod = vec![0.0f64; trows * tcols];
-        gemm::dgemm(trows, kb, tcols, &l21, &u12, &mut prod);
-        for ii in 0..trows {
-            let dst = (pe + ii) * n + pe;
-            let prow = &prod[ii * tcols..ii * tcols + tcols];
-            for jj in 0..tcols {
-                lu[dst + jj] -= prow[jj];
-            }
-        }
+        gemm::dgemm_sub_into(trows, kb, tcols, &l21, &u12, &mut lu, pe * n + pe, n);
 
         k0 = pe;
     }
@@ -9307,19 +9486,14 @@ pub fn lu_factor_contiguous_f32(
             break;
         }
 
-        // --- 2. Triangular solve U12 = L11^{-1} * A12 ---
-        for i in k0..pe {
-            for t in k0..i {
-                let lit = lu[i * n + t];
-                if lit != 0.0 {
-                    for j in pe..n {
-                        lu[i * n + j] -= lit * lu[t * n + j];
-                    }
-                }
-            }
-        }
+        // --- 2. Triangular solve U12 = L11^{-1} * A12 (parallel over independent
+        // trailing-column blocks; bit-for-bit identical to the serial order). ---
+        gemm::ltrsm_unit_lower_panel_f32(&mut lu, n, k0, pe);
 
-        // --- 3. GEMM trailing update A22 -= L21 * U12 ---
+        // --- 3. Trailing update A22 -= L21 * U12, FUSED directly into lu via one
+        // accumulate-GEMM (alpha=-1, beta=1) — no temp product buffer, no scalar
+        // subtract pass. Packed L21/U12 are separate buffers (no aliasing of lu).
+        // frankentorch-kgs4.62.
         let trows = n - pe;
         let mut l21 = vec![0.0f32; trows * kb];
         for ii in 0..trows {
@@ -9331,15 +9505,7 @@ pub fn lu_factor_contiguous_f32(
             let src = (k0 + ii) * n + pe;
             u12[ii * tcols..ii * tcols + tcols].copy_from_slice(&lu[src..src + tcols]);
         }
-        let mut prod = vec![0.0f32; trows * tcols];
-        gemm::sgemm(trows, kb, tcols, &l21, &u12, &mut prod);
-        for ii in 0..trows {
-            let dst = (pe + ii) * n + pe;
-            let prow = &prod[ii * tcols..ii * tcols + tcols];
-            for jj in 0..tcols {
-                lu[dst + jj] -= prow[jj];
-            }
-        }
+        gemm::sgemm_sub_into(trows, kb, tcols, &l21, &u12, &mut lu, pe * n + pe, n);
 
         k0 = pe;
     }
