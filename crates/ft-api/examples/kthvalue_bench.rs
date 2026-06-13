@@ -1,5 +1,3 @@
-use ft_api::FrankenTorchSession;
-use ft_core::ExecutionMode;
 use std::hint::black_box;
 use std::time::Instant;
 fn t<F: FnMut()>(mut f: F) -> f64 {
@@ -16,36 +14,54 @@ fn t<F: FnMut()>(mut f: F) -> f64 {
     }
     b
 }
+fn old_nq(data: &[f64], q: f64) -> f64 {
+    // filter NaN, full sort, linear interp
+    let mut nn: Vec<f64> = data.iter().copied().filter(|v| !v.is_nan()).collect();
+    nn.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = nn.len();
+    let idx = q * (n - 1) as f64;
+    let lo = idx.floor() as usize;
+    let hi = idx.ceil() as usize;
+    let frac = idx - lo as f64;
+    nn[lo] * (1.0 - frac) + nn[hi] * frac
+}
+fn new_nq(data: &[f64], q: f64) -> f64 {
+    // filter NaN, quickselect lo/hi
+    let mut nn: Vec<f64> = data.iter().copied().filter(|v| !v.is_nan()).collect();
+    let n = nn.len();
+    let idx = q * (n - 1) as f64;
+    let lo = idx.floor() as usize;
+    let hi = idx.ceil() as usize;
+    let frac = idx - lo as f64;
+    let kv = |nn: &mut [f64], k: usize| -> f64 {
+        let (_, v, _) = nn.select_nth_unstable_by(k, |a, b| {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        *v
+    };
+    let l = kv(&mut nn, lo);
+    let h = kv(&mut nn, hi);
+    l * (1.0 - frac) + h * frac
+}
 fn main() {
-    let (rows, cols) = (256usize, 4096usize);
-    let n = rows * cols;
+    let n = 1_000_000usize;
     let data: Vec<f64> = (0..n)
-        .map(|i| ((i * 2654435761usize) % 1_000_003) as f64)
+        .map(|i| {
+            if i % 50 == 0 {
+                f64::NAN
+            } else {
+                ((i * 2654435761usize) % 1_000_003) as f64
+            }
+        })
         .collect();
-    let lo = 2047usize;
-    let hi = 2048usize;
-    let frac = 0.5;
-    // OLD op logic via public API: parallel kernel sort along dim, narrow, lerp.
     let old = t(|| {
-        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let tt = s
-            .tensor_variable(data.clone(), vec![rows, cols], false)
-            .unwrap();
-        let (sorted, _) = s.tensor_sort(tt, 1, false).unwrap();
-        let lo_v = s.tensor_narrow(sorted, 1, lo, 1).unwrap();
-        let hi_v = s.tensor_narrow(sorted, 1, hi, 1).unwrap();
-        black_box(s.tensor_lerp(lo_v, hi_v, frac).unwrap());
+        black_box(old_nq(black_box(&data), 0.5));
     });
-    // NEW op.
     let new = t(|| {
-        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let tt = s
-            .tensor_variable(data.clone(), vec![rows, cols], false)
-            .unwrap();
-        black_box(s.tensor_quantile_dim(tt, 0.5, 1, false, "linear").unwrap());
+        black_box(new_nq(black_box(&data), 0.5));
     });
     println!(
-        "quantile_dim [{rows},{cols}]: old(parallel-sort+narrow) {old:.3}ms | new(quickselect) {new:.3}ms | {:.2}x",
+        "nanquantile n={n}: old(filter+sort) {old:.3}ms | new(filter+quickselect) {new:.3}ms | {:.2}x",
         old / new
     );
 }
