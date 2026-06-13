@@ -11507,6 +11507,86 @@ pub fn cholesky_solve_contiguous_f32(
         }
     }
 
+    // BLAS-3 BLOCKED path for the large multi-RHS lower-Cholesky regime (f32 SPD
+    // inverse / batched solve) — mirror of the f64 kgs4.65 path: block both
+    // triangular solves into row panels and apply each factor panel ONCE across ALL
+    // RHS columns via a fused accumulate-GEMM (sgemm_sub_into). frankentorch-kgs4.66.
+    let blocked_gate = !upper && num_rhs >= 64 && n >= 256;
+    if blocked_gate {
+        const NB: usize = 64;
+        let mut panel = vec![0.0f32; n * NB];
+        let mut ypanel = vec![0.0f32; NB * num_rhs];
+
+        // FORWARD: L · Y = B (L lower, non-unit), blocked over row panels.
+        let mut k0 = 0;
+        while k0 < n {
+            let pe = (k0 + NB).min(n);
+            let nb = pe - k0;
+            for i in k0..pe {
+                let xi = i * num_rhs;
+                let row = i * n;
+                for kk in k0..i {
+                    let l_ik = l[row + kk];
+                    let xk = kk * num_rhs;
+                    for rhs in 0..num_rhs {
+                        x[xi + rhs] -= l_ik * x[xk + rhs];
+                    }
+                }
+                let diag = l[row + i];
+                for rhs in 0..num_rhs {
+                    x[xi + rhs] /= diag;
+                }
+            }
+            let m = n - pe;
+            if m > 0 {
+                let a = &mut panel[..m * nb];
+                for ii in 0..m {
+                    let src = (pe + ii) * n + k0;
+                    a[ii * nb..ii * nb + nb].copy_from_slice(&l[src..src + nb]);
+                }
+                let yp = &mut ypanel[..nb * num_rhs];
+                yp.copy_from_slice(&x[k0 * num_rhs..pe * num_rhs]);
+                gemm::sgemm_sub_into(m, nb, num_rhs, a, yp, &mut x, pe * num_rhs, num_rhs);
+            }
+            k0 = pe;
+        }
+
+        // BACK: Lᵀ · X = Y (Lᵀ upper; Lᵀ[i][k] = l[k*n+i]), blocked from the bottom.
+        let mut peb = n;
+        while peb > 0 {
+            let k0 = peb.saturating_sub(NB);
+            let nb = peb - k0;
+            for i in (k0..peb).rev() {
+                let xi = i * num_rhs;
+                for kk in (i + 1)..peb {
+                    let lt_ik = l[kk * n + i];
+                    let xk = kk * num_rhs;
+                    for rhs in 0..num_rhs {
+                        x[xi + rhs] -= lt_ik * x[xk + rhs];
+                    }
+                }
+                let diag = l[i * n + i];
+                for rhs in 0..num_rhs {
+                    x[xi + rhs] /= diag;
+                }
+            }
+            if k0 > 0 {
+                let m = k0;
+                let a = &mut panel[..m * nb];
+                for row_a in 0..m {
+                    for b in 0..nb {
+                        a[row_a * nb + b] = l[(k0 + b) * n + row_a]; // Lᵀ[row_a][k0+b]
+                    }
+                }
+                let yp = &mut ypanel[..nb * num_rhs];
+                yp.copy_from_slice(&x[k0 * num_rhs..peb * num_rhs]);
+                gemm::sgemm_sub_into(m, nb, num_rhs, a, yp, &mut x, 0, num_rhs);
+            }
+            peb = k0;
+        }
+        return Ok(x);
+    }
+
     // Column-parallel path for large multi-RHS (mirror of the f64 gate / order).
     let par_gate = num_rhs >= 8 && (n as u128) * (n as u128) * (num_rhs as u128) >= (1u128 << 29);
     if par_gate {
@@ -29454,6 +29534,51 @@ mod tests {
         assert!(
             max_off < 1e-9,
             "A @ A^-1 deviates from I by {max_off:e} (blocked cholesky_solve path)"
+        );
+    }
+
+    #[test]
+    fn cholesky_solve_f32_blocked_path_inverse_n256() {
+        // Exercises the BLAS-3 blocked f32 lower-Cholesky solve path (kgs4.66).
+        let n = 256usize;
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F32, Device::Cpu);
+        let mut mm = vec![0.0f32; n * n];
+        for r in 0..n {
+            for c in 0..n {
+                mm[r * n + c] = (((r * 131 + c * 17 + 7) % 1000) as f32) * 0.001 - 0.5;
+            }
+        }
+        let mut a = vec![0.0f32; n * n];
+        for r in 0..n {
+            for c in 0..n {
+                let mut s = 0.0f32;
+                for k in 0..n {
+                    s += mm[r * n + k] * mm[c * n + k];
+                }
+                a[r * n + c] = s;
+            }
+            a[r * n + r] += n as f32;
+        }
+        let l = super::cholesky_contiguous_f32(&a, &meta, false).unwrap();
+        let mut id = vec![0.0f32; n * n];
+        for i in 0..n {
+            id[i * n + i] = 1.0;
+        }
+        let x = super::cholesky_solve_contiguous_f32(&l, n, &id, &meta, false).unwrap();
+        let mut max_off = 0.0f32;
+        for r in 0..n {
+            for c in 0..n {
+                let mut s = 0.0f32;
+                for k in 0..n {
+                    s += a[r * n + k] * x[k * n + c];
+                }
+                let want = if r == c { 1.0 } else { 0.0 };
+                max_off = max_off.max((s - want).abs());
+            }
+        }
+        assert!(
+            max_off < 1e-3,
+            "A @ A^-1 deviates from I by {max_off:e} (f32 blocked cholesky_solve path)"
         );
     }
 
