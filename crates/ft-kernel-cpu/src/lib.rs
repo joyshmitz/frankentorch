@@ -12842,6 +12842,8 @@ pub struct EigFrancisShadowProfileResult {
 struct FrancisBulgeStep {
     k: usize,
     notlast: bool,
+    subdiag_col: Option<usize>,
+    subdiag_value: f64,
     xr: f64,
     yr: f64,
     zr: f64,
@@ -12855,8 +12857,6 @@ struct FrancisBulgeStep {
 struct FrancisShadowSweep {
     h_before: Vec<f64>,
     n: usize,
-    m: usize,
-    en: usize,
     steps: Vec<FrancisBulgeStep>,
 }
 
@@ -12882,19 +12882,15 @@ impl FrancisShadowAudit {
         const TILE: usize = 16;
         let n = sweep.n;
         let mut scratch = sweep.h_before.clone();
-        for i in (sweep.m + 2)..=sweep.en {
-            scratch[i * n + (i - 2)] = 0.0;
-            if i != sweep.m + 2 {
-                scratch[i * n + (i - 3)] = 0.0;
-            }
-        }
         for step in &sweep.steps {
+            if let Some(col) = step.subdiag_col {
+                scratch[step.k * n + col] = step.subdiag_value;
+            }
             let mut block_start = step.k;
             while block_start < step.row_end {
                 let block_end = (block_start + TILE).min(step.row_end);
                 for j in block_start..block_end {
-                    let mut p2 =
-                        scratch[step.k * n + j] + step.q_s * scratch[(step.k + 1) * n + j];
+                    let mut p2 = scratch[step.k * n + j] + step.q_s * scratch[(step.k + 1) * n + j];
                     if step.notlast {
                         p2 += step.r_s * scratch[(step.k + 2) * n + j];
                         scratch[(step.k + 2) * n + j] -= p2 * step.zr;
@@ -12927,7 +12923,8 @@ impl FrancisTraceSink for FrancisShadowAudit {
     }
 
     fn observe_active_window(&mut self, active_first: usize, active_last: usize) {
-        self.profile.observe_active_window(active_first, active_last);
+        self.profile
+            .observe_active_window(active_first, active_last);
     }
 
     fn record_one_by_one_deflation(&mut self) {
@@ -12959,15 +12956,13 @@ impl FrancisTraceSink for FrancisShadowAudit {
         &mut self,
         h: &[f64],
         n: usize,
-        m: usize,
-        en: usize,
+        _m: usize,
+        _en: usize,
         _want_vectors: bool,
     ) {
         self.active_sweep = Some(FrancisShadowSweep {
             h_before: h.to_vec(),
             n,
-            m,
-            en,
             steps: Vec::new(),
         });
     }
@@ -13412,7 +13407,6 @@ fn eig_francis_schur_traced<T: FrancisTraceSink>(
                 }
                 if T::ENABLED {
                     trace.record_selected_m(m);
-                    trace.record_shadow_sweep_start(h, n, m, en_u, want_vectors);
                 }
                 // Clear the sub-sub-diagonal spike left of the bulge.
                 for i in (m + 2)..=en_u {
@@ -13420,6 +13414,9 @@ fn eig_francis_schur_traced<T: FrancisTraceSink>(
                     if i != m + 2 {
                         h[i * n + (i - 3)] = 0.0;
                     }
+                }
+                if T::ENABLED {
+                    trace.record_shadow_sweep_start(h, n, m, en_u, want_vectors);
                 }
 
                 // Double QR (bulge-chase) step on rows [m, en].
@@ -13467,9 +13464,17 @@ fn eig_francis_schur_traced<T: FrancisTraceSink>(
                     // hqr2). frankentorch-eig-eigvals-rowrange.
                     let row_end = if want_vectors { n } else { en_u + 1 };
                     if T::ENABLED {
+                        let subdiag_col = if k == m {
+                            if l != m { Some(k - 1) } else { None }
+                        } else {
+                            Some(k - 1)
+                        };
+                        let subdiag_value = subdiag_col.map_or(0.0, |col| h[k * n + col]);
                         trace.record_shadow_bulge_step(FrancisBulgeStep {
                             k,
                             notlast,
+                            subdiag_col,
+                            subdiag_value,
                             xr,
                             yr,
                             zr,
@@ -26860,7 +26865,10 @@ mod tests {
             shadow.eigenvectors_match,
             "eigvals-only shadow should report vectors unchanged"
         );
-        assert!(shadow.shadow_sweeps_checked > 0, "shadow did not audit any sweeps");
+        assert!(
+            shadow.shadow_sweeps_checked > 0,
+            "shadow did not audit any sweeps"
+        );
         assert_eq!(shadow.shadow_sweep_mismatches, 0, "shadow replay diverged");
         assert_eq!(shadow.result.n, n);
         assert_eq!(shadow.scalar_profile.deflated_eigenvalue_count(), n);
@@ -26912,7 +26920,10 @@ mod tests {
             shadow.eigenvectors_match,
             "values-only shadow should report vector match"
         );
-        assert!(shadow.shadow_sweeps_checked > 0, "shadow did not audit any sweeps");
+        assert!(
+            shadow.shadow_sweeps_checked > 0,
+            "shadow did not audit any sweeps"
+        );
         assert_eq!(shadow.shadow_sweep_mismatches, 0, "shadow replay diverged");
         assert_eq!(shadow.result.n, n);
         assert_eq!(shadow.scalar_profile.deflated_eigenvalue_count(), n);
@@ -26968,8 +26979,14 @@ mod tests {
             "full eig shadow Schur form drifted"
         );
         assert!(shadow.eigenvectors_match, "full eig shadow vectors drifted");
-        assert!(shadow.shadow_sweeps_checked > 0, "full eig shadow did not audit any sweeps");
-        assert_eq!(shadow.shadow_sweep_mismatches, 0, "full eig shadow replay diverged");
+        assert!(
+            shadow.shadow_sweeps_checked > 0,
+            "full eig shadow did not audit any sweeps"
+        );
+        assert_eq!(
+            shadow.shadow_sweep_mismatches, 0,
+            "full eig shadow replay diverged"
+        );
         assert_eq!(
             production.eigenvalues.len(),
             shadow.result.eigenvalues.len()
