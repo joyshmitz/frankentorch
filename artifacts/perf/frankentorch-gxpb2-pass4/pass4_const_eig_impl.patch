@@ -1,0 +1,154 @@
+diff --git a/crates/ft-kernel-cpu/src/lib.rs b/crates/ft-kernel-cpu/src/lib.rs
+index 77d33508..f9169f30 100644
+--- a/crates/ft-kernel-cpu/src/lib.rs
++++ b/crates/ft-kernel-cpu/src/lib.rs
+@@ -12617,7 +12617,7 @@ pub struct EigResult {
+ /// The eigenvalues are returned as pairs (real, imag) interleaved.
+ /// For real eigenvalues, the imaginary part is 0.
+ pub fn eig_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EigResult, KernelError> {
+-    eig_impl(data, meta, true)
++    eig_impl::<true>(data, meta)
+ }
+
+ /// Shared worker for general (non-symmetric) eigendecomposition. When
+@@ -13042,7 +13042,10 @@ fn eig_initial_q_acc(n: usize, want_vectors: bool) -> Vec<f64> {
+     q_acc
+ }
+
+-fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigResult, KernelError> {
++fn eig_impl<const WANT_VECTORS: bool>(
++    data: &[f64],
++    meta: &TensorMeta,
++) -> Result<EigResult, KernelError> {
+     ensure_unary_layout_and_storage(data, meta)?;
+     let shape = meta.shape();
+     if shape.len() != 2 || shape[0] != shape[1] {
+@@ -13072,14 +13075,14 @@ fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigRe
+
+     // Initialize Q only for eigenvector-producing paths. The values-only
+     // Francis/Hessenberg code guards every Q update behind `want_vectors`.
+-    let mut q_acc = eig_initial_q_acc(n, want_vectors);
++    let mut q_acc = eig_initial_q_acc(n, WANT_VECTORS);
+
+     // Step 1: Reduce to upper Hessenberg form H = Q^T A Q.
+     // Large n uses the compact-WY BLOCKED reduction (BLAS-3 GEMM trailing, ~2x;
+     // the Hessenberg dominates eigvals at ~74%); small n keeps the per-reflector
+     // scalar sweep (no panel/GEMM overhead, byte-identical). frankentorch-9y5bi.
+     if n >= 128 {
+-        hessenberg_reduce_blocked(&mut h, &mut q_acc, n, want_vectors);
++        hessenberg_reduce_blocked::<WANT_VECTORS>(&mut h, &mut q_acc, n);
+     } else {
+         for k in 0..(n.saturating_sub(2)) {
+             // Compute Householder vector for column k below diagonal
+@@ -13123,7 +13126,7 @@ fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigRe
+             // the serial O(n^2)-per-step companion to the already row-parallel update,
+             // i.e. the remaining Amdahl tail of the Hessenberg phase — parallelizes
+             // BIT-EXACTLY: each slot keeps the scalar path's i-order dot (l9xod).
+-            let left_start = if want_vectors { 0 } else { k };
++            let left_start = if WANT_VECTORS { 0 } else { k };
+             let mut left_scale = vec![0.0f64; n - left_start];
+             let col_scale = |(j_rel, slot): (usize, &mut f64)| {
+                 let j = left_start + j_rel;
+@@ -13174,7 +13177,7 @@ fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigRe
+
+             // Accumulate Q: Q[:, (k+1):] -= 2 * (Q[:, (k+1):] @ v) @ v^T / |v|^2.
+             // Pure eigenvector work — skip when only eigenvalues are requested.
+-            if want_vectors {
++            if WANT_VECTORS {
+                 let upd = |row: &mut [f64]| {
+                     let mut dot = 0.0;
+                     for j in 0..m_sub {
+@@ -13196,8 +13199,13 @@ fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigRe
+
+     // Step 2: Francis double-shift implicit QR (extracted to `eig_francis_schur`
+     // so the multishift + AED rewrite can recursively Schur-factor sub-windows).
+-    let eigenvalues = eig_francis_schur(&mut h, &mut q_acc, n, want_vectors);
+-    if want_vectors {
++    let eigenvalues = eig_francis_schur_traced::<WANT_VECTORS, _>(
++        &mut h,
++        &mut q_acc,
++        n,
++        &mut FrancisTraceDisabled,
++    );
++    if WANT_VECTORS {
+         eig_backsub_eigenvectors(&mut h, &mut q_acc, &eigenvalues, n);
+     }
+     Ok(EigResult {
+@@ -13216,15 +13224,6 @@ fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigRe
+ /// verbatim from `eig_impl` (BIT-EXACT, golden-anchored) so the small-bulge
+ /// multishift + AED rewrite (frankentorch-fql10) can recursively factor a
+ /// Hessenberg sub-window for aggressive early deflation. frankentorch-j4fgz.
+-fn eig_francis_schur(h: &mut [f64], q_acc: &mut [f64], n: usize, want_vectors: bool) -> Vec<f64> {
+-    let mut trace = FrancisTraceDisabled;
+-    if want_vectors {
+-        eig_francis_schur_traced::<true, _>(h, q_acc, n, &mut trace)
+-    } else {
+-        eig_francis_schur_traced::<false, _>(h, q_acc, n, &mut trace)
+-    }
+-}
+-
+ fn eig_francis_schur_traced<const WANT_VECTORS: bool, T: FrancisTraceSink>(
+     h: &mut [f64],
+     q_acc: &mut [f64],
+@@ -13796,7 +13795,11 @@ pub fn eig_francis_profile_f64(
+     let mut q_acc = eig_initial_q_acc(n, want_vectors);
+
+     if n >= 128 {
+-        hessenberg_reduce_blocked(&mut h, &mut q_acc, n, want_vectors);
++        if want_vectors {
++            hessenberg_reduce_blocked::<true>(&mut h, &mut q_acc, n);
++        } else {
++            hessenberg_reduce_blocked::<false>(&mut h, &mut q_acc, n);
++        }
+     } else {
+         for k in 0..(n.saturating_sub(2)) {
+             let mut col_norm_sq = 0.0;
+@@ -13939,7 +13942,11 @@ pub fn eig_francis_shadow_profile_f64(
+     }
+
+     if n >= 128 {
+-        hessenberg_reduce_blocked(&mut h, &mut q_acc, n, want_vectors);
++        if want_vectors {
++            hessenberg_reduce_blocked::<true>(&mut h, &mut q_acc, n);
++        } else {
++            hessenberg_reduce_blocked::<false>(&mut h, &mut q_acc, n);
++        }
+     } else {
+         for k in 0..(n.saturating_sub(2)) {
+             let mut col_norm_sq = 0.0;
+@@ -14102,7 +14109,7 @@ pub fn eigvals_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64
+     // eigenvalues are read from the quasi-triangular `h`, which does not depend
+     // on `q_acc`, so they are bit-for-bit identical to
+     // `eig_contiguous_f64(...).eigenvalues`.
+-    let result = eig_impl(data, meta, false)?;
++    let result = eig_impl::<false>(data, meta)?;
+     Ok(result.eigenvalues)
+ }
+
+@@ -15752,7 +15759,7 @@ pub struct QrStageProfile {
+ /// circular dependency. Reassociates panel-by-panel, so it matches the unblocked
+ /// sweep only to TOLERANCE — validated by reconstruction (Q·H·Qᵀ = A) +
+ /// orthonormality, not bit-for-bit. frankentorch-9y5bi.
+-fn hessenberg_reduce_blocked(h: &mut [f64], q: &mut [f64], n: usize, accumulate_q: bool) {
++fn hessenberg_reduce_blocked<const ACCUMULATE_Q: bool>(h: &mut [f64], q: &mut [f64], n: usize) {
+     if n <= 2 {
+         return;
+     }
+@@ -15900,7 +15907,7 @@ fn hessenberg_reduce_blocked(h: &mut [f64], q: &mut [f64], n: usize, accumulate_
+             h[x] -= ztvt[x];
+         }
+         // --- Q := Q · (I - V T Vᵀ) = Q - ((Q V) T) Vᵀ.  (eigenvector work only)
+-        if accumulate_q {
++        if ACCUMULATE_Q {
+             let mut qv = vec![0.0f64; n * nb];
+             gemm::dgemm(n, n, nb, q, &vmat, &mut qv);
+             let mut qvt = vec![0.0f64; n * nb];
+@@ -28290,7 +28297,7 @@ mod tests {
+         for i in 0..n {
+             q[i * n + i] = 1.0;
+         }
+-        super::hessenberg_reduce_blocked(&mut h, &mut q, n, true);
++        super::hessenberg_reduce_blocked::<true>(&mut h, &mut q, n);
+         // H is upper-Hessenberg (strictly below subdiagonal == 0).
+         for i in 0..n {
+             for j in 0..n {
