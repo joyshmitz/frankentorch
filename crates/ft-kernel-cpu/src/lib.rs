@@ -7244,22 +7244,38 @@ pub fn argmax_dim_tensor_contiguous_f64(
     let mut output = vec![0.0; out_numel];
     let data = &input[offset..];
 
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            let mut best_idx = 0usize;
-            let mut best_val = f64::NEG_INFINITY;
-            for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                let val = data[idx];
-                if val.is_nan() {
-                    best_idx = r;
-                    break;
-                } else if val > best_val {
-                    best_val = val;
-                    best_idx = r;
-                }
+    // Each output lane (outer,inner) reduces an independent strided column of
+    // `reduce_size` elements; the per-lane scan (first strict-max wins, NaN
+    // short-circuits) is identical regardless of scheduling, so parallelizing over
+    // output lanes is BIT-FOR-BIT equal to the serial double loop. frankentorch-kgs4.50.
+    let argmax = |out_idx: usize| -> f64 {
+        let outer = out_idx / inner_size;
+        let inner = out_idx % inner_size;
+        let base = outer * reduce_size * inner_size + inner;
+        let mut best_idx = 0usize;
+        let mut best_val = f64::NEG_INFINITY;
+        for r in 0..reduce_size {
+            let val = data[base + r * inner_size];
+            if val.is_nan() {
+                best_idx = r;
+                break;
+            } else if val > best_val {
+                best_val = val;
+                best_idx = r;
             }
-            output[outer * inner_size + inner] = best_idx as f64;
+        }
+        best_idx as f64
+    };
+    if out_numel.saturating_mul(reduce_size) >= PARALLEL_THRESHOLD
+        && rayon::current_num_threads() > 1
+    {
+        output
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, o)| *o = argmax(i));
+    } else {
+        for (i, o) in output.iter_mut().enumerate() {
+            *o = argmax(i);
         }
     }
 
@@ -7295,22 +7311,35 @@ pub fn argmin_dim_tensor_contiguous_f64(
     let mut output = vec![0.0; out_numel];
     let data = &input[offset..];
 
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            let mut best_idx = 0usize;
-            let mut best_val = f64::INFINITY;
-            for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                let val = data[idx];
-                if val.is_nan() {
-                    best_idx = r;
-                    break;
-                } else if val < best_val {
-                    best_val = val;
-                    best_idx = r;
-                }
+    // Per-lane parallel; bit-exact vs the serial double loop. frankentorch-kgs4.50.
+    let argmin = |out_idx: usize| -> f64 {
+        let outer = out_idx / inner_size;
+        let inner = out_idx % inner_size;
+        let base = outer * reduce_size * inner_size + inner;
+        let mut best_idx = 0usize;
+        let mut best_val = f64::INFINITY;
+        for r in 0..reduce_size {
+            let val = data[base + r * inner_size];
+            if val.is_nan() {
+                best_idx = r;
+                break;
+            } else if val < best_val {
+                best_val = val;
+                best_idx = r;
             }
-            output[outer * inner_size + inner] = best_idx as f64;
+        }
+        best_idx as f64
+    };
+    if out_numel.saturating_mul(reduce_size) >= PARALLEL_THRESHOLD
+        && rayon::current_num_threads() > 1
+    {
+        output
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, o)| *o = argmin(i));
+    } else {
+        for (i, o) in output.iter_mut().enumerate() {
+            *o = argmin(i);
         }
     }
 
@@ -18762,22 +18791,35 @@ pub fn argmax_dim_tensor_contiguous_f32(
     let offset = meta.storage_offset();
     let mut output = vec![0.0f32; out_numel];
     let data = &input[offset..];
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            let mut best_idx = 0usize;
-            let mut best_val = f32::NEG_INFINITY;
-            for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                let val = data[idx];
-                if val.is_nan() {
-                    best_idx = r;
-                    break;
-                } else if val > best_val {
-                    best_val = val;
-                    best_idx = r;
-                }
+    // Per-lane parallel; bit-exact vs the serial double loop. frankentorch-kgs4.50.
+    let argmax = |out_idx: usize| -> f32 {
+        let outer = out_idx / inner_size;
+        let inner = out_idx % inner_size;
+        let base = outer * reduce_size * inner_size + inner;
+        let mut best_idx = 0usize;
+        let mut best_val = f32::NEG_INFINITY;
+        for r in 0..reduce_size {
+            let val = data[base + r * inner_size];
+            if val.is_nan() {
+                best_idx = r;
+                break;
+            } else if val > best_val {
+                best_val = val;
+                best_idx = r;
             }
-            output[outer * inner_size + inner] = best_idx as f32;
+        }
+        best_idx as f32
+    };
+    if out_numel.saturating_mul(reduce_size) >= PARALLEL_THRESHOLD
+        && rayon::current_num_threads() > 1
+    {
+        output
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, o)| *o = argmax(i));
+    } else {
+        for (i, o) in output.iter_mut().enumerate() {
+            *o = argmax(i);
         }
     }
     Ok(output)
@@ -18806,22 +18848,35 @@ pub fn argmin_dim_tensor_contiguous_f32(
     let offset = meta.storage_offset();
     let mut output = vec![0.0f32; out_numel];
     let data = &input[offset..];
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            let mut best_idx = 0usize;
-            let mut best_val = f32::INFINITY;
-            for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                let val = data[idx];
-                if val.is_nan() {
-                    best_idx = r;
-                    break;
-                } else if val < best_val {
-                    best_val = val;
-                    best_idx = r;
-                }
+    // Per-lane parallel; bit-exact vs the serial double loop. frankentorch-kgs4.50.
+    let argmin = |out_idx: usize| -> f32 {
+        let outer = out_idx / inner_size;
+        let inner = out_idx % inner_size;
+        let base = outer * reduce_size * inner_size + inner;
+        let mut best_idx = 0usize;
+        let mut best_val = f32::INFINITY;
+        for r in 0..reduce_size {
+            let val = data[base + r * inner_size];
+            if val.is_nan() {
+                best_idx = r;
+                break;
+            } else if val < best_val {
+                best_val = val;
+                best_idx = r;
             }
-            output[outer * inner_size + inner] = best_idx as f32;
+        }
+        best_idx as f32
+    };
+    if out_numel.saturating_mul(reduce_size) >= PARALLEL_THRESHOLD
+        && rayon::current_num_threads() > 1
+    {
+        output
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, o)| *o = argmin(i));
+    } else {
+        for (i, o) in output.iter_mut().enumerate() {
+            *o = argmin(i);
         }
     }
     Ok(output)
@@ -20507,6 +20562,54 @@ pub fn sparse_coo_add(
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
+
+    // The parallel dim-argmax/argmin (frankentorch-kgs4.50) must match the serial
+    // reference bit-for-bit, including PyTorch's first-occurrence ties and NaN-wins
+    // rules, on an input large enough to trigger the parallel path (numel >= 8192).
+    #[test]
+    fn parallel_argmax_argmin_dim_matches_serial_with_ties_and_nan() {
+        use ft_core::{DType, Device, TensorMeta};
+        let (outer, red, inner) = (40usize, 64usize, 5usize); // numel 12800 >= 8192
+        let n = outer * red * inner;
+        let mut data = vec![0.0f64; n];
+        for (i, d) in data.iter_mut().enumerate() {
+            // deterministic, with deliberate exact ties (mod 7) to exercise the
+            // first-occurrence rule, and a NaN sprinkled in.
+            *d = ((i * 1103515245 + 12345) % 7) as f64;
+        }
+        data[3 * red * inner + 10 * inner + 2] = f64::NAN; // a NaN in lane (3,2)
+        let meta = TensorMeta::from_shape(vec![outer, red, inner], DType::F64, Device::Cpu);
+
+        let serial_arg = |minimize: bool| -> Vec<f64> {
+            let mut out = vec![0.0; outer * inner];
+            for o in 0..outer {
+                for ii in 0..inner {
+                    let mut bi = 0usize;
+                    let mut bv = if minimize {
+                        f64::INFINITY
+                    } else {
+                        f64::NEG_INFINITY
+                    };
+                    for r in 0..red {
+                        let v = data[o * red * inner + r * inner + ii];
+                        if v.is_nan() {
+                            bi = r;
+                            break;
+                        } else if (minimize && v < bv) || (!minimize && v > bv) {
+                            bv = v;
+                            bi = r;
+                        }
+                    }
+                    out[o * inner + ii] = bi as f64;
+                }
+            }
+            out
+        };
+        let par_max = super::argmax_dim_tensor_contiguous_f64(&data, &meta, 1).unwrap();
+        let par_min = super::argmin_dim_tensor_contiguous_f64(&data, &meta, 1).unwrap();
+        assert_eq!(par_max, serial_arg(false), "argmax parallel != serial");
+        assert_eq!(par_min, serial_arg(true), "argmin parallel != serial");
+    }
 
     #[test]
     fn elu_value_uses_expm1_bit_exact_torch() {

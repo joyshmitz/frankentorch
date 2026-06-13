@@ -1,0 +1,5 @@
+  [2m2026-06-13T16:24:24.114133Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mExecuting command remotely: cargo run --release -q -p ft-kernel-cpu --example argmax_time[0m
+threads=10
+argmax_d1 0.964 ms
+argmax_d0 4.721 ms
+max_d1    2.354 ms
