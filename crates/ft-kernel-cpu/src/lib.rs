@@ -12670,6 +12670,17 @@ trait FrancisTraceSink {
     fn record_sweep(&mut self) {}
     fn record_shift(&mut self, _sample: EigFrancisShiftSample) {}
     fn record_selected_m(&mut self, _m: usize) {}
+    fn record_shadow_sweep_start(
+        &mut self,
+        _h: &[f64],
+        _n: usize,
+        _m: usize,
+        _en: usize,
+        _want_vectors: bool,
+    ) {
+    }
+    fn record_shadow_bulge_step(&mut self, _step: FrancisBulgeStep) {}
+    fn record_shadow_sweep_end(&mut self, _h: &[f64]) {}
 }
 
 struct FrancisTraceDisabled;
@@ -12801,6 +12812,223 @@ pub struct EigFrancisProfileResult {
     pub result: EigResult,
     /// Profile counters and bounded shift-source samples.
     pub profile: EigFrancisProfile,
+}
+
+/// Hidden strict shadow-proof result for the current Francis QR implementation.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct EigFrancisShadowProfileResult {
+    /// Eig/eigvals result produced by the scalar reference path.
+    pub result: EigResult,
+    /// Profile counters from the scalar reference path.
+    pub scalar_profile: EigFrancisProfile,
+    /// Profile counters from the shadow path.
+    pub shadow_profile: EigFrancisProfile,
+    /// True when both paths emitted identical trace streams and counters.
+    pub profiles_match: bool,
+    /// True when both paths produced identical interleaved eigenvalue bits.
+    pub eigenvalues_match: bool,
+    /// True when both paths produced identical final quasi-Schur form bits.
+    pub schur_form_match: bool,
+    /// True when both paths produced identical eigenvector bits, or vectors were not requested.
+    pub eigenvectors_match: bool,
+    /// Number of scalar sweeps replayed through the shadow tiled ledger.
+    pub shadow_sweeps_checked: usize,
+    /// Number of shadow tiled-ledger sweeps that diverged from the scalar sweep.
+    pub shadow_sweep_mismatches: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FrancisBulgeStep {
+    k: usize,
+    notlast: bool,
+    xr: f64,
+    yr: f64,
+    zr: f64,
+    q_s: f64,
+    r_s: f64,
+    row_end: usize,
+    jmax: usize,
+}
+
+#[derive(Debug, Clone)]
+struct FrancisShadowSweep {
+    h_before: Vec<f64>,
+    n: usize,
+    m: usize,
+    en: usize,
+    steps: Vec<FrancisBulgeStep>,
+}
+
+#[derive(Debug, Clone)]
+struct FrancisShadowAudit {
+    profile: EigFrancisProfile,
+    active_sweep: Option<FrancisShadowSweep>,
+    sweeps_checked: usize,
+    sweep_mismatches: usize,
+}
+
+impl FrancisShadowAudit {
+    fn new(n: usize) -> Self {
+        Self {
+            profile: EigFrancisProfile::new(n),
+            active_sweep: None,
+            sweeps_checked: 0,
+            sweep_mismatches: 0,
+        }
+    }
+
+    fn replay_sweep(sweep: &FrancisShadowSweep) -> Vec<f64> {
+        const TILE: usize = 16;
+        let n = sweep.n;
+        let mut scratch = sweep.h_before.clone();
+        for i in (sweep.m + 2)..=sweep.en {
+            scratch[i * n + (i - 2)] = 0.0;
+            if i != sweep.m + 2 {
+                scratch[i * n + (i - 3)] = 0.0;
+            }
+        }
+        for step in &sweep.steps {
+            let mut block_start = step.k;
+            while block_start < step.row_end {
+                let block_end = (block_start + TILE).min(step.row_end);
+                for j in block_start..block_end {
+                    let mut p2 =
+                        scratch[step.k * n + j] + step.q_s * scratch[(step.k + 1) * n + j];
+                    if step.notlast {
+                        p2 += step.r_s * scratch[(step.k + 2) * n + j];
+                        scratch[(step.k + 2) * n + j] -= p2 * step.zr;
+                    }
+                    scratch[(step.k + 1) * n + j] -= p2 * step.yr;
+                    scratch[step.k * n + j] -= p2 * step.xr;
+                }
+                block_start = block_end;
+            }
+            for i in 0..=step.jmax {
+                let mut p2 =
+                    step.xr * scratch[i * n + step.k] + step.yr * scratch[i * n + (step.k + 1)];
+                if step.notlast {
+                    p2 += step.zr * scratch[i * n + (step.k + 2)];
+                    scratch[i * n + (step.k + 2)] -= p2 * step.r_s;
+                }
+                scratch[i * n + (step.k + 1)] -= p2 * step.q_s;
+                scratch[i * n + step.k] -= p2;
+            }
+        }
+        scratch
+    }
+}
+
+impl FrancisTraceSink for FrancisShadowAudit {
+    const ENABLED: bool = true;
+
+    fn reset(&mut self, n: usize) {
+        *self = Self::new(n);
+    }
+
+    fn observe_active_window(&mut self, active_first: usize, active_last: usize) {
+        self.profile.observe_active_window(active_first, active_last);
+    }
+
+    fn record_one_by_one_deflation(&mut self) {
+        self.profile.record_one_by_one_deflation();
+    }
+
+    fn record_two_by_two_deflation(&mut self) {
+        self.profile.record_two_by_two_deflation();
+    }
+
+    fn record_fallback_non_convergence(&mut self, max_total_exhausted: bool) {
+        self.profile
+            .record_fallback_non_convergence(max_total_exhausted);
+    }
+
+    fn record_sweep(&mut self) {
+        self.profile.record_sweep();
+    }
+
+    fn record_shift(&mut self, sample: EigFrancisShiftSample) {
+        self.profile.record_shift(sample);
+    }
+
+    fn record_selected_m(&mut self, m: usize) {
+        self.profile.record_selected_m(m);
+    }
+
+    fn record_shadow_sweep_start(
+        &mut self,
+        h: &[f64],
+        n: usize,
+        m: usize,
+        en: usize,
+        _want_vectors: bool,
+    ) {
+        self.active_sweep = Some(FrancisShadowSweep {
+            h_before: h.to_vec(),
+            n,
+            m,
+            en,
+            steps: Vec::new(),
+        });
+    }
+
+    fn record_shadow_bulge_step(&mut self, step: FrancisBulgeStep) {
+        if let Some(sweep) = self.active_sweep.as_mut() {
+            sweep.steps.push(step);
+        }
+    }
+
+    fn record_shadow_sweep_end(&mut self, h: &[f64]) {
+        if let Some(sweep) = self.active_sweep.take() {
+            self.sweeps_checked += 1;
+            let replayed = Self::replay_sweep(&sweep);
+            if !f64_slices_bit_equal(&replayed, h) {
+                self.sweep_mismatches += 1;
+            }
+        }
+    }
+}
+
+fn f64_slices_bit_equal(lhs: &[f64], rhs: &[f64]) -> bool {
+    lhs.len() == rhs.len()
+        && lhs
+            .iter()
+            .zip(rhs)
+            .all(|(&left, &right)| left.to_bits() == right.to_bits())
+}
+
+fn eig_francis_shift_sample_bit_equal(
+    lhs: &EigFrancisShiftSample,
+    rhs: &EigFrancisShiftSample,
+) -> bool {
+    lhs.active_first == rhs.active_first
+        && lhs.active_last == rhs.active_last
+        && lhs.iteration_in_window == rhs.iteration_in_window
+        && lhs.accumulated_shift.to_bits() == rhs.accumulated_shift.to_bits()
+        && lhs.x.to_bits() == rhs.x.to_bits()
+        && lhs.y.to_bits() == rhs.y.to_bits()
+        && lhs.w.to_bits() == rhs.w.to_bits()
+        && lhs.exceptional == rhs.exceptional
+}
+
+fn eig_francis_profiles_bit_equal(lhs: &EigFrancisProfile, rhs: &EigFrancisProfile) -> bool {
+    lhs.n == rhs.n
+        && lhs.total_sweeps == rhs.total_sweeps
+        && lhs.one_by_one_deflations == rhs.one_by_one_deflations
+        && lhs.two_by_two_deflations == rhs.two_by_two_deflations
+        && lhs.fallback_deflations == rhs.fallback_deflations
+        && lhs.max_total_exhaustions == rhs.max_total_exhaustions
+        && lhs.exceptional_shifts == rhs.exceptional_shifts
+        && lhs.max_active_window_width == rhs.max_active_window_width
+        && lhs.active_windows == rhs.active_windows
+        && lhs.selected_m == rhs.selected_m
+        && lhs.shift_samples_truncated == rhs.shift_samples_truncated
+        && lhs.shift_samples.len() == rhs.shift_samples.len()
+        && lhs
+            .shift_samples
+            .iter()
+            .zip(&rhs.shift_samples)
+            .all(|(left, right)| eig_francis_shift_sample_bit_equal(left, right))
 }
 
 fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigResult, KernelError> {
@@ -13184,6 +13412,7 @@ fn eig_francis_schur_traced<T: FrancisTraceSink>(
                 }
                 if T::ENABLED {
                     trace.record_selected_m(m);
+                    trace.record_shadow_sweep_start(h, n, m, en_u, want_vectors);
                 }
                 // Clear the sub-sub-diagonal spike left of the bulge.
                 for i in (m + 2)..=en_u {
@@ -13237,6 +13466,19 @@ fn eig_francis_schur_traced<T: FrancisTraceSink>(
                     // growing trailing band as the matrix deflates (hqr range, not
                     // hqr2). frankentorch-eig-eigvals-rowrange.
                     let row_end = if want_vectors { n } else { en_u + 1 };
+                    if T::ENABLED {
+                        trace.record_shadow_bulge_step(FrancisBulgeStep {
+                            k,
+                            notlast,
+                            xr,
+                            yr,
+                            zr,
+                            q_s,
+                            r_s,
+                            row_end,
+                            jmax: (k + 3).min(en_u),
+                        });
+                    }
                     for j in k..row_end {
                         let mut p2 = h[k * n + j] + q_s * h[(k + 1) * n + j];
                         if notlast {
@@ -13270,6 +13512,9 @@ fn eig_francis_schur_traced<T: FrancisTraceSink>(
                         sweep_rot.push(EigQaccOp::Bulge(k, xr, yr, zr, q_s, r_s, notlast));
                     }
                     k += 1;
+                }
+                if T::ENABLED {
+                    trace.record_shadow_sweep_end(h);
                 }
                 // (rotations accumulated into `sweep_rot`; replayed once below.)
             }
@@ -13638,6 +13883,187 @@ pub fn eig_francis_profile_f64(
             n,
         },
         profile,
+    })
+}
+
+#[doc(hidden)]
+pub fn eig_francis_shadow_profile_f64(
+    data: &[f64],
+    meta: &TensorMeta,
+    want_vectors: bool,
+) -> Result<EigFrancisShadowProfileResult, KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    if shape.len() != 2 || shape[0] != shape[1] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![2],
+        });
+    }
+    let n = shape[0];
+
+    let offset = meta.storage_offset();
+    let mut h = vec![0.0f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            h[i * n + j] = data[offset + i * n + j];
+        }
+    }
+
+    let mut q_acc = vec![0.0f64; n * n];
+    for i in 0..n {
+        q_acc[i * n + i] = 1.0;
+    }
+
+    if n >= 128 {
+        hessenberg_reduce_blocked(&mut h, &mut q_acc, n, want_vectors);
+    } else {
+        for k in 0..(n.saturating_sub(2)) {
+            let mut col_norm_sq = 0.0;
+            for i in (k + 1)..n {
+                col_norm_sq += h[i * n + k] * h[i * n + k];
+            }
+            if col_norm_sq < 1e-30 {
+                continue;
+            }
+            let col_norm = col_norm_sq.sqrt();
+            let sign = if h[(k + 1) * n + k] >= 0.0 { 1.0 } else { -1.0 };
+            let v0 = h[(k + 1) * n + k] + sign * col_norm;
+            let mut v = vec![0.0f64; n - k - 1];
+            v[0] = v0;
+            for i in 1..(n - k - 1) {
+                v[i] = h[(k + 2 + i - 1) * n + k];
+            }
+            let v_norm_sq: f64 = v.iter().map(|x| x * x).sum();
+            if v_norm_sq < 1e-30 {
+                continue;
+            }
+
+            let m_sub = n - k - 1;
+            let par = n >= 64;
+            let left_start = if want_vectors { 0 } else { k };
+            let mut left_scale = vec![0.0f64; n - left_start];
+            let col_scale = |(j_rel, slot): (usize, &mut f64)| {
+                let j = left_start + j_rel;
+                let mut dot = 0.0;
+                for i in 0..m_sub {
+                    dot += v[i] * h[(k + 1 + i) * n + j];
+                }
+                *slot = 2.0 * dot / v_norm_sq;
+            };
+            if par {
+                left_scale.par_iter_mut().enumerate().for_each(col_scale);
+            } else {
+                left_scale.iter_mut().enumerate().for_each(col_scale);
+            }
+            {
+                let rows = &mut h[(k + 1) * n..];
+                let upd = |(i, row): (usize, &mut [f64])| {
+                    let vi = v[i];
+                    for j in left_start..n {
+                        row[j] -= left_scale[j - left_start] * vi;
+                    }
+                };
+                if par {
+                    rows.par_chunks_mut(n).enumerate().for_each(upd);
+                } else {
+                    rows.chunks_mut(n).enumerate().for_each(upd);
+                }
+            }
+
+            {
+                let upd = |row: &mut [f64]| {
+                    let mut dot = 0.0;
+                    for j in 0..m_sub {
+                        dot += row[k + 1 + j] * v[j];
+                    }
+                    let scale = 2.0 * dot / v_norm_sq;
+                    for j in 0..m_sub {
+                        row[k + 1 + j] -= scale * v[j];
+                    }
+                };
+                if par {
+                    h.par_chunks_mut(n).for_each(upd);
+                } else {
+                    h.chunks_mut(n).for_each(upd);
+                }
+            }
+
+            if want_vectors {
+                let upd = |row: &mut [f64]| {
+                    let mut dot = 0.0;
+                    for j in 0..m_sub {
+                        dot += row[k + 1 + j] * v[j];
+                    }
+                    let scale = 2.0 * dot / v_norm_sq;
+                    for j in 0..m_sub {
+                        row[k + 1 + j] -= scale * v[j];
+                    }
+                };
+                if par {
+                    q_acc.par_chunks_mut(n).for_each(upd);
+                } else {
+                    q_acc.chunks_mut(n).for_each(upd);
+                }
+            }
+        }
+    }
+
+    let mut scalar_h = h.clone();
+    let mut scalar_q_acc = q_acc.clone();
+    let mut shadow_h = h;
+    let mut shadow_q_acc = q_acc;
+
+    let mut scalar_profile = EigFrancisProfile::new(n);
+    let scalar_eigenvalues = eig_francis_schur_traced(
+        &mut scalar_h,
+        &mut scalar_q_acc,
+        n,
+        want_vectors,
+        &mut scalar_profile,
+    );
+    let scalar_schur = scalar_h.clone();
+    let scalar_q_schur = scalar_q_acc.clone();
+
+    let mut shadow_audit = FrancisShadowAudit::new(n);
+    let shadow_eigenvalues = eig_francis_schur_traced(
+        &mut shadow_h,
+        &mut shadow_q_acc,
+        n,
+        want_vectors,
+        &mut shadow_audit,
+    );
+    let shadow_profile = shadow_audit.profile.clone();
+    let shadow_schur = shadow_h.clone();
+    let shadow_q_schur = shadow_q_acc.clone();
+    let shadow_sweeps_checked = shadow_audit.sweeps_checked;
+    let shadow_sweep_mismatches = shadow_audit.sweep_mismatches;
+
+    let profiles_match = eig_francis_profiles_bit_equal(&scalar_profile, &shadow_profile);
+    let eigenvalues_match = f64_slices_bit_equal(&scalar_eigenvalues, &shadow_eigenvalues);
+    let schur_form_match = f64_slices_bit_equal(&scalar_schur, &shadow_schur)
+        && f64_slices_bit_equal(&scalar_q_schur, &shadow_q_schur);
+
+    if want_vectors {
+        eig_backsub_eigenvectors(&mut scalar_h, &mut scalar_q_acc, &scalar_eigenvalues, n);
+        eig_backsub_eigenvectors(&mut shadow_h, &mut shadow_q_acc, &shadow_eigenvalues, n);
+    }
+    let eigenvectors_match = !want_vectors || f64_slices_bit_equal(&scalar_q_acc, &shadow_q_acc);
+
+    Ok(EigFrancisShadowProfileResult {
+        result: EigResult {
+            eigenvalues: scalar_eigenvalues,
+            eigenvectors: scalar_q_acc,
+            n,
+        },
+        scalar_profile,
+        shadow_profile,
+        profiles_match,
+        eigenvalues_match,
+        schur_form_match,
+        eigenvectors_match,
+        shadow_sweeps_checked,
+        shadow_sweep_mismatches,
     })
 }
 
@@ -26400,6 +26826,180 @@ mod tests {
                 prod.to_bits(),
                 profiled.to_bits(),
                 "profiled eigvals mismatch at interleaved slot {i}: {prod} vs {profiled}"
+            );
+        }
+    }
+
+    #[test]
+    fn eig_francis_shadow_profile_matches_scalar_streams_bit_exact() {
+        let n = 64usize;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = ((i * 41 + j * 13 + 5) % 17) as f64 * 0.01 - 0.08;
+            }
+            a[i * n + i] = (i as f64) + 1.0;
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let production = super::eigvals_contiguous_f64(&a, &meta).unwrap();
+        let shadow = super::eig_francis_shadow_profile_f64(&a, &meta, false).unwrap();
+
+        assert!(
+            shadow.profiles_match,
+            "shadow trace stream must match scalar trace"
+        );
+        assert!(
+            shadow.eigenvalues_match,
+            "shadow eigenvalue bits must match scalar bits"
+        );
+        assert!(
+            shadow.schur_form_match,
+            "shadow Schur form bits must match scalar bits"
+        );
+        assert!(
+            shadow.eigenvectors_match,
+            "eigvals-only shadow should report vectors unchanged"
+        );
+        assert!(shadow.shadow_sweeps_checked > 0, "shadow did not audit any sweeps");
+        assert_eq!(shadow.shadow_sweep_mismatches, 0, "shadow replay diverged");
+        assert_eq!(shadow.result.n, n);
+        assert_eq!(shadow.scalar_profile.deflated_eigenvalue_count(), n);
+        assert_eq!(shadow.shadow_profile.deflated_eigenvalue_count(), n);
+        assert_eq!(
+            shadow.scalar_profile.total_sweeps,
+            shadow.shadow_profile.total_sweeps
+        );
+        assert_eq!(
+            shadow.scalar_profile.active_windows,
+            shadow.shadow_profile.active_windows
+        );
+        assert_eq!(
+            shadow.scalar_profile.selected_m,
+            shadow.shadow_profile.selected_m
+        );
+        assert_eq!(production.len(), shadow.result.eigenvalues.len());
+        for (i, (&prod, &shadowed)) in production
+            .iter()
+            .zip(&shadow.result.eigenvalues)
+            .enumerate()
+        {
+            assert_eq!(
+                prod.to_bits(),
+                shadowed.to_bits(),
+                "shadow eigvals mismatch at interleaved slot {i}: {prod} vs {shadowed}"
+            );
+        }
+    }
+
+    #[test]
+    fn eig_francis_shadow_profile_matches_values_path_bit_exact() {
+        let n = 64usize;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = ((i * 41 + j * 13 + 5) % 17) as f64 * 0.01 - 0.08;
+            }
+            a[i * n + i] = (i as f64) + 1.0;
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let production = super::eigvals_contiguous_f64(&a, &meta).unwrap();
+        let shadow = super::eig_francis_shadow_profile_f64(&a, &meta, false).unwrap();
+
+        assert!(shadow.profiles_match, "shadow profile stream drifted");
+        assert!(shadow.eigenvalues_match, "shadow eigenvalues drifted");
+        assert!(shadow.schur_form_match, "shadow Schur form drifted");
+        assert!(
+            shadow.eigenvectors_match,
+            "values-only shadow should report vector match"
+        );
+        assert!(shadow.shadow_sweeps_checked > 0, "shadow did not audit any sweeps");
+        assert_eq!(shadow.shadow_sweep_mismatches, 0, "shadow replay diverged");
+        assert_eq!(shadow.result.n, n);
+        assert_eq!(shadow.scalar_profile.deflated_eigenvalue_count(), n);
+        assert_eq!(shadow.shadow_profile.deflated_eigenvalue_count(), n);
+        assert_eq!(
+            shadow.scalar_profile.shift_samples.len(),
+            shadow.scalar_profile.selected_m.len(),
+            "each scalar shift packet must have one selected m"
+        );
+        assert_eq!(
+            shadow.shadow_profile.shift_samples.len(),
+            shadow.shadow_profile.selected_m.len(),
+            "each shadow shift packet must have one selected m"
+        );
+        assert_eq!(production.len(), shadow.result.eigenvalues.len());
+        for (i, (&prod, &shadow_val)) in production
+            .iter()
+            .zip(&shadow.result.eigenvalues)
+            .enumerate()
+        {
+            assert_eq!(
+                prod.to_bits(),
+                shadow_val.to_bits(),
+                "shadow eigvals mismatch at interleaved slot {i}: {prod} vs {shadow_val}"
+            );
+        }
+    }
+
+    #[test]
+    fn eig_francis_shadow_profile_matches_full_eig_vectors_bit_exact() {
+        let n = 32usize;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = ((i * 29 + j * 17 + 3) % 19) as f64 * 0.02 - 0.12;
+            }
+            a[i * n + i] = (i as f64) * 0.5 + 2.0;
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let production = super::eig_contiguous_f64(&a, &meta).unwrap();
+        let shadow = super::eig_francis_shadow_profile_f64(&a, &meta, true).unwrap();
+
+        assert!(
+            shadow.profiles_match,
+            "full eig shadow profile stream drifted"
+        );
+        assert!(
+            shadow.eigenvalues_match,
+            "full eig shadow eigenvalues drifted"
+        );
+        assert!(
+            shadow.schur_form_match,
+            "full eig shadow Schur form drifted"
+        );
+        assert!(shadow.eigenvectors_match, "full eig shadow vectors drifted");
+        assert!(shadow.shadow_sweeps_checked > 0, "full eig shadow did not audit any sweeps");
+        assert_eq!(shadow.shadow_sweep_mismatches, 0, "full eig shadow replay diverged");
+        assert_eq!(
+            production.eigenvalues.len(),
+            shadow.result.eigenvalues.len()
+        );
+        assert_eq!(
+            production.eigenvectors.len(),
+            shadow.result.eigenvectors.len()
+        );
+        for (i, (&prod, &shadow_val)) in production
+            .eigenvalues
+            .iter()
+            .zip(&shadow.result.eigenvalues)
+            .enumerate()
+        {
+            assert_eq!(
+                prod.to_bits(),
+                shadow_val.to_bits(),
+                "shadow full-eig value mismatch at slot {i}: {prod} vs {shadow_val}"
+            );
+        }
+        for (i, (&prod, &shadow_vec)) in production
+            .eigenvectors
+            .iter()
+            .zip(&shadow.result.eigenvectors)
+            .enumerate()
+        {
+            assert_eq!(
+                prod.to_bits(),
+                shadow_vec.to_bits(),
+                "shadow full-eig vector mismatch at slot {i}: {prod} vs {shadow_vec}"
             );
         }
     }
