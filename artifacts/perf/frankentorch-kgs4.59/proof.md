@@ -1,9 +1,10 @@
-# frankentorch-kgs4.66 proof bundle
+# frankentorch-kgs4.67 proof bundle
 
 Note: this artifact directory was created under the original scratch bead ID
 `frankentorch-kgs4.59`. During rebase, `origin/main` already contained a
-different closed `frankentorch-kgs4.59`, so the landing bead for this
-optimization is `frankentorch-kgs4.66`.
+different closed `frankentorch-kgs4.59`, and then another agent landed a
+different `frankentorch-kgs4.66`, so the landing bead for this optimization is
+`frankentorch-kgs4.67`.
 
 ## Profile-backed target
 
