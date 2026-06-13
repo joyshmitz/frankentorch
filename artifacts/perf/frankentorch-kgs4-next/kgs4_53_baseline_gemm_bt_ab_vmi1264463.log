@@ -1,0 +1,128 @@
+  [2m2026-06-13T17:48:13.361979Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSelected worker: vmi1264463 at root@38.242.209.154 (2 slots remaining after reservation, speed 50.0)[0m
+    [2;3mat[0m rch/src/hook.rs:514 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:13.683114Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mStarting remote compilation pipeline for frankentorch-kgs4-53-baseline-c0b6f3da (hash: b3b96cbb4bffd62a)[0m
+    [2;3mat[0m rch/src/hook.rs:5994 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:13.683163Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mPrepared dependency sync manifest for 13 roots[0m
+    [2;3mat[0m rch/src/hook.rs:6016 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:16.198059Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSyncing project to worker vmi1264463...[0m
+    [2;3mat[0m rch/src/hook.rs:6046 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:16.198132Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:20.220015Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 4021ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:20.220114Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-api -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-api on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:22.640885Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2420ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:22.641001Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-autograd -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-autograd on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:25.473110Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2832ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:25.473205Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-conformance -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-conformance on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:27.868440Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2395ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:27.868580Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-core -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-core on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:30.222010Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2353ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:30.222108Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-data -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-data on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:32.859742Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2637ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:32.859833Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-device -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-device on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:35.292784Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2432ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:35.292878Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-dispatch -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-dispatch on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:37.526858Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2233ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:37.526981Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-kernel-cpu -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-kernel-cpu on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:40.570541Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 3043ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:40.570645Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-nn -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-nn on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:44.323066Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 3752ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:44.323174Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-optim -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-optim on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:47.464476Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 3141ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:47.464560Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-runtime -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-runtime on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:50.084815Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2620ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:50.084947Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-serialize -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/crates/ft-serialize on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:52.226168Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2141ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:52.226223Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSync complete: 2648 files, 5451199 bytes in 36020ms[0m
+    [2;3mat[0m rch/src/hook.rs:6209 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:57.602401Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mExecuting command remotely: cargo run --release -q -p ft-kernel-cpu --example gemm_bt_ab[0m
+    [2;3mat[0m rch/src/hook.rs:6252 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:48:57.602459Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRewriting CARGO_TARGET_DIR for remote execution (worker-scoped path): /data/tmp/cargo-target -> /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/.rch-target-vmi1264463-job-29884606035529017-1781372896198051166-0[0m
+    [2;3mat[0m rch/src/transfer.rs:712 [2;3mon[0m ThreadId(1)
+
+threads = 8
+linear x[512,1024] @ W[1024,1024]^T: 33.164 ms  32 GFLOP/s
+linear x[1024,1024] @ W[1024,1024]^T: 48.772 ms  44 GFLOP/s
+linear x[2048,512] @ W[2048,512]^T: 117.651 ms  37 GFLOP/s
+  [2m2026-06-13T17:51:01.100377Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mRemote command finished: exit=0 in 123497ms[0m
+    [2;3mat[0m rch/src/hook.rs:6376 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:51:01.100727Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mRetrieving build artifacts...[0m
+    [2;3mat[0m rch/src/hook.rs:6425 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:51:01.100766Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRetrieving artifacts from /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:2106 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:51:03.968091Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mArtifacts retrieved in 2867ms (1 files, 1080 bytes)[0m
+    [2;3mat[0m rch/src/transfer.rs:2145 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:51:03.968130Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mArtifacts retrieved: 1 files, 1080 bytes in 2867ms[0m
+    [2;3mat[0m rch/src/hook.rs:6458 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:51:03.968241Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRetrieving artifacts from /data/projects/.scratch/frankentorch-kgs4-53-baseline-c0b6f3da/.rch-target-vmi1264463-job-29884606035529017-1781372896198051166-0 on vmi1264463[0m
+    [2;3mat[0m rch/src/transfer.rs:2106 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:51:08.727330Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mArtifacts retrieved in 4759ms (930 files, 998398 bytes)[0m
+    [2;3mat[0m rch/src/transfer.rs:2145 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:51:08.727369Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mCustom CARGO_TARGET_DIR artifacts retrieved: 930 files, 998398 bytes in 4759ms[0m
+    [2;3mat[0m rch/src/hook.rs:6582 [2;3mon[0m ThreadId(1)
+
+[RCH] remote vmi1264463 (175.4s)

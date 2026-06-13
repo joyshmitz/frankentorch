@@ -1,0 +1,27 @@
+  [2m2026-06-13T17:07:26.043564Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSelected worker: vmi1149989 at root@212.90.121.76 (4 slots remaining after reservation, speed 50.0)[0m
+    [2;3mat[0m rch/src/hook.rs:514 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:07:26.360529Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mStarting remote compilation pipeline for frankentorch-perf-next-20260613T1710 (hash: 16cd5eae43fdc141)[0m
+    [2;3mat[0m rch/src/hook.rs:5994 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:07:26.360575Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mPrepared dependency sync manifest for 13 roots[0m
+    [2;3mat[0m rch/src/hook.rs:6016 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:07:27.961734Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSyncing project to worker vmi1149989...[0m
+    [2;3mat[0m rch/src/hook.rs:6046 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:07:27.961813Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-perf-next-20260613T1710 -> /data/projects/.scratch/frankentorch-perf-next-20260613T1710 on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:07:28.167719Z[0m [33m WARN[0m [1;33mrch::transfer[0m[33m: [33mrsync failed with retryable error (retries exhausted): kex_exchange_identification: read: Connection reset by peer
+Connection reset by 212.90.121.76 port 22
+rsync: connection unexpectedly closed (0 bytes received so far) [sender]
+rsync error: unexplained error (code 255) at io.c(232) [sender=3.4.1]
+[0m
+    [2;3mat[0m rch/src/transfer.rs:1464 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T17:07:28.221552Z[0m [33m WARN[0m [1;33mrch::hook[0m[33m: [33mRemote execution failed: Project sync failed: rsync failed, running locally[0m
+    [2;3mat[0m rch/src/hook.rs:658 [2;3mon[0m ThreadId(1)
+
+[RCH] local (remote execution failed)
+[RCH] remote required; refusing local fallback (remote execution failed)
