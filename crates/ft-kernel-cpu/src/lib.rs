@@ -13031,6 +13031,17 @@ fn eig_francis_profiles_bit_equal(lhs: &EigFrancisProfile, rhs: &EigFrancisProfi
             .all(|(left, right)| eig_francis_shift_sample_bit_equal(left, right))
 }
 
+fn eig_initial_q_acc(n: usize, want_vectors: bool) -> Vec<f64> {
+    if !want_vectors {
+        return Vec::new();
+    }
+    let mut q_acc = vec![0.0f64; n * n];
+    for i in 0..n {
+        q_acc[i * n + i] = 1.0;
+    }
+    q_acc
+}
+
 fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigResult, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
     let shape = meta.shape();
@@ -13059,11 +13070,9 @@ fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigRe
         }
     }
 
-    // Initialize Q accumulator for eigenvector computation
-    let mut q_acc = vec![0.0f64; n * n];
-    for i in 0..n {
-        q_acc[i * n + i] = 1.0;
-    }
+    // Initialize Q only for eigenvector-producing paths. The values-only
+    // Francis/Hessenberg code guards every Q update behind `want_vectors`.
+    let mut q_acc = eig_initial_q_acc(n, want_vectors);
 
     // Step 1: Reduce to upper Hessenberg form H = Q^T A Q.
     // Large n uses the compact-WY BLOCKED reduction (BLAS-3 GEMM trailing, ~2x;
@@ -13781,10 +13790,7 @@ pub fn eig_francis_profile_f64(
         }
     }
 
-    let mut q_acc = vec![0.0f64; n * n];
-    for i in 0..n {
-        q_acc[i * n + i] = 1.0;
-    }
+    let mut q_acc = eig_initial_q_acc(n, want_vectors);
 
     if n >= 128 {
         hessenberg_reduce_blocked(&mut h, &mut q_acc, n, want_vectors);

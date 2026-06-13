@@ -1,0 +1,5 @@
+Command: ubs crates/ft-kernel-cpu/src/lib.rs
+Exit: 0
+Critical: 0
+Warning: 3571
+Info: 916
