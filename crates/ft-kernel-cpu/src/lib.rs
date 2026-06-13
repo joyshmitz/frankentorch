@@ -36,6 +36,12 @@ mod gemm {
     const TALL_MIN_ROWS: usize = 1024;
     const TALL_MIN_FLOPS: u128 = 1 << 25; // ~33.6M FMA total
     const MIN_BLOCK_ROWS: usize = 8;
+    // f32 is half the bytes/flop of f64, so it turns compute-bound at a smaller K:
+    // the 2-D tile's bandwidth saving then no longer offsets its smaller per-call
+    // micro-kernel tiles, and large-K square sgemm regresses (measured: m2048 k2048
+    // n2048 sgemm 0.81x). Above this K, keep the 1-D row split. K <= 1024 covers the
+    // measured wins (sgemm 1.10-1.45x, sgemm_bt 1.02-1.25x). frankentorch-kgs4.48.
+    const F32_2D_MAX_K: usize = 1024;
 
     fn should_parallelize(m: usize, k: usize, n: usize) -> bool {
         let flops = (m as u128) * (k as u128) * (n as u128);
@@ -343,9 +349,70 @@ mod gemm {
         });
     }
 
+    fn sgemm_2d_parallel(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
+        let (mb, nb, tiles) = tile_blocks(m, n);
+        let cp = TilePtr(c.as_mut_ptr());
+        tiles.into_par_iter().for_each(|(i0, j0)| {
+            let cp = &cp;
+            let bi = (i0 + mb).min(m) - i0;
+            let bj = (j0 + nb).min(n) - j0;
+            // SAFETY: f32 mirror of dgemm_2d_parallel (B is [k,n]); disjoint tile.
+            unsafe {
+                sgemm_mm(
+                    bi,
+                    k,
+                    bj,
+                    1.0,
+                    a.as_ptr().add(i0 * k),
+                    k as isize,
+                    1,
+                    b.as_ptr().add(j0),
+                    n as isize,
+                    1,
+                    0.0,
+                    cp.0.add(i0 * n + j0),
+                    n as isize,
+                    1,
+                );
+            }
+        });
+    }
+
+    fn sgemm_bt_2d_parallel(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
+        let (mb, nb, tiles) = tile_blocks(m, n);
+        let cp = TilePtr(c.as_mut_ptr());
+        tiles.into_par_iter().for_each(|(i0, j0)| {
+            let cp = &cp;
+            let bi = (i0 + mb).min(m) - i0;
+            let bj = (j0 + nb).min(n) - j0;
+            // SAFETY: f32 mirror of dgemm_bt_2d_parallel (B is [n,k], B^T read).
+            unsafe {
+                sgemm_mm(
+                    bi,
+                    k,
+                    bj,
+                    1.0,
+                    a.as_ptr().add(i0 * k),
+                    k as isize,
+                    1,
+                    b.as_ptr().add(j0 * k),
+                    1,
+                    k as isize,
+                    0.0,
+                    cp.0.add(i0 * n + j0),
+                    n as isize,
+                    1,
+                );
+            }
+        });
+    }
+
     #[cfg(test)]
     mod tile_iso_tests {
-        use super::{dgemm_2d_parallel, dgemm_block, dgemm_bt_2d_parallel, dgemm_bt_block};
+        use super::{
+            dgemm_2d_parallel, dgemm_block, dgemm_bt_2d_parallel, dgemm_bt_block,
+            sgemm_2d_parallel, sgemm_block, sgemm_bt_2d_parallel, sgemm_bt_block,
+        };
 
         const SHAPES: &[(usize, usize, usize)] = &[
             (512, 512, 512),
@@ -379,6 +446,24 @@ mod gemm {
                 assert!(
                     s.iter().zip(&t).all(|(x, y)| x.to_bits() == y.to_bits()),
                     "dgemm_bt {m}x{k}x{n}"
+                );
+
+                let a32: Vec<f32> = a.iter().map(|&x| x as f32).collect();
+                let b32: Vec<f32> = b.iter().map(|&x| x as f32).collect();
+                let mut s3 = vec![0.0_f32; m * n];
+                let mut t3 = vec![0.0_f32; m * n];
+                sgemm_block(m, k, n, &a32, &b32, &mut s3);
+                sgemm_2d_parallel(m, k, n, &a32, &b32, &mut t3);
+                assert!(
+                    s3.iter().zip(&t3).all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "sgemm {m}x{k}x{n}"
+                );
+
+                sgemm_bt_block(m, k, n, &a32, &b32, &mut s3);
+                sgemm_bt_2d_parallel(m, k, n, &a32, &b32, &mut t3);
+                assert!(
+                    s3.iter().zip(&t3).all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "sgemm_bt {m}x{k}x{n}"
                 );
             }
         }
@@ -420,15 +505,19 @@ mod gemm {
         if should_parallelize_cols(m, k, n) {
             sgemm_col_parallel(m, k, n, a, b, c);
         } else if should_parallelize(m, k, n) {
-            // f32 stays on the 1-D row split for now: it is more compute-bound than
-            // f64 (half the bytes/flop), so 2-D tiling can marginally regress large-m
-            // shapes. Deferred to a bandwidth-gated follow-up (frankentorch-kgs4.48).
-            let br = block_rows(m);
-            c.par_chunks_mut(br * n)
-                .zip(a.par_chunks(br * k))
-                .for_each(|(c_blk, a_blk)| {
-                    sgemm_block(c_blk.len() / n, k, n, a_blk, b, c_blk);
-                });
+            if n >= 2 * MIN_BLOCK_COLS && k <= F32_2D_MAX_K {
+                // Bandwidth-bound regime: 2-D tiling cuts the row-split's full-B
+                // re-streaming per thread (direct-write, bit-exact). K-gated so the
+                // compute-bound large-K case keeps the row split.
+                sgemm_2d_parallel(m, k, n, a, b, c);
+            } else {
+                let br = block_rows(m);
+                c.par_chunks_mut(br * n)
+                    .zip(a.par_chunks(br * k))
+                    .for_each(|(c_blk, a_blk)| {
+                        sgemm_block(c_blk.len() / n, k, n, a_blk, b, c_blk);
+                    });
+            }
         } else {
             sgemm_block(m, k, n, a, b, c);
         }
@@ -520,13 +609,17 @@ mod gemm {
                 }
             }
         } else if should_parallelize(m, k, n) {
-            // See sgemm: f32 transposed path stays on the row split (kgs4.48).
-            let br = block_rows(m);
-            c.par_chunks_mut(br * n)
-                .zip(a.par_chunks(br * k))
-                .for_each(|(c_blk, a_blk)| {
-                    sgemm_bt_block(c_blk.len() / n, k, n, a_blk, b, c_blk);
-                });
+            if n >= 2 * MIN_BLOCK_COLS && k <= F32_2D_MAX_K {
+                // See sgemm: K-gated 2-D tiling for the bandwidth-bound regime.
+                sgemm_bt_2d_parallel(m, k, n, a, b, c);
+            } else {
+                let br = block_rows(m);
+                c.par_chunks_mut(br * n)
+                    .zip(a.par_chunks(br * k))
+                    .for_each(|(c_blk, a_blk)| {
+                        sgemm_bt_block(c_blk.len() / n, k, n, a_blk, b, c_blk);
+                    });
+            }
         } else {
             sgemm_bt_block(m, k, n, a, b, c);
         }

@@ -1,0 +1,2 @@
+matmul 512x512x512 fnv=527741f75ff79751 | linear_bt fnv=ea43f9381af09bf7
+matmul 300x257x259 fnv=7918b4c543aa002e | linear_bt fnv=d9e673a5c0324f87
