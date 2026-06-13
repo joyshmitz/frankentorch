@@ -12849,6 +12849,7 @@ struct FrancisBulgeStep {
     zr: f64,
     q_s: f64,
     r_s: f64,
+    col_start: usize,
     row_end: usize,
     jmax: usize,
 }
@@ -12900,7 +12901,7 @@ impl FrancisShadowAudit {
                 }
                 block_start = block_end;
             }
-            let mut col_block_start = 0;
+            let mut col_block_start = step.col_start;
             while col_block_start <= step.jmax {
                 let col_block_end = (col_block_start + TILE).min(step.jmax + 1);
                 for i in col_block_start..col_block_end {
@@ -13497,6 +13498,7 @@ fn eig_francis_schur_traced<const WANT_VECTORS: bool, T: FrancisTraceSink>(
                             zr,
                             q_s,
                             r_s,
+                            col_start: if WANT_VECTORS { 0 } else { l },
                             row_end,
                             jmax: (k + 3).min(en_u),
                         });
@@ -13510,9 +13512,11 @@ fn eig_francis_schur_traced<const WANT_VECTORS: bool, T: FrancisTraceSink>(
                         h[(k + 1) * n + j] -= p2 * yr;
                         h[k * n + j] -= p2 * xr;
                     }
-                    // Column modification: rows [0, min(en, k+3)].
+                    // Column modification. Values-only Schur keeps this inside the active
+                    // unreduced window; full eig still updates all rows for Schur vectors.
                     let jmax = (k + 3).min(en_u);
-                    for i in 0..=jmax {
+                    let col_start = if WANT_VECTORS { 0 } else { l };
+                    for i in col_start..=jmax {
                         let mut p2 = xr * h[i * n + k] + yr * h[i * n + (k + 1)];
                         if notlast {
                             p2 += zr * h[i * n + (k + 2)];
