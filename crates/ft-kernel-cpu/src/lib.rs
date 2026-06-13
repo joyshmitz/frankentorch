@@ -464,6 +464,110 @@ mod gemm {
         });
     }
 
+    /// Apply one Householder LEFT reflector to the trailing columns of a row-major
+    /// `m_total × n` matrix `a` during Golub–Reinsch bidiagonalization: for each
+    /// trailing column `j ∈ [l, n)`, `s = Σ_{k∈[i,m)} a[k][i]·a[k][j]`, then
+    /// `a[k][j] += (s/h)·a[k][i]`. Each column `j` is INDEPENDENT (disjoint strided
+    /// writes; column `i` is only read), so the work parallelises over columns with
+    /// the per-column arithmetic order UNCHANGED → BIT-FOR-BIT identical to the
+    /// serial sweep. frankentorch-kgs4.72.
+    pub fn bidiag_col_reflector_apply_f64(
+        a: &mut [f64],
+        n: usize,
+        i: usize,
+        m: usize,
+        l: usize,
+        h: f64,
+    ) {
+        if l >= n {
+            return;
+        }
+        let base = TilePtr(a.as_mut_ptr());
+        (l..n).into_par_iter().for_each(|j| {
+            let base = &base;
+            // SAFETY: column j ∈ [l,n) is this iteration's EXCLUSIVE write set
+            // (a[k*n+j], k∈[i,m)); column i (a[k*n+i]) is only read and never
+            // written here, so cross-thread sharing of those reads is sound. All
+            // indices k*n+{i,j} with k<m are within a (len ≥ m*n).
+            unsafe {
+                let mut s2 = 0.0;
+                for k in i..m {
+                    s2 += *base.0.add(k * n + i) * *base.0.add(k * n + j);
+                }
+                let f2 = s2 / h;
+                for k in i..m {
+                    let p = base.0.add(k * n + j);
+                    *p += f2 * *base.0.add(k * n + i);
+                }
+            }
+        });
+    }
+
+    /// SVD left-vector (U) back-transform column update (Golub–Reinsch dorgbr):
+    /// for each column `j ∈ [l, n)`, `s = Σ_{k∈[l,m)} a[k][i]·a[k][j]`, then with
+    /// `f = (s / a_ii)·g`, `a[k][j] += f·a[k][i]` for `k ∈ [i, m)`. Column-parallel;
+    /// the per-column arithmetic (incl. the exact `(s/a_ii)*g` order) is UNCHANGED →
+    /// BIT-FOR-BIT identical to the serial sweep. frankentorch-kgs4.72.
+    #[allow(clippy::too_many_arguments)]
+    pub fn svd_u_backtransform_f64(
+        a: &mut [f64],
+        n: usize,
+        i: usize,
+        l: usize,
+        m: usize,
+        a_ii: f64,
+        g: f64,
+    ) {
+        if l >= n {
+            return;
+        }
+        let base = TilePtr(a.as_mut_ptr());
+        (l..n).into_par_iter().for_each(|j| {
+            let base = &base;
+            // SAFETY: column j ∈ [l,n) is this iteration's exclusive write set;
+            // column i is read-only here. All k*n+{i,j}, k<m, are within a.
+            unsafe {
+                let mut s = 0.0;
+                for k in l..m {
+                    s += *base.0.add(k * n + i) * *base.0.add(k * n + j);
+                }
+                let f = (s / a_ii) * g;
+                for k in i..m {
+                    let p = base.0.add(k * n + j);
+                    *p += f * *base.0.add(k * n + i);
+                }
+            }
+        });
+    }
+
+    /// SVD right-vector (V) back-transform column update (Golub–Reinsch): for each
+    /// column `j ∈ [l, n)`, `s = Σ_{k∈[l,n)} arow[k]·v[k][j]`, then
+    /// `v[k][j] += s·v[k][i]` for `k ∈ [l, n)`, where `arow` is row `i` of the
+    /// reduced matrix. Column-parallel, BIT-FOR-BIT identical to the serial sweep.
+    /// frankentorch-kgs4.72.
+    #[allow(clippy::needless_range_loop)] // k also indexes the raw v pointer
+    pub fn svd_v_backtransform_f64(v: &mut [f64], arow: &[f64], n: usize, i: usize, l: usize) {
+        if l >= n {
+            return;
+        }
+        let base = TilePtr(v.as_mut_ptr());
+        (l..n).into_par_iter().for_each(|j| {
+            let base = &base;
+            // SAFETY: column j ∈ [l,n) is this iteration's exclusive write set;
+            // column i is read-only here; arow is a disjoint immutable slice.
+            unsafe {
+                let mut s = 0.0;
+                for k in l..n {
+                    s += arow[k] * *base.0.add(k * n + j);
+                }
+                for k in l..n {
+                    let p = base.0.add(k * n + j);
+                    *p += s * *base.0.add(k * n + i);
+                }
+            }
+        });
+    }
+
     fn dgemm_bt_block(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], c: &mut [f64]) {
         // SAFETY: a is m*k, b is n*k (read as B^T via rsb=1,csb=k), c is m*n.
         unsafe {
@@ -15717,14 +15821,23 @@ fn golub_reinsch_svd_impl(
                 g = -nr_sign(s.sqrt(), f);
                 let h = f * g - s;
                 a[i * n + i] = f - g;
-                for j in l..n {
-                    let mut s2 = 0.0;
-                    for k in i..m {
-                        s2 += a[k * n + i] * a[k * n + j];
-                    }
-                    let f2 = s2 / h;
-                    for k in i..m {
-                        a[k * n + j] += f2 * a[k * n + i];
+                // Apply the reflector to the trailing columns [l,n). Each column is an
+                // INDEPENDENT dot+axpy, so parallelise (bit-exact) when the work is
+                // large enough; the gate falls back to the serial sweep for small
+                // panels where the rayon overhead would dominate. frankentorch-kgs4.72.
+                if (n - l) as u64 * (m - i) as u64 >= (1 << 14) && rayon::current_num_threads() > 1
+                {
+                    gemm::bidiag_col_reflector_apply_f64(a, n, i, m, l, h);
+                } else {
+                    for j in l..n {
+                        let mut s2 = 0.0;
+                        for k in i..m {
+                            s2 += a[k * n + i] * a[k * n + j];
+                        }
+                        let f2 = s2 / h;
+                        for k in i..m {
+                            a[k * n + j] += f2 * a[k * n + i];
+                        }
                     }
                 }
                 for k in i..m {
@@ -15752,13 +15865,32 @@ fn golub_reinsch_svd_impl(
                 for k in l..n {
                     rv1[k] = a[i * n + k] / h;
                 }
-                for j in l..m {
-                    let mut s2 = 0.0;
-                    for k in l..n {
-                        s2 += a[j * n + k] * a[i * n + k];
-                    }
-                    for k in l..n {
-                        a[j * n + k] += s2 * rv1[k];
+                // Apply the reflector to the trailing rows [l,m). Each row is an
+                // INDEPENDENT dot+axpy and is contiguous; row i (< l) is read-only,
+                // so split it off and parallelise over the trailing rows (bit-exact)
+                // when the work is large enough. frankentorch-kgs4.72.
+                if (m - l) as u64 * (n - l) as u64 >= (1 << 14) && rayon::current_num_threads() > 1
+                {
+                    let (head, tail) = a.split_at_mut(l * n);
+                    let row_i = &head[i * n..i * n + n];
+                    tail.par_chunks_mut(n).for_each(|row_j| {
+                        let mut s2 = 0.0;
+                        for k in l..n {
+                            s2 += row_j[k] * row_i[k];
+                        }
+                        for k in l..n {
+                            row_j[k] += s2 * rv1[k];
+                        }
+                    });
+                } else {
+                    for j in l..m {
+                        let mut s2 = 0.0;
+                        for k in l..n {
+                            s2 += a[j * n + k] * a[i * n + k];
+                        }
+                        for k in l..n {
+                            a[j * n + k] += s2 * rv1[k];
+                        }
                     }
                 }
                 for k in l..n {
@@ -15778,13 +15910,19 @@ fn golub_reinsch_svd_impl(
                     // Avoid possible underflow via division as in NR.
                     v[j * n + i] = (a[i * n + j] / a[i * n + l]) / g;
                 }
-                for j in l..n {
-                    let mut s = 0.0;
-                    for k in l..n {
-                        s += a[i * n + k] * v[k * n + j];
-                    }
-                    for k in l..n {
-                        v[k * n + j] += s * v[k * n + i];
+                if (n - l) as u64 * (n - l) as u64 >= (1 << 14) && rayon::current_num_threads() > 1
+                {
+                    let arow = &a[i * n..i * n + n];
+                    gemm::svd_v_backtransform_f64(&mut v, arow, n, i, l);
+                } else {
+                    for j in l..n {
+                        let mut s = 0.0;
+                        for k in l..n {
+                            s += a[i * n + k] * v[k * n + j];
+                        }
+                        for k in l..n {
+                            v[k * n + j] += s * v[k * n + i];
+                        }
                     }
                 }
             }
@@ -15807,14 +15945,20 @@ fn golub_reinsch_svd_impl(
             }
             if g != 0.0 {
                 g = 1.0 / g;
-                for j in l..n {
-                    let mut s = 0.0;
-                    for k in l..m {
-                        s += a[k * n + i] * a[k * n + j];
-                    }
-                    let f = (s / a[i * n + i]) * g;
-                    for k in i..m {
-                        a[k * n + j] += f * a[k * n + i];
+                if (n - l) as u64 * (m - l) as u64 >= (1 << 14) && rayon::current_num_threads() > 1
+                {
+                    let a_ii = a[i * n + i];
+                    gemm::svd_u_backtransform_f64(a, n, i, l, m, a_ii, g);
+                } else {
+                    for j in l..n {
+                        let mut s = 0.0;
+                        for k in l..m {
+                            s += a[k * n + i] * a[k * n + j];
+                        }
+                        let f = (s / a[i * n + i]) * g;
+                        for k in i..m {
+                            a[k * n + j] += f * a[k * n + i];
+                        }
                     }
                 }
                 for j in i..m {
@@ -16027,14 +16171,23 @@ fn golub_reinsch_singular_values(
                 g = -nr_sign(s.sqrt(), f);
                 let h = f * g - s;
                 a[i * n + i] = f - g;
-                for j in l..n {
-                    let mut s2 = 0.0;
-                    for k in i..m {
-                        s2 += a[k * n + i] * a[k * n + j];
-                    }
-                    let f2 = s2 / h;
-                    for k in i..m {
-                        a[k * n + j] += f2 * a[k * n + i];
+                // Apply the reflector to the trailing columns [l,n). Each column is an
+                // INDEPENDENT dot+axpy, so parallelise (bit-exact) when the work is
+                // large enough; the gate falls back to the serial sweep for small
+                // panels where the rayon overhead would dominate. frankentorch-kgs4.72.
+                if (n - l) as u64 * (m - i) as u64 >= (1 << 14) && rayon::current_num_threads() > 1
+                {
+                    gemm::bidiag_col_reflector_apply_f64(a, n, i, m, l, h);
+                } else {
+                    for j in l..n {
+                        let mut s2 = 0.0;
+                        for k in i..m {
+                            s2 += a[k * n + i] * a[k * n + j];
+                        }
+                        let f2 = s2 / h;
+                        for k in i..m {
+                            a[k * n + j] += f2 * a[k * n + i];
+                        }
                     }
                 }
                 for k in i..m {
@@ -16062,13 +16215,32 @@ fn golub_reinsch_singular_values(
                 for k in l..n {
                     rv1[k] = a[i * n + k] / h;
                 }
-                for j in l..m {
-                    let mut s2 = 0.0;
-                    for k in l..n {
-                        s2 += a[j * n + k] * a[i * n + k];
-                    }
-                    for k in l..n {
-                        a[j * n + k] += s2 * rv1[k];
+                // Apply the reflector to the trailing rows [l,m). Each row is an
+                // INDEPENDENT dot+axpy and is contiguous; row i (< l) is read-only,
+                // so split it off and parallelise over the trailing rows (bit-exact)
+                // when the work is large enough. frankentorch-kgs4.72.
+                if (m - l) as u64 * (n - l) as u64 >= (1 << 14) && rayon::current_num_threads() > 1
+                {
+                    let (head, tail) = a.split_at_mut(l * n);
+                    let row_i = &head[i * n..i * n + n];
+                    tail.par_chunks_mut(n).for_each(|row_j| {
+                        let mut s2 = 0.0;
+                        for k in l..n {
+                            s2 += row_j[k] * row_i[k];
+                        }
+                        for k in l..n {
+                            row_j[k] += s2 * rv1[k];
+                        }
+                    });
+                } else {
+                    for j in l..m {
+                        let mut s2 = 0.0;
+                        for k in l..n {
+                            s2 += a[j * n + k] * a[i * n + k];
+                        }
+                        for k in l..n {
+                            a[j * n + k] += s2 * rv1[k];
+                        }
                     }
                 }
                 for k in l..n {
@@ -29154,6 +29326,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn svd_tall_parallel_bidiag_reconstructs_n384() {
+        // Tall 384×256 SVD crosses the bidiagonalization/back-transform parallel work
+        // gate (1<<14), exercising the column/row-parallel reflector helpers
+        // (kgs4.72). Must reconstruct A = U·diag(s)·Vh to working precision.
+        let (m, n) = (384usize, 256usize);
+        let meta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+        let mut a = vec![0.0f64; m * n];
+        for r in 0..m {
+            for c in 0..n {
+                a[r * n + c] = (((r * 131 + c * 17 + 7) % 1000) as f64) * 0.001 - 0.5;
+            }
+        }
+        let result = super::svd_contiguous_f64(&a, &meta, false).unwrap();
+        let k = result.k;
+        let mut max_err = 0.0f64;
+        for i in 0..m {
+            for j in 0..n {
+                let mut val = 0.0;
+                for l in 0..k {
+                    val += result.u[i * k + l] * result.s[l] * result.vh[l * n + j];
+                }
+                max_err = max_err.max((val - a[i * n + j]).abs());
+            }
+        }
+        assert!(
+            max_err < 1e-9,
+            "tall SVD reconstruction error {max_err:e} (parallel bidiag path)"
+        );
     }
 
     #[test]
