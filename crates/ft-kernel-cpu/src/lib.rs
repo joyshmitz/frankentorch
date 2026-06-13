@@ -172,6 +172,108 @@ mod gemm {
         }
     }
 
+    /// Fused trailing-update: `C_sub -= A · B^T`, accumulating straight into a
+    /// STRIDED submatrix of `c` (start `c_off`, row stride `ldc`) via matrixmultiply
+    /// with alpha=-1, beta=1 — no temp product buffer and no scalar subtract pass.
+    /// Parallelised over disjoint N column-blocks. Computes the FULL m×n rectangle
+    /// (the caller zeroes any unused triangle afterwards). Used by blocked Cholesky.
+    /// frankentorch-kgs4.61.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dgemm_bt_sub_into(
+        m: usize,
+        k: usize,
+        n: usize,
+        a: &[f64],
+        b: &[f64],
+        c: &mut [f64],
+        c_off: usize,
+        ldc: usize,
+    ) {
+        if m == 0 || n == 0 {
+            return;
+        }
+        let a = &a[..m * k];
+        let b = &b[..n * k];
+        let nb = block_cols(n);
+        let cp = TilePtr(c.as_mut_ptr());
+        (0..n.div_ceil(nb)).into_par_iter().for_each(|blk| {
+            let cp = &cp;
+            let n0 = blk * nb;
+            let bw = (n0 + nb).min(n) - n0;
+            // SAFETY: a is m*k; b[n0*k..] holds bw rows of k (B^T via rsb=1,csb=k).
+            // Output window row i col (n0+j) -> c_off + i*ldc + n0 + j; column
+            // windows are disjoint across blocks so writes never race. beta=1
+            // accumulates into the existing C; alpha=-1 subtracts the product.
+            unsafe {
+                dgemm_mm(
+                    m,
+                    k,
+                    bw,
+                    -1.0,
+                    a.as_ptr(),
+                    k as isize,
+                    1,
+                    b.as_ptr().add(n0 * k),
+                    1,
+                    k as isize,
+                    1.0,
+                    cp.0.add(c_off + n0),
+                    ldc as isize,
+                    1,
+                );
+            }
+        });
+    }
+
+    /// f32 analogue of `dgemm_bt_sub_into`: `C_sub -= A · B^T` accumulated straight
+    /// into a strided submatrix of `c` (start `c_off`, row stride `ldc`) via
+    /// matrixmultiply with alpha=-1, beta=1. frankentorch-kgs4.61.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sgemm_bt_sub_into(
+        m: usize,
+        k: usize,
+        n: usize,
+        a: &[f32],
+        b: &[f32],
+        c: &mut [f32],
+        c_off: usize,
+        ldc: usize,
+    ) {
+        if m == 0 || n == 0 {
+            return;
+        }
+        let a = &a[..m * k];
+        let b = &b[..n * k];
+        let nb = block_cols(n);
+        let cp = TilePtr(c.as_mut_ptr());
+        (0..n.div_ceil(nb)).into_par_iter().for_each(|blk| {
+            let cp = &cp;
+            let n0 = blk * nb;
+            let bw = (n0 + nb).min(n) - n0;
+            // SAFETY: a is m*k; b[n0*k..] holds bw rows of k (B^T via rsb=1,csb=k).
+            // Output column windows are disjoint across blocks; beta=1 accumulates,
+            // alpha=-1 subtracts the product.
+            unsafe {
+                sgemm_mm(
+                    m,
+                    k,
+                    bw,
+                    -1.0,
+                    a.as_ptr(),
+                    k as isize,
+                    1,
+                    b.as_ptr().add(n0 * k),
+                    1,
+                    k as isize,
+                    1.0,
+                    cp.0.add(c_off + n0),
+                    ldc as isize,
+                    1,
+                );
+            }
+        });
+    }
+
     fn dgemm_bt_block(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], c: &mut [f64]) {
         // SAFETY: a is m*k, b is n*k (read as B^T via rsb=1,csb=k), c is m*n.
         unsafe {
@@ -10538,13 +10640,18 @@ pub fn cholesky_contiguous_f64(
     // This REASSOCIATES the trailing sums (panel-by-panel vs one long dot), so the
     // result matches the serial kernel only to tolerance — validated by
     // reconstruction (L·L^T ≈ A) and the numpy oracle, not bit-for-bit.
-    const NB: usize = 64;
+    const NB: usize = 128;
     let mut l = vec![0.0f64; n * n];
     for i in 0..n {
         for j in 0..=i {
             l[i * n + j] = data[offset + i * n + j];
         }
     }
+
+    // Scratch reused across panels: `l21` holds the sub-diagonal panel (m×nb),
+    // packed once per panel. Allocating once (max size n×NB) avoids a fresh alloc
+    // per panel. frankentorch-kgs4.61.
+    let mut l21 = vec![0.0f64; n * NB];
 
     let mut jb = 0;
     while jb < n {
@@ -10594,29 +10701,33 @@ pub fn cholesky_contiguous_f64(
             tail.chunks_mut(n).for_each(trsm_body);
         }
 
-        // 3. Trailing update A22 -= L21 · L21^T via the blocked/parallel GEMM.
-        //    Pack L21 (m×nb) and its transpose (nb×m) contiguously, multiply, then
-        //    subtract the lower triangle back into l[je:n, je:n].
-        let mut l21 = vec![0.0f64; m * nb];
-        let mut l21t = vec![0.0f64; nb * m];
+        // 3. Trailing rank-nb update A22 -= L21 · L21^T, FUSED directly into l.
+        //    Pack L21 (m×nb) once, then one accumulate-GEMM (alpha=-1, beta=1)
+        //    writes -L21·L21^T straight into l's strided trailing block — no temp
+        //    product buffer and no scalar O(n³) subtract pass (which dominated the
+        //    wall time; the GEMM FLOPs were already cheap). dgemm_bt reads L21^T via
+        //    strides. The full m×m rectangle is written; the unused strict-upper
+        //    triangle is zeroed after the factorisation. frankentorch-kgs4.61.
+        let l21 = &mut l21[..m * nb];
         for i in 0..m {
             for c in 0..nb {
-                let v = l[(je + i) * n + (jb + c)];
-                l21[i * nb + c] = v;
-                l21t[c * m + i] = v;
+                l21[i * nb + c] = l[(je + i) * n + (jb + c)];
             }
         }
-        let mut prod = vec![0.0f64; m * m];
-        gemm::dgemm(m, nb, m, &l21, &l21t, &mut prod);
-        for i in 0..m {
-            let row_base = (je + i) * n + je;
-            let p_base = i * m;
-            for j in 0..=i {
-                l[row_base + j] -= prod[p_base + j];
-            }
-        }
+        let l21: &[f64] = l21;
+        gemm::dgemm_bt_sub_into(m, nb, m, l21, l21, &mut l, je * n + je, n);
 
         jb = je;
+    }
+
+    // The fused trailing GEMM wrote full m×m rectangles, polluting the strict-upper
+    // triangle of each trailing block. Clear it so the returned lower factor has
+    // exact zeros above the diagonal. frankentorch-kgs4.61.
+    for i in 0..n {
+        let row = i * n;
+        for j in (i + 1)..n {
+            l[row + j] = 0.0;
+        }
     }
 
     if upper {
@@ -10660,13 +10771,17 @@ pub fn cholesky_contiguous_f32(
     }
 
     let offset = meta.storage_offset();
-    const NB: usize = 64;
+    const NB: usize = 128;
     let mut l = vec![0.0f32; n * n];
     for i in 0..n {
         for j in 0..=i {
             l[i * n + j] = data[offset + i * n + j];
         }
     }
+
+    // Scratch reused across panels: the sub-diagonal panel L21 (m×nb), packed once
+    // per panel. frankentorch-kgs4.61.
+    let mut l21 = vec![0.0f32; n * NB];
 
     let mut jb = 0;
     while jb < n {
@@ -10715,27 +10830,29 @@ pub fn cholesky_contiguous_f32(
             tail.chunks_mut(n).for_each(trsm_body);
         }
 
-        // 3. Trailing update A22 -= L21 · L21^T via the blocked/parallel f32 GEMM.
-        let mut l21 = vec![0.0f32; m * nb];
-        let mut l21t = vec![0.0f32; nb * m];
+        // 3. Trailing rank-nb update A22 -= L21 · L21^T, FUSED directly into l via a
+        //    single accumulate-GEMM (alpha=-1, beta=1) — no temp buffer, no scalar
+        //    subtract pass. Writes the full m×m rectangle; strict-upper zeroed after.
+        //    frankentorch-kgs4.61.
+        let l21 = &mut l21[..m * nb];
         for i in 0..m {
             for c in 0..nb {
-                let v = l[(je + i) * n + (jb + c)];
-                l21[i * nb + c] = v;
-                l21t[c * m + i] = v;
+                l21[i * nb + c] = l[(je + i) * n + (jb + c)];
             }
         }
-        let mut prod = vec![0.0f32; m * m];
-        gemm::sgemm(m, nb, m, &l21, &l21t, &mut prod);
-        for i in 0..m {
-            let row_base = (je + i) * n + je;
-            let p_base = i * m;
-            for j in 0..=i {
-                l[row_base + j] -= prod[p_base + j];
-            }
-        }
+        let l21: &[f32] = l21;
+        gemm::sgemm_bt_sub_into(m, nb, m, l21, l21, &mut l, je * n + je, n);
 
         jb = je;
+    }
+
+    // The fused trailing GEMM polluted the strict-upper triangle; clear it so the
+    // returned lower factor has exact zeros above the diagonal. frankentorch-kgs4.61.
+    for i in 0..n {
+        let row = i * n;
+        for j in (i + 1)..n {
+            l[row + j] = 0.0;
+        }
     }
 
     if upper {
