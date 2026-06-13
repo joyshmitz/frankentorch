@@ -13677,7 +13677,12 @@ fn eigh_tred2_packed_full_f32(
     z
 }
 
-fn eigh_tql2_transposed_f32(n: usize, d: &mut [f32], e: &mut [f32], zt: &mut [f32]) {
+/// f32 implicit-shift QL eigenvector iteration with DEFERRED whole-stream replay —
+/// the f32 companion to [`eigh_tql2_z_deferred`]. Operates on the NON-transposed
+/// `z` (rotation mixes adjacent columns i,i+1); logs the full ordered (i,c,s)
+/// stream from the d/e recurrence, then replays it row-parallel. BIT-FOR-BIT
+/// identical to the inline sweep. frankentorch-kgs4.74.
+fn eigh_tql2_z_deferred_f32(n: usize, d: &mut [f32], e: &mut [f32], z: &mut [f32]) {
     if n == 0 {
         return;
     }
@@ -13685,6 +13690,7 @@ fn eigh_tql2_transposed_f32(n: usize, d: &mut [f32], e: &mut [f32], zt: &mut [f3
         e[i - 1] = e[i];
     }
     e[n - 1] = 0.0;
+    let mut ops: Vec<(usize, f32, f32)> = Vec::new();
     for l in 0..n {
         let mut iter = 0;
         loop {
@@ -13712,7 +13718,7 @@ fn eigh_tql2_transposed_f32(n: usize, d: &mut [f32], e: &mut [f32], zt: &mut [f3
             let mut p = 0.0f32;
             let mut bailed = false;
             for i in (l..m).rev() {
-                let mut f = s * e[i];
+                let f = s * e[i];
                 let b = c * e[i];
                 r = eigh_pythag_f32(f, g);
                 e[i + 1] = r;
@@ -13729,14 +13735,7 @@ fn eigh_tql2_transposed_f32(n: usize, d: &mut [f32], e: &mut [f32], zt: &mut [f3
                 p = s * r;
                 d[i + 1] = g + p;
                 g = c * r - b;
-                let col_i = i * n;
-                let col_next = (i + 1) * n;
-                for k in 0..n {
-                    f = zt[col_next + k];
-                    let left = zt[col_i + k];
-                    zt[col_next + k] = s * left + c * f;
-                    zt[col_i + k] = c * left - s * f;
-                }
+                ops.push((i, c, s));
             }
             if bailed {
                 continue;
@@ -13745,6 +13744,17 @@ fn eigh_tql2_transposed_f32(n: usize, d: &mut [f32], e: &mut [f32], zt: &mut [f3
             e[l] = g;
             e[m] = 0.0;
         }
+    }
+    if !ops.is_empty() {
+        let ops = &ops;
+        z.par_chunks_mut(n).for_each(|row| {
+            for &(i, c, s) in ops {
+                let a = row[i];
+                let bb = row[i + 1];
+                row[i + 1] = s * a + c * bb;
+                row[i] = c * a - s * bb;
+            }
+        });
     }
 }
 
@@ -13779,23 +13789,18 @@ pub fn eigh_contiguous_f32(data: &[f32], meta: &TensorMeta) -> Result<EighResult
     }
     let mut d = vec![0.0f32; n];
     let mut e = vec![0.0f32; n];
-    let z = eigh_tred2_packed_full_f32(n, &mut lower, &mut d, &mut e);
-    let mut zt = vec![0.0f32; n * n];
-    for row in 0..n {
-        let row_start = row * n;
-        for col in 0..n {
-            zt[col * n + row] = z[row_start + col];
-        }
-    }
-    eigh_tql2_transposed_f32(n, &mut d, &mut e, &mut zt);
+    let mut z = eigh_tred2_packed_full_f32(n, &mut lower, &mut d, &mut e);
+    // QL eigenvector iteration on the NON-transposed Z via deferred whole-stream
+    // replay (rotation mixes adjacent columns → contiguous, row-parallel).
+    // frankentorch-kgs4.74.
+    eigh_tql2_z_deferred_f32(n, &mut d, &mut e, &mut z);
     let mut eigen_pairs: Vec<(f32, usize)> = (0..n).map(|i| (d[i], i)).collect();
     eigen_pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
     let eigenvalues: Vec<f32> = eigen_pairs.iter().map(|(val, _)| *val).collect();
     let mut eigenvectors = vec![0.0f32; n * n];
     for (new_col, &(_, old_col)) in eigen_pairs.iter().enumerate() {
-        let old_col_start = old_col * n;
         for row in 0..n {
-            eigenvectors[row * n + new_col] = zt[old_col_start + row];
+            eigenvectors[row * n + new_col] = z[row * n + old_col];
         }
     }
     Ok(EighResultF32 {
@@ -28777,6 +28782,39 @@ mod tests {
             }
         }
         assert!(max_orth < 1e-9, "eigh orthonormality error {max_orth:e}");
+    }
+
+    #[test]
+    fn eigh_f32_tql2_deferred_parallel_reconstructs_n288() {
+        // f32 companion: n=288 drives many QL sweeps, exercising the f32 deferred
+        // parallel eigenvector replay (kgs4.74). Verifies V·diag(λ)·Vᵀ ≈ A.
+        let n = 288usize;
+        let mut a = vec![0.0f32; n * n];
+        for r in 0..n {
+            for c in 0..=r {
+                let v = (((r * 131 + c * 17 + 7) % 1000) as f32) * 0.001 - 0.5;
+                a[r * n + c] = v;
+                a[c * n + r] = v;
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F32, Device::Cpu);
+        let res = super::eigh_contiguous_f32(&a, &meta).unwrap();
+        let mut max_recon = 0.0f32;
+        for i in 0..n {
+            for j in 0..n {
+                let mut val = 0.0f32;
+                for k in 0..n {
+                    val += res.eigenvectors[i * n + k]
+                        * res.eigenvalues[k]
+                        * res.eigenvectors[j * n + k];
+                }
+                max_recon = max_recon.max((val - a[i * n + j]).abs());
+            }
+        }
+        assert!(
+            max_recon < 1e-3,
+            "f32 eigh reconstruction error {max_recon:e}"
+        );
     }
 
     // ---- eig tests (general eigendecomposition) ----
