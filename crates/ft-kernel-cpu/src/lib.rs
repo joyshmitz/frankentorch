@@ -7810,6 +7810,173 @@ pub fn min_dim_tensor_contiguous_f64(
     Ok((values, indices))
 }
 
+fn extremum_lastdim_value_simd_f64(row: &[f64], is_max: bool) -> f64 {
+    let seed = if is_max {
+        f64::NEG_INFINITY
+    } else {
+        f64::INFINITY
+    };
+    let simd_len = row.len() / SIMD_WIDTH * SIMD_WIDTH;
+    let mut acc = f64x4::splat(seed);
+    let mut last_nan = None;
+    let mut r = 0usize;
+    while r < simd_len {
+        let a0 = row[r];
+        let a1 = row[r + 1];
+        let a2 = row[r + 2];
+        let a3 = row[r + 3];
+        let mut has_nan = false;
+        if a0.is_nan() {
+            last_nan = Some(a0);
+            has_nan = true;
+        }
+        if a1.is_nan() {
+            last_nan = Some(a1);
+            has_nan = true;
+        }
+        if a2.is_nan() {
+            last_nan = Some(a2);
+            has_nan = true;
+        }
+        if a3.is_nan() {
+            last_nan = Some(a3);
+            has_nan = true;
+        }
+        if has_nan {
+            r += SIMD_WIDTH;
+            continue;
+        }
+        let lanes = f64x4::new([a0, a1, a2, a3]);
+        acc = if is_max {
+            acc.max(lanes)
+        } else {
+            acc.min(lanes)
+        };
+        r += SIMD_WIDTH;
+    }
+
+    let lanes = acc.to_array();
+    let mut best = lanes[0];
+    for &v in &lanes[1..] {
+        if (is_max && v > best) || (!is_max && v < best) {
+            best = v;
+        }
+    }
+    for &v in &row[simd_len..] {
+        if v.is_nan() {
+            last_nan = Some(v);
+            continue;
+        }
+        if (is_max && v > best) || (!is_max && v < best) {
+            best = v;
+        }
+    }
+    if let Some(v) = last_nan {
+        return v;
+    }
+
+    // `maxpd/minpd`-style vector max/min can choose either sign of zero on an
+    // equality. The scalar API keeps the first zero's bit pattern because strict
+    // comparisons do not replace ties, so repair only that tie-sensitive case.
+    if best == 0.0 {
+        for &v in row {
+            if v == 0.0 {
+                return v;
+            }
+        }
+    }
+    best
+}
+
+fn extremum_dim_value_scalar_f64(
+    data: &[f64],
+    out_idx: usize,
+    reduce_size: usize,
+    inner_size: usize,
+    is_max: bool,
+) -> f64 {
+    let outer = out_idx / inner_size;
+    let inner = out_idx % inner_size;
+    let base = outer * reduce_size * inner_size + inner;
+    let mut best = data[base];
+    for r in 1..reduce_size {
+        let v = data[base + r * inner_size];
+        if v.is_nan() || (is_max && v > best) || (!is_max && v < best) {
+            best = v;
+        }
+    }
+    best
+}
+
+pub fn extremum_dim_values_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    dim: usize,
+    is_max: bool,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "extremum_dim_values shape volume overflow")?;
+    let out_numel = checked_mul(
+        outer_size,
+        inner_size,
+        "extremum_dim_values shape multiplication overflow",
+    )?;
+    if out_numel == 0 {
+        return Ok(Vec::new());
+    }
+    if reduce_size == 0 {
+        return Err(KernelError::EmptyReductionDim { dim });
+    }
+    let offset = meta.storage_offset();
+    let data = &input[offset..];
+    let mut values = vec![0.0_f64; out_numel];
+
+    if inner_size == 1 && reduce_size >= SIMD_WIDTH {
+        let lane = |out_idx: usize, value: &mut f64| {
+            let start = out_idx * reduce_size;
+            *value = extremum_lastdim_value_simd_f64(&data[start..start + reduce_size], is_max);
+        };
+        if out_numel.saturating_mul(reduce_size) >= PARALLEL_THRESHOLD
+            && rayon::current_num_threads() > 1
+        {
+            values
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(out_idx, value)| lane(out_idx, value));
+        } else {
+            for (out_idx, value) in values.iter_mut().enumerate() {
+                lane(out_idx, value);
+            }
+        }
+    } else {
+        let lane = |out_idx: usize, value: &mut f64| {
+            *value =
+                extremum_dim_value_scalar_f64(data, out_idx, reduce_size, inner_size, is_max);
+        };
+        if out_numel.saturating_mul(reduce_size) >= PARALLEL_THRESHOLD
+            && rayon::current_num_threads() > 1
+        {
+            values
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(out_idx, value)| lane(out_idx, value));
+        } else {
+            for (out_idx, value) in values.iter_mut().enumerate() {
+                lane(out_idx, value);
+            }
+        }
+    }
+
+    Ok(values)
+}
+
 pub fn cat_tensor_contiguous_f64(
     inputs: &[(&[f64], &TensorMeta)],
     dim: usize,
@@ -21398,6 +21565,109 @@ mod tests {
         let par_min = super::argmin_dim_tensor_contiguous_f64(&data, &meta, 1).unwrap();
         assert_eq!(par_max, serial_arg(false), "argmax parallel != serial");
         assert_eq!(par_min, serial_arg(true), "argmin parallel != serial");
+    }
+
+    #[test]
+    fn extremum_dim_values_contiguous_f64_matches_serial_bits() {
+        use ft_core::{DType, Device, TensorMeta};
+
+        fn serial_extremum(data: &[f64], shape: &[usize], dim: usize, is_max: bool) -> Vec<f64> {
+            let reduce_size = shape[dim];
+            let outer_size: usize = shape[..dim].iter().product();
+            let inner_size: usize = shape[dim + 1..].iter().product();
+            let mut out = vec![0.0; outer_size * inner_size];
+            for outer in 0..outer_size {
+                for inner in 0..inner_size {
+                    let base = outer * reduce_size * inner_size + inner;
+                    let mut best = data[base];
+                    for r in 1..reduce_size {
+                        let v = data[base + r * inner_size];
+                        if v.is_nan() || (is_max && v > best) || (!is_max && v < best) {
+                            best = v;
+                        }
+                    }
+                    out[outer * inner_size + inner] = best;
+                }
+            }
+            out
+        }
+
+        fn bits(values: &[f64]) -> Vec<u64> {
+            values.iter().map(|v| v.to_bits()).collect()
+        }
+
+        let last_nan_a = f64::from_bits(0x7ff8_0000_0000_1234);
+        let last_nan_b = f64::from_bits(0x7ff8_0000_0000_5678);
+        let (rows, cols) = (96usize, 128usize);
+        let mut lastdim: Vec<f64> = (0..rows * cols)
+            .map(|i| (((i * 37) % 211) as f64 - 105.0) * 0.25)
+            .collect();
+        for c in 0..cols {
+            lastdim[c] = -1.0;
+            lastdim[cols + c] = 1.0;
+        }
+        lastdim[0] = -0.0;
+        lastdim[1] = 0.0;
+        lastdim[cols] = 0.0;
+        lastdim[cols + 1] = -0.0;
+        lastdim[3 * cols + 5] = last_nan_a;
+        lastdim[3 * cols + 6] = last_nan_b;
+        let lastdim_meta = TensorMeta::from_shape(vec![rows, cols], DType::F64, Device::Cpu);
+        let lastdim_max =
+            super::extremum_dim_values_contiguous_f64(&lastdim, &lastdim_meta, 1, true).unwrap();
+        let lastdim_min =
+            super::extremum_dim_values_contiguous_f64(&lastdim, &lastdim_meta, 1, false).unwrap();
+        assert_eq!(
+            bits(&lastdim_max),
+            bits(&serial_extremum(&lastdim, &[rows, cols], 1, true)),
+            "last-dim SIMD max differs from scalar reference"
+        );
+        assert_eq!(
+            bits(&lastdim_min),
+            bits(&serial_extremum(&lastdim, &[rows, cols], 1, false)),
+            "last-dim SIMD min differs from scalar reference"
+        );
+
+        let (outer, red, inner) = (48usize, 64usize, 3usize);
+        let mut strided: Vec<f64> = (0..outer * red * inner)
+            .map(|i| (((i * 53) % 257) as f64 - 128.0) * 0.125)
+            .collect();
+        for r in 0..red {
+            strided[r * inner] = -1.0;
+            strided[r * inner + 1] = 1.0;
+        }
+        strided[0] = -0.0;
+        strided[inner] = 0.0;
+        strided[1] = 0.0;
+        strided[inner + 1] = -0.0;
+        let nan_lane_base = 5 * red * inner + 2;
+        strided[nan_lane_base + 9 * inner] = last_nan_a;
+        strided[nan_lane_base + 10 * inner] = last_nan_b;
+        let strided_meta = TensorMeta::from_shape(vec![outer, red, inner], DType::F64, Device::Cpu);
+        let strided_max =
+            super::extremum_dim_values_contiguous_f64(&strided, &strided_meta, 1, true).unwrap();
+        let strided_min =
+            super::extremum_dim_values_contiguous_f64(&strided, &strided_meta, 1, false).unwrap();
+        assert_eq!(
+            bits(&strided_max),
+            bits(&serial_extremum(&strided, &[outer, red, inner], 1, true)),
+            "strided max differs from scalar reference"
+        );
+        assert_eq!(
+            bits(&strided_min),
+            bits(&serial_extremum(&strided, &[outer, red, inner], 1, false)),
+            "strided min differs from scalar reference"
+        );
+
+        println!(
+            "GOLDEN_EXTREMUM_BITS last_max0={:016x} last_min1={:016x} last_nan={:016x} strided_max0={:016x} strided_min1={:016x} strided_nan={:016x}",
+            lastdim_max[0].to_bits(),
+            lastdim_min[1].to_bits(),
+            lastdim_max[3].to_bits(),
+            strided_max[0].to_bits(),
+            strided_min[1].to_bits(),
+            strided_max[5 * inner + 2].to_bits()
+        );
     }
 
     // The parallel gather (frankentorch-kgs4.54) must match a serial reference

@@ -431,6 +431,45 @@ fn bench_sum(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_amax_amin(c: &mut Criterion) {
+    let mut group = c.benchmark_group("amax_amin");
+    for &(rows, cols) in &[(2048usize, 2048usize)] {
+        let shape_name = format!("{rows}x{cols}");
+        group.throughput(Throughput::Elements((rows * cols) as u64));
+        group.bench_with_input(
+            BenchmarkId::new("amax_f64_lastdim", &shape_name),
+            &(rows, cols),
+            |b, &(rows, cols)| {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s
+                    .tensor_variable(
+                        deterministic_values(rows * cols, 0.125),
+                        vec![rows, cols],
+                        false,
+                    )
+                    .unwrap();
+                b.iter(|| black_box(s.tensor_amax(black_box(x), 1).unwrap()));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("amin_f64_lastdim", &shape_name),
+            &(rows, cols),
+            |b, &(rows, cols)| {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s
+                    .tensor_variable(
+                        deterministic_values(rows * cols, 0.125),
+                        vec![rows, cols],
+                        false,
+                    )
+                    .unwrap();
+                b.iter(|| black_box(s.tensor_amin(black_box(x), 1).unwrap()));
+            },
+        );
+    }
+    group.finish();
+}
+
 fn bench_cumsum(c: &mut Criterion) {
     // cumsum along the last dim of [N, D]=[8192, 1024], no-grad. Was a fully serial
     // nested scan; the N independent row-lanes now fan out over Rayon. A/B with
@@ -1906,6 +1945,7 @@ criterion_group!(
     bench_max_pool3d,
     bench_pool1d_ct1d,
     bench_sum,
+    bench_amax_amin,
     bench_cumsum,
     bench_cumprod,
     bench_norm,
