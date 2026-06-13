@@ -1,0 +1,2 @@
+quantile(0.5) n=1000000: old(full-sort) 178.111ms | new(2x quickselect, incl session) 46.669ms | 3.82x
+median: composes on kthvalue (9.26x, see kthvalue_qs)
