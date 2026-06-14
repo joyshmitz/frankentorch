@@ -913,6 +913,7 @@ impl ScalarTensor {
 pub enum TensorStorage {
     F32(Arc<Vec<f32>>),
     F64(Arc<Vec<f64>>),
+    F64Inline4([f64; 4]),
     F16(Arc<Vec<Float16>>),
     BF16(Arc<Vec<BFloat16>>),
     QInt8(Arc<Vec<i8>>),
@@ -927,6 +928,7 @@ impl TensorStorage {
         match self {
             Self::F32(v) => v.len(),
             Self::F64(v) => v.len(),
+            Self::F64Inline4(v) => v.len(),
             Self::F16(v) => v.len(),
             Self::BF16(v) => v.len(),
             Self::QInt8(v) => v.len(),
@@ -945,7 +947,7 @@ impl TensorStorage {
     pub fn dtype(&self) -> DType {
         match self {
             Self::F32(_) => DType::F32,
-            Self::F64(_) => DType::F64,
+            Self::F64(_) | Self::F64Inline4(_) => DType::F64,
             Self::F16(_) => DType::F16,
             Self::BF16(_) => DType::BF16,
             Self::QInt8(_) => DType::QInt8,
@@ -959,6 +961,7 @@ impl TensorStorage {
     pub fn as_f64(&self) -> Option<&[f64]> {
         match self {
             Self::F64(v) => Some(v.as_slice()),
+            Self::F64Inline4(v) => Some(v.as_slice()),
             _ => None,
         }
     }
@@ -1025,6 +1028,7 @@ impl TensorStorage {
     pub fn to_f64_vec(&self) -> Vec<f64> {
         match self {
             Self::F64(v) => v.as_ref().clone(),
+            Self::F64Inline4(v) => v.to_vec(),
             Self::F32(v) => v.iter().map(|&x| f64::from(x)).collect(),
             Self::F16(v) => v.iter().map(|&x| f64::from(x.to_f32())).collect(),
             Self::BF16(v) => v.iter().map(|&x| f64::from(x.to_f32())).collect(),
@@ -1042,6 +1046,7 @@ impl TensorStorage {
         match self {
             Self::F32(v) => v.as_ref().clone(),
             Self::F64(v) => v.iter().map(|&x| x as f32).collect(),
+            Self::F64Inline4(v) => v.iter().map(|&x| x as f32).collect(),
             Self::F16(v) => v.iter().map(|&x| x.to_f32()).collect(),
             Self::BF16(v) => v.iter().map(|&x| x.to_f32()).collect(),
             Self::QInt8(v) => v.iter().map(|&x| f32::from(x)).collect(),
@@ -1178,6 +1183,16 @@ impl DenseTensor {
             return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
         }
         Self::from_typed_storage(meta, TensorStorage::F64(Arc::new(storage)))
+    }
+
+    pub fn from_storage_f64_inline4(
+        meta: TensorMeta,
+        storage: [f64; 4],
+    ) -> Result<Self, DenseTensorError> {
+        if meta.dtype() != DType::F64 {
+            return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
+        }
+        Self::from_typed_storage(meta, TensorStorage::F64Inline4(storage))
     }
 
     pub fn from_storage_f32(meta: TensorMeta, storage: Vec<f32>) -> Result<Self, DenseTensorError> {
@@ -1377,6 +1392,7 @@ impl DenseTensor {
         let end = Self::storage_span_required_len(&self.meta)?;
         match &self.storage {
             TensorStorage::F64(v) => Ok(&v[start..end]),
+            TensorStorage::F64Inline4(v) => Ok(&v[start..end]),
             _ => Err(DenseTensorError::UnsupportedDType(self.meta.dtype())),
         }
     }
@@ -1434,6 +1450,7 @@ impl DenseTensor {
         let end = Self::storage_span_required_len(&self.meta)?;
         match &self.storage {
             TensorStorage::F64(v) => Ok(v[start..end].to_vec()),
+            TensorStorage::F64Inline4(v) => Ok(v[start..end].to_vec()),
             TensorStorage::F32(v) => Ok(v[start..end].iter().map(|&x| f64::from(x)).collect()),
             TensorStorage::F16(v) => Ok(v[start..end]
                 .iter()
@@ -1542,6 +1559,7 @@ impl DenseTensor {
     pub fn storage(&self) -> Result<&[f64], DenseTensorError> {
         match &self.storage {
             TensorStorage::F64(v) => Ok(v.as_slice()),
+            TensorStorage::F64Inline4(v) => Ok(v.as_slice()),
             other => Err(DenseTensorError::UnsupportedStorageAccess {
                 dtype: other.dtype(),
             }),
@@ -1645,6 +1663,16 @@ impl DenseTensor {
                 }
                 slice.copy_from_slice(new_values);
             }
+            TensorStorage::F64Inline4(v) => {
+                let slice = &mut v[start..end];
+                if new_values.len() != slice.len() {
+                    return Err(DenseTensorError::InsufficientStorage {
+                        needed: slice.len(),
+                        actual: new_values.len(),
+                    });
+                }
+                slice.copy_from_slice(new_values);
+            }
             _ => {
                 return Err(DenseTensorError::UnsupportedDType(self.meta.dtype()));
             }
@@ -1667,6 +1695,9 @@ impl DenseTensor {
             TensorStorage::F64(v) => {
                 let buf = Arc::make_mut(v);
                 update(&mut buf[start..end]);
+            }
+            TensorStorage::F64Inline4(v) => {
+                update(&mut v[start..end]);
             }
             _ => {
                 return Err(DenseTensorError::UnsupportedDType(self.meta.dtype()));
@@ -4012,6 +4043,15 @@ mod tests {
     }
 
     #[test]
+    fn tensor_storage_f64_inline4_basic_ops() {
+        let s = TensorStorage::F64Inline4([1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(s.len(), 4);
+        assert_eq!(s.dtype(), DType::F64);
+        assert_eq!(s.as_f64().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(s.to_f64_vec(), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
     fn tensor_storage_empty() {
         let s = TensorStorage::F32(Arc::new(Vec::new()));
         assert!(s.is_empty());
@@ -4057,6 +4097,25 @@ mod tests {
             .expect("create f64 dense tensor");
         let f64_vals = dt.contiguous_values_as_f64().unwrap();
         assert_eq!(f64_vals, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn dense_tensor_f64_inline4_storage_access_and_update() {
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let tensor = DenseTensor::from_storage_f64_inline4(meta, [1.0, 2.0, 3.0, 4.0])
+            .expect("create inline f64 tensor");
+        assert_eq!(tensor.storage().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            tensor.typed_storage().as_f64().unwrap(),
+            &[1.0, 2.0, 3.0, 4.0]
+        );
+
+        let mut updated = tensor.clone();
+        updated
+            .update_contiguous_values(&[5.0, 6.0, 7.0, 8.0])
+            .expect("inline update should work");
+        assert_eq!(tensor.contiguous_values().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(updated.contiguous_values().unwrap(), &[5.0, 6.0, 7.0, 8.0]);
     }
 
     #[test]

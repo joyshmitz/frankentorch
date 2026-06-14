@@ -1110,8 +1110,13 @@ pub fn load_state_dict_from_bytes(
 
         let tensor = match dtype {
             DType::F64 => {
-                let values = read_f64_payload(data, &mut pos, numel, key)?;
-                DenseTensor::from_storage(meta, values)?
+                if numel == 4 {
+                    let values = read_f64_payload4(data, &mut pos, key)?;
+                    DenseTensor::from_storage_f64_inline4(meta, values)?
+                } else {
+                    let values = read_f64_payload(data, &mut pos, numel, key)?;
+                    DenseTensor::from_storage(meta, values)?
+                }
             }
             DType::F32 => {
                 let values = read_f32_payload(data, &mut pos, numel, key)?;
@@ -1237,6 +1242,46 @@ fn read_f64_payload(
         ]));
     }
     Ok(values)
+}
+
+fn read_f64_payload4(data: &[u8], pos: &mut usize, key: &str) -> Result<[f64; 4], TensorIOError> {
+    let payload = native_payload(data, pos, 4, 8, "f64", key, "truncated f64 data")?;
+    Ok([
+        f64::from_le_bytes([
+            payload[0], payload[1], payload[2], payload[3], payload[4], payload[5], payload[6],
+            payload[7],
+        ]),
+        f64::from_le_bytes([
+            payload[8],
+            payload[9],
+            payload[10],
+            payload[11],
+            payload[12],
+            payload[13],
+            payload[14],
+            payload[15],
+        ]),
+        f64::from_le_bytes([
+            payload[16],
+            payload[17],
+            payload[18],
+            payload[19],
+            payload[20],
+            payload[21],
+            payload[22],
+            payload[23],
+        ]),
+        f64::from_le_bytes([
+            payload[24],
+            payload[25],
+            payload[26],
+            payload[27],
+            payload[28],
+            payload[29],
+            payload[30],
+            payload[31],
+        ]),
+    ])
 }
 
 fn read_f32_payload(
@@ -1827,6 +1872,14 @@ impl st_tensor::View for TensorViewAdapter<'_> {
     fn data(&self) -> Cow<'_, [u8]> {
         match self.tensor.typed_storage() {
             TensorStorage::F64(v) => {
+                let slice = &v[self.storage_start..self.storage_end];
+                let mut bytes = Vec::with_capacity(self.data_len);
+                for value in slice {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                Cow::Owned(bytes)
+            }
+            TensorStorage::F64Inline4(v) => {
                 let slice = &v[self.storage_start..self.storage_end];
                 let mut bytes = Vec::with_capacity(self.data_len);
                 for value in slice {
@@ -3890,6 +3943,25 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(decoded_bits, bits.to_vec());
         }
+    }
+
+    #[test]
+    fn native_format_width4_f64_uses_tensor_local_inline_storage() {
+        let payload = native_many_small_f64_payload(1, 4);
+        let loaded = load_state_dict_from_bytes(&payload).unwrap();
+        let tensor = &loaded["layer.0000.weight"];
+        assert_eq!(tensor.storage().unwrap(), &[0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(
+            tensor.typed_storage().as_f64().unwrap(),
+            &[0.0, 1.0, 2.0, 3.0]
+        );
+
+        let mut updated = tensor.clone();
+        updated
+            .update_contiguous_values(&[4.0, 5.0, 6.0, 7.0])
+            .unwrap();
+        assert_eq!(tensor.contiguous_values().unwrap(), &[0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(updated.contiguous_values().unwrap(), &[4.0, 5.0, 6.0, 7.0]);
     }
 
     #[test]
