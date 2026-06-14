@@ -9110,14 +9110,35 @@ pub fn cumsum_backward_tensor_contiguous_f64(
     let mut grad_input = vec![0.0; numel];
     let data = &grad_output[offset..];
 
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            let mut acc = 0.0;
-            // Reverse iteration for reverse cumsum
-            for d in (0..dim_size).rev() {
-                let idx = outer * dim_size * inner_size + d * inner_size + inner;
-                acc += data[idx];
-                grad_input[idx] = acc;
+    // Independent `outer` lanes own contiguous `dim_size*inner_size` output slices;
+    // each lane's reverse-cumsum order is unchanged, so the Rayon fan-out is
+    // bit-for-bit identical to the serial scan. Mirrors the forward cumsum kernel.
+    let lane = dim_size * inner_size;
+    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+        grad_input
+            .par_chunks_mut(lane)
+            .enumerate()
+            .for_each(|(outer, out_chunk)| {
+                let base = outer * lane;
+                for inner in 0..inner_size {
+                    let mut acc = 0.0;
+                    for d in (0..dim_size).rev() {
+                        let idx = d * inner_size + inner;
+                        acc += data[base + idx];
+                        out_chunk[idx] = acc;
+                    }
+                }
+            });
+    } else {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut acc = 0.0;
+                // Reverse iteration for reverse cumsum
+                for d in (0..dim_size).rev() {
+                    let idx = outer * lane + d * inner_size + inner;
+                    acc += data[idx];
+                    grad_input[idx] = acc;
+                }
             }
         }
     }
@@ -21694,13 +21715,32 @@ pub fn cumsum_backward_tensor_contiguous_f32(
     let offset = meta.storage_offset();
     let mut grad_input = vec![0.0f32; numel];
     let data = &grad_output[offset..];
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            let mut acc = 0.0f32;
-            for d in (0..dim_size).rev() {
-                let idx = outer * dim_size * inner_size + d * inner_size + inner;
-                acc += data[idx];
-                grad_input[idx] = acc;
+    // Independent `outer` lanes -> Rayon; per-lane reverse order unchanged = bit-exact.
+    let lane = dim_size * inner_size;
+    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+        grad_input
+            .par_chunks_mut(lane)
+            .enumerate()
+            .for_each(|(outer, out_chunk)| {
+                let base = outer * lane;
+                for inner in 0..inner_size {
+                    let mut acc = 0.0f32;
+                    for d in (0..dim_size).rev() {
+                        let idx = d * inner_size + inner;
+                        acc += data[base + idx];
+                        out_chunk[idx] = acc;
+                    }
+                }
+            });
+    } else {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut acc = 0.0f32;
+                for d in (0..dim_size).rev() {
+                    let idx = outer * lane + d * inner_size + inner;
+                    acc += data[idx];
+                    grad_input[idx] = acc;
+                }
             }
         }
     }
