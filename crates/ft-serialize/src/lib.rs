@@ -1032,6 +1032,10 @@ pub fn load_state_dict_from_bytes(
         });
     }
 
+    if let Some(result) = try_load_rank1_width4_f64_native(data, pos, num_tensors)? {
+        return Ok(result);
+    }
+
     let mut result = BTreeMap::new();
     for _ in 0..num_tensors {
         // Key
@@ -1150,6 +1154,124 @@ pub fn load_state_dict_from_bytes(
     }
 
     Ok(result)
+}
+
+fn try_load_rank1_width4_f64_native(
+    data: &[u8],
+    start_pos: usize,
+    num_tensors: usize,
+) -> Result<Option<BTreeMap<String, DenseTensor>>, TensorIOError> {
+    let mut pos = start_pos;
+    let mut result = BTreeMap::new();
+
+    for _ in 0..num_tensors {
+        let Some(key_len) = fast_read_usize(data, &mut pos) else {
+            return Ok(None);
+        };
+        let Some(key_end) = pos.checked_add(key_len) else {
+            return Ok(None);
+        };
+        let Some(key_bytes) = data.get(pos..key_end) else {
+            return Ok(None);
+        };
+        let Ok(key) = std::str::from_utf8(key_bytes) else {
+            return Ok(None);
+        };
+        pos = key_end;
+
+        let Some(ndim) = fast_read_usize(data, &mut pos) else {
+            return Ok(None);
+        };
+        if ndim != 1 {
+            return Ok(None);
+        }
+
+        let Some(dim) = fast_read_usize(data, &mut pos) else {
+            return Ok(None);
+        };
+        if dim != 4 {
+            return Ok(None);
+        }
+
+        let Some(&dtype_tag) = data.get(pos) else {
+            return Ok(None);
+        };
+        if dtype_tag != FT_DTYPE_TAG_F64 {
+            return Ok(None);
+        }
+        pos += 1;
+
+        let Some(payload_end) = pos.checked_add(32) else {
+            return Ok(None);
+        };
+        let Some(payload) = data.get(pos..payload_end) else {
+            return Ok(None);
+        };
+        pos = payload_end;
+
+        let values = [
+            f64::from_le_bytes([
+                payload[0], payload[1], payload[2], payload[3], payload[4], payload[5], payload[6],
+                payload[7],
+            ]),
+            f64::from_le_bytes([
+                payload[8],
+                payload[9],
+                payload[10],
+                payload[11],
+                payload[12],
+                payload[13],
+                payload[14],
+                payload[15],
+            ]),
+            f64::from_le_bytes([
+                payload[16],
+                payload[17],
+                payload[18],
+                payload[19],
+                payload[20],
+                payload[21],
+                payload[22],
+                payload[23],
+            ]),
+            f64::from_le_bytes([
+                payload[24],
+                payload[25],
+                payload[26],
+                payload[27],
+                payload[28],
+                payload[29],
+                payload[30],
+                payload[31],
+            ]),
+        ];
+
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let tensor = DenseTensor::from_storage_f64_inline4(meta, values)?;
+        if result.insert(key.to_owned(), tensor).is_some() {
+            return Ok(None);
+        }
+    }
+
+    if pos != data.len() {
+        return Ok(None);
+    }
+
+    Ok(Some(result))
+}
+
+fn fast_read_usize(data: &[u8], pos: &mut usize) -> Option<usize> {
+    let value = fast_read_u64(data, pos)?;
+    usize::try_from(value).ok()
+}
+
+fn fast_read_u64(data: &[u8], pos: &mut usize) -> Option<u64> {
+    let end = pos.checked_add(8)?;
+    let bytes = data.get(*pos..end)?;
+    *pos = end;
+    Some(u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ]))
 }
 
 fn native_payload_end(
@@ -3962,6 +4084,46 @@ mod tests {
             .unwrap();
         assert_eq!(tensor.contiguous_values().unwrap(), &[0.0, 1.0, 2.0, 3.0]);
         assert_eq!(updated.contiguous_values().unwrap(), &[4.0, 5.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn native_format_rank1_width4_f64_fast_path_matches_golden_summary() {
+        let payload = native_many_small_f64_payload(4, 4);
+        let loaded = super::try_load_rank1_width4_f64_native(&payload, 16, 4)
+            .unwrap()
+            .expect("canonical rank1 width4 f64 payload should use fast path");
+        let summary = native_decode_summary(&loaded);
+        assert_eq!(
+            summary,
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/ft_serialize_decode_pass19.txt"
+            )
+        );
+    }
+
+    #[test]
+    fn native_format_rank1_width4_f64_fast_path_declines_other_shapes() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&1_u32.to_le_bytes());
+        data.extend_from_slice(&1_u64.to_le_bytes());
+        data.extend_from_slice(&1_u64.to_le_bytes());
+        data.push(b'w');
+        data.extend_from_slice(&2_u64.to_le_bytes());
+        data.extend_from_slice(&2_u64.to_le_bytes());
+        data.extend_from_slice(&2_u64.to_le_bytes());
+        data.push(super::FT_DTYPE_TAG_F64);
+        for value in [1.0_f64, 2.0, 3.0, 4.0] {
+            data.extend_from_slice(&value.to_le_bytes());
+        }
+
+        assert!(
+            super::try_load_rank1_width4_f64_native(&data, 16, 1)
+                .unwrap()
+                .is_none()
+        );
+        let loaded = load_state_dict_from_bytes(&data).unwrap();
+        assert_eq!(loaded["w"].meta().shape(), &[2, 2]);
     }
 
     #[test]
