@@ -19276,87 +19276,45 @@ pub fn lstsq_qr_contiguous_f64(
         return Ok(None);
     }
 
-    // Householder QR applied SIMULTANEOUSLY to R (a copy of A) and to B, never
-    // forming the m×m Q. Forming Q (as qr_contiguous_f64 does) costs O(m²·n) and
-    // is pure waste here — least squares only needs Qᵀ·B, which the reflectors
-    // produce directly in O(m·n·k). R is reduced to upper-triangular in place;
-    // `diag` holds its diagonal (the reflection alphas).
-    let a_offset = a_meta.storage_offset();
+    // Least squares solves R·X = Qᵀ·B for A = Q·R (X = R⁻¹·Qᵀ·B, invariant to the
+    // QR sign convention). Use the BLOCKED compact-WY QR (BLAS-3 + parallel —
+    // qr_contiguous_f64) instead of an unblocked per-reflector scalar sweep, form
+    // Qᵀ·B via the parallel cache-blocked GEMM, then a small back-substitution.
+    // Reassociates → tolerance (lstsq is tolerance-parity; the rank guard still
+    // defers near-rank-deficient inputs to the SVD minimum-norm path).
+    // frankentorch-kgs4.85.
     let b_offset = b_meta.storage_offset();
-    let mut r = a_data[a_offset..a_offset + m * n].to_vec();
-    let mut qtb = b_data[b_offset..b_offset + m * k].to_vec();
-    let mut diag = vec![0.0_f64; n];
-
-    for j in 0..n {
-        let col_len = m - j;
-        // x = R[j..m, j]; ||x||.
-        let mut norm_sq = 0.0_f64;
-        for i in 0..col_len {
-            let val = r[(j + i) * n + j];
-            norm_sq += val * val;
-        }
-        let norm = norm_sq.sqrt();
-        if norm == 0.0 {
-            return Ok(None); // zero column -> rank-deficient, defer to SVD
-        }
-        let x0 = r[j * n + j];
-        // alpha = -sign(x0)*||x|| (the stable choice: v[0] = x0 - alpha avoids
-        // cancellation). The R diagonal becomes alpha.
-        let alpha = if x0 >= 0.0 { -norm } else { norm };
-        let mut v = vec![0.0_f64; col_len];
-        v[0] = x0 - alpha;
-        for i in 1..col_len {
-            v[i] = r[(j + i) * n + j];
-        }
-        let vnorm_sq: f64 = v.iter().map(|t| t * t).sum();
-        if vnorm_sq == 0.0 {
-            return Ok(None);
-        }
-        let inv = 2.0 / vnorm_sq;
-        // Apply H = I - inv·v·vᵀ to the trailing columns of R (j..n).
-        for c in j..n {
-            let mut dot = 0.0;
-            for i in 0..col_len {
-                dot += v[i] * r[(j + i) * n + c];
-            }
-            let f = dot * inv;
-            for i in 0..col_len {
-                r[(j + i) * n + c] -= f * v[i];
-            }
-        }
-        // Apply the same H to every column of B -> accumulates Qᵀ·B.
-        for c in 0..k {
-            let mut dot = 0.0;
-            for i in 0..col_len {
-                dot += v[i] * qtb[(j + i) * k + c];
-            }
-            let f = dot * inv;
-            for i in 0..col_len {
-                qtb[(j + i) * k + c] -= f * v[i];
-            }
-        }
-        diag[j] = alpha;
-    }
-
-    // Full-rank guard: relative to the largest |diag|. A tiny pivot means
-    // (near-)rank-deficient — defer to SVD for the minimum-norm solution and to
-    // avoid an ill-conditioned back-substitution.
+    let b = &b_data[b_offset..b_offset + m * k];
+    let qr = match qr_contiguous_f64(a_data, a_meta, true) {
+        Ok(qr) => qr,
+        Err(_) => return Ok(None),
+    };
+    let q = qr.q; // m×n (reduced)
+    let r = qr.r; // n×n upper triangular
+    // Full-rank guard on R's diagonal (defer near-rank-deficient to SVD).
     let mut max_diag = 0.0_f64;
-    for value in diag.iter().take(n) {
-        max_diag = max_diag.max(value.abs());
+    for i in 0..n {
+        max_diag = max_diag.max(r[i * n + i].abs());
     }
     if max_diag == 0.0 {
         return Ok(None);
     }
     let rank_tol = max_diag * f64::EPSILON * (m.max(n) as f64);
-    for value in diag.iter().take(n) {
-        if value.abs() <= rank_tol {
+    for i in 0..n {
+        if r[i * n + i].abs() <= rank_tol {
             return Ok(None);
         }
     }
-
-    // Back-substitute R·X = (Qᵀ·B)[0..n], R upper-triangular with `diag` on the
-    // diagonal and the strict upper part read from the reduced `r`.
+    // Qᵀ·B  [n×k].
+    let mut qt = vec![0.0_f64; n * m];
+    for t in 0..m {
+        for i in 0..n {
+            qt[i * m + t] = q[t * n + i];
+        }
+    }
+    let mut qtb = vec![0.0_f64; n * k];
+    gemm::dgemm(n, m, k, &qt, b, &mut qtb);
+    // Back-substitute R·X = Qᵀ·B.
     let mut x = vec![0.0_f64; n * k];
     for c in 0..k {
         for i in (0..n).rev() {
@@ -19364,10 +19322,9 @@ pub fn lstsq_qr_contiguous_f64(
             for jj in (i + 1)..n {
                 acc -= r[i * n + jj] * x[jj * k + c];
             }
-            x[i * k + c] = acc / diag[i];
+            x[i * k + c] = acc / r[i * n + i];
         }
     }
-
     Ok(Some(x))
 }
 
