@@ -14245,10 +14245,12 @@ pub fn lu_solve_backward_f64(
         }
     }
     // grad_B: solve Aᵀ·grad_B = grad_X column by column (Uᵀ fwd, Lᵀ back, then P).
+    // Each RHS column is an INDEPENDENT 2-pass triangular solve, so for large
+    // multi-RHS we map the per-column solve in parallel (per-column arithmetic order
+    // UNCHANGED → bit-for-bit identical) and scatter the permuted result serially.
+    // frankentorch-kgs4.83.
     let mut grad_b = vec![0.0f64; n * m];
-    let mut v = vec![0.0f64; n];
-    let mut w = vec![0.0f64; n];
-    for c in 0..m {
+    let solve_col = |c: usize, v: &mut [f64], w: &mut [f64]| {
         for i in 0..n {
             let mut s = grad_x[i * m + c];
             for k in 0..i {
@@ -14263,8 +14265,31 @@ pub fn lu_solve_backward_f64(
             }
             w[i] = s;
         }
-        for i in 0..n {
-            grad_b[perm[i] * m + c] = w[i];
+    };
+    if m >= 8 && (n as u64) * (m as u64) >= (1 << 14) && rayon::current_num_threads() > 1 {
+        let cols: Vec<Vec<f64>> = (0..m)
+            .into_par_iter()
+            .map(|c| {
+                let mut v = vec![0.0f64; n];
+                let mut w = vec![0.0f64; n];
+                solve_col(c, &mut v, &mut w);
+                w
+            })
+            .collect();
+        for c in 0..m {
+            let w = &cols[c];
+            for i in 0..n {
+                grad_b[perm[i] * m + c] = w[i];
+            }
+        }
+    } else {
+        let mut v = vec![0.0f64; n];
+        let mut w = vec![0.0f64; n];
+        for c in 0..m {
+            solve_col(c, &mut v, &mut w);
+            for i in 0..n {
+                grad_b[perm[i] * m + c] = w[i];
+            }
         }
     }
     // grad_A = −grad_B·Xᵀ.
