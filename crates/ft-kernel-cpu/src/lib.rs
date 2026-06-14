@@ -19177,9 +19177,14 @@ where
     output
 }
 
-fn unary_contiguous_f32<F>(input: &[f32], meta: &TensorMeta, op: F) -> Result<Vec<f32>, KernelError>
+fn unary_contiguous_f32<F>(
+    input: &[f32],
+    meta: &TensorMeta,
+    op: F,
+    parallel_threshold: usize,
+) -> Result<Vec<f32>, KernelError>
 where
-    F: Fn(f32) -> f32,
+    F: Fn(f32) -> f32 + Sync,
 {
     ensure_unary_layout_and_storage_f32(input, meta)?;
     let numel = meta.numel();
@@ -19188,7 +19193,14 @@ where
     }
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
-    Ok(window.iter().map(|value| op(*value)).collect())
+    // f32 transcendental unary ops were entirely serial; spread the compute-bound
+    // ones across the rayon pool above their (low) threshold. Pure per-element map,
+    // so the parallel result is bit-identical to serial. frankentorch-kgs4.90.
+    if numel >= parallel_threshold {
+        Ok(window.par_iter().map(|value| op(*value)).collect())
+    } else {
+        Ok(window.iter().map(|value| op(*value)).collect())
+    }
 }
 
 fn simd_unary_f32_kernel<F, S>(
@@ -19629,15 +19641,21 @@ fn torch_sign_f32(value: f32) -> f32 {
 // ── Macro-generated simple f32 unary kernels ────────────────────────────
 
 macro_rules! define_unary_f32 {
+    // Cheap ops (sign/round/clamp/…): keep the high cheap-op gate so a small input
+    // never eats rayon dispatch overhead.
     ($name:ident, $op:expr) => {
+        define_unary_f32!($name, $op, SCALAR_UNARY_PARALLEL_THRESHOLD);
+    };
+    // Compute-bound ops pass the low PARALLEL_THRESHOLD (8192) explicitly.
+    ($name:ident, $op:expr, $thresh:expr) => {
         pub fn $name(input: &[f32], meta: &TensorMeta) -> Result<Vec<f32>, KernelError> {
-            unary_contiguous_f32(input, meta, $op)
+            unary_contiguous_f32(input, meta, $op, $thresh)
         }
     };
 }
 
-define_unary_f32!(exp_tensor_contiguous_f32, f32::exp);
-define_unary_f32!(log_tensor_contiguous_f32, f32::ln);
+define_unary_f32!(exp_tensor_contiguous_f32, f32::exp, PARALLEL_THRESHOLD);
+define_unary_f32!(log_tensor_contiguous_f32, f32::ln, PARALLEL_THRESHOLD);
 pub fn relu_tensor_contiguous_f32(
     input: &[f32],
     meta: &TensorMeta,
@@ -19645,39 +19663,62 @@ pub fn relu_tensor_contiguous_f32(
     let zero = f32x8::splat(0.0f32);
     simd_unary_f32_kernel(input, meta, |v| v.max(0.0f32), move |a| a.max(zero))
 }
-define_unary_f32!(sigmoid_tensor_contiguous_f32, |v: f32| 1.0f32
-    / (1.0f32 + (-v).exp()));
-define_unary_f32!(tanh_tensor_contiguous_f32, f32::tanh);
-define_unary_f32!(sin_tensor_contiguous_f32, f32::sin);
-define_unary_f32!(cos_tensor_contiguous_f32, f32::cos);
-define_unary_f32!(tan_tensor_contiguous_f32, f32::tan);
+define_unary_f32!(
+    sigmoid_tensor_contiguous_f32,
+    |v: f32| 1.0f32 / (1.0f32 + (-v).exp()),
+    PARALLEL_THRESHOLD
+);
+define_unary_f32!(tanh_tensor_contiguous_f32, f32::tanh, PARALLEL_THRESHOLD);
+define_unary_f32!(sin_tensor_contiguous_f32, f32::sin, PARALLEL_THRESHOLD);
+define_unary_f32!(cos_tensor_contiguous_f32, f32::cos, PARALLEL_THRESHOLD);
+define_unary_f32!(tan_tensor_contiguous_f32, f32::tan, PARALLEL_THRESHOLD);
 define_unary_f32!(floor_tensor_contiguous_f32, f32::floor);
 define_unary_f32!(ceil_tensor_contiguous_f32, f32::ceil);
 define_unary_f32!(round_tensor_contiguous_f32, round_ties_even_f32);
-define_unary_f32!(log2_tensor_contiguous_f32, f32::log2);
-define_unary_f32!(log10_tensor_contiguous_f32, f32::log10);
-define_unary_f32!(log1p_tensor_contiguous_f32, f32::ln_1p);
-define_unary_f32!(expm1_tensor_contiguous_f32, f32::exp_m1);
+define_unary_f32!(log2_tensor_contiguous_f32, f32::log2, PARALLEL_THRESHOLD);
+define_unary_f32!(log10_tensor_contiguous_f32, f32::log10, PARALLEL_THRESHOLD);
+define_unary_f32!(log1p_tensor_contiguous_f32, f32::ln_1p, PARALLEL_THRESHOLD);
+define_unary_f32!(expm1_tensor_contiguous_f32, f32::exp_m1, PARALLEL_THRESHOLD);
 define_unary_f32!(sign_tensor_contiguous_f32, torch_sign_f32);
 define_unary_f32!(trunc_tensor_contiguous_f32, f32::trunc);
 define_unary_f32!(frac_tensor_contiguous_f32, f32::fract);
-define_unary_f32!(asin_tensor_contiguous_f32, f32::asin);
-define_unary_f32!(acos_tensor_contiguous_f32, f32::acos);
-define_unary_f32!(atan_tensor_contiguous_f32, f32::atan);
-define_unary_f32!(sinh_tensor_contiguous_f32, f32::sinh);
-define_unary_f32!(cosh_tensor_contiguous_f32, f32::cosh);
-define_unary_f32!(gelu_tensor_contiguous_f32, gelu_value_f32);
-define_unary_f32!(silu_tensor_contiguous_f32, silu_value_f32);
+define_unary_f32!(asin_tensor_contiguous_f32, f32::asin, PARALLEL_THRESHOLD);
+define_unary_f32!(acos_tensor_contiguous_f32, f32::acos, PARALLEL_THRESHOLD);
+define_unary_f32!(atan_tensor_contiguous_f32, f32::atan, PARALLEL_THRESHOLD);
+define_unary_f32!(sinh_tensor_contiguous_f32, f32::sinh, PARALLEL_THRESHOLD);
+define_unary_f32!(cosh_tensor_contiguous_f32, f32::cosh, PARALLEL_THRESHOLD);
+define_unary_f32!(
+    gelu_tensor_contiguous_f32,
+    gelu_value_f32,
+    PARALLEL_THRESHOLD
+);
+define_unary_f32!(
+    silu_tensor_contiguous_f32,
+    silu_value_f32,
+    PARALLEL_THRESHOLD
+);
 define_unary_f32!(leaky_relu_tensor_contiguous_f32, leaky_relu_value_f32);
-define_unary_f32!(elu_tensor_contiguous_f32, elu_value_f32);
+define_unary_f32!(elu_tensor_contiguous_f32, elu_value_f32, PARALLEL_THRESHOLD);
 define_unary_f32!(rsqrt_tensor_contiguous_f32, |v: f32| 1.0f32 / v.sqrt());
-define_unary_f32!(erf_tensor_contiguous_f32, erf_value_f32);
-define_unary_f32!(erfc_tensor_contiguous_f32, erfc_value_f32);
+define_unary_f32!(erf_tensor_contiguous_f32, erf_value_f32, PARALLEL_THRESHOLD);
+define_unary_f32!(
+    erfc_tensor_contiguous_f32,
+    erfc_value_f32,
+    PARALLEL_THRESHOLD
+);
 define_unary_f32!(hardswish_tensor_contiguous_f32, hardswish_value_f32);
 define_unary_f32!(hardsigmoid_tensor_contiguous_f32, hardsigmoid_value_f32);
 define_unary_f32!(hardtanh_tensor_contiguous_f32, hardtanh_value_f32);
-define_unary_f32!(softplus_tensor_contiguous_f32, softplus_value_f32);
-define_unary_f32!(mish_tensor_contiguous_f32, mish_value_f32);
+define_unary_f32!(
+    softplus_tensor_contiguous_f32,
+    softplus_value_f32,
+    PARALLEL_THRESHOLD
+);
+define_unary_f32!(
+    mish_tensor_contiguous_f32,
+    mish_value_f32,
+    PARALLEL_THRESHOLD
+);
 define_unary_f32!(square_tensor_contiguous_f32, |v: f32| v * v);
 define_unary_f32!(isnan_tensor_contiguous_f32, |v: f32| if v.is_nan() {
     1.0f32
