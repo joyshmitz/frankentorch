@@ -13997,6 +13997,71 @@ pub fn svd_backward_tall_f64(
     grad_a
 }
 
+/// Reverse-mode VJP of the reduced QR factorization (tall m≥n, full-rank R) from
+/// the output cotangents (`grad_q` m×n, `grad_r` n×n):
+///   M = R·grad_Rᵀ − grad_Qᵀ·Q ; S = copyltu(M) ; Z = grad_Q + Q·S ;
+///   grad_A = Z·R⁻ᵀ.
+/// Routes the matmuls through the parallel cache-blocked GEMM (BLAS-3) instead of
+/// scalar O(m·n²) loops; the small R⁻¹ back-substitution stays scalar. TOLERANCE
+/// (gradients are tolerance-parity, finite-difference validated). frankentorch-kgs4.77.
+pub fn qr_backward_tall_f64(
+    q: &[f64],
+    r: &[f64],
+    grad_q: &[f64],
+    grad_r: &[f64],
+    m: usize,
+    n: usize,
+) -> Vec<f64> {
+    // M = R·grad_Rᵀ − grad_Qᵀ·Q.
+    let mut rgrt = vec![0.0f64; n * n];
+    gemm::dgemm_bt(n, n, n, r, grad_r, &mut rgrt); // R · grad_Rᵀ
+    let mut gqt = vec![0.0f64; n * m];
+    for i in 0..m {
+        for a in 0..n {
+            gqt[a * m + i] = grad_q[i * n + a];
+        }
+    }
+    let mut gqtq = vec![0.0f64; n * n];
+    gemm::dgemm(n, m, n, &gqt, q, &mut gqtq); // grad_Qᵀ · Q
+    let mut mmat = vec![0.0f64; n * n];
+    for idx in 0..n * n {
+        mmat[idx] = rgrt[idx] - gqtq[idx];
+    }
+    // S = copyltu(M): symmetric, lower triangle (incl diag) taken from M.
+    let mut s_sym = vec![0.0f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            s_sym[i * n + j] = if i >= j {
+                mmat[i * n + j]
+            } else {
+                mmat[j * n + i]
+            };
+        }
+    }
+    // Z = grad_Q + Q·S.
+    let mut z = vec![0.0f64; m * n];
+    gemm::dgemm(m, n, n, q, &s_sym, &mut z);
+    for idx in 0..m * n {
+        z[idx] += grad_q[idx];
+    }
+    // R⁻¹ (upper triangular) by back-substitution: solve R·Rinv = I.
+    let mut rinv = vec![0.0f64; n * n];
+    for j in 0..n {
+        rinv[j * n + j] = 1.0 / r[j * n + j];
+        for i in (0..j).rev() {
+            let mut acc = 0.0f64;
+            for l in (i + 1)..=j {
+                acc += r[i * n + l] * rinv[l * n + j];
+            }
+            rinv[i * n + j] = -acc / r[i * n + i];
+        }
+    }
+    // grad_A = Z·R⁻ᵀ.
+    let mut grad_a = vec![0.0f64; m * n];
+    gemm::dgemm_bt(m, n, n, &z, &rinv, &mut grad_a);
+    grad_a
+}
+
 /// Compute just the eigenvalues of a symmetric matrix (sorted ascending).
 pub fn eigvalsh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
