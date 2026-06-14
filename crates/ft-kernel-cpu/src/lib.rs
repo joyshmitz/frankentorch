@@ -2064,6 +2064,37 @@ fn unary_f64<F>(input: &[f64], meta: &TensorMeta, op: F) -> Result<Vec<f64>, Ker
 where
     F: Fn(f64) -> f64 + Sync,
 {
+    unary_f64_with_threshold(input, meta, op, SCALAR_UNARY_PARALLEL_THRESHOLD)
+}
+
+/// Like [`unary_f64`] but for COMPUTE-BOUND element ops (erf/gelu/softplus/… —
+/// each ~exp+log of work, the same class as `pow`). Their per-element cost is far
+/// higher than the cheap ops (sign/round/clamp) that set
+/// `SCALAR_UNARY_PARALLEL_THRESHOLD = 524288`, so they pay off across the rayon
+/// pool at much smaller sizes: gate at the low `PARALLEL_THRESHOLD = 8192` that
+/// `pow_tensor_contiguous_f64` already uses for the identical exp/log workload.
+/// The map is a pure per-element function, so the parallel result is bit-identical
+/// to the serial one. frankentorch-kgs4.89.
+fn unary_f64_compute_bound<F>(
+    input: &[f64],
+    meta: &TensorMeta,
+    op: F,
+) -> Result<Vec<f64>, KernelError>
+where
+    F: Fn(f64) -> f64 + Sync,
+{
+    unary_f64_with_threshold(input, meta, op, PARALLEL_THRESHOLD)
+}
+
+fn unary_f64_with_threshold<F>(
+    input: &[f64],
+    meta: &TensorMeta,
+    op: F,
+    parallel_threshold: usize,
+) -> Result<Vec<f64>, KernelError>
+where
+    F: Fn(f64) -> f64 + Sync,
+{
     if !meta.is_contiguous() {
         return unary_strided_f64(input, meta, op);
     }
@@ -2078,7 +2109,7 @@ where
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
 
-    if numel >= SCALAR_UNARY_PARALLEL_THRESHOLD {
+    if numel >= parallel_threshold {
         Ok(window.par_iter().map(|value| op(*value)).collect())
     } else {
         Ok(window.iter().map(|value| op(*value)).collect())
@@ -2580,14 +2611,14 @@ pub fn gelu_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_f64(input, meta, gelu_value)
+    unary_f64_compute_bound(input, meta, gelu_value)
 }
 
 pub fn silu_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_f64(input, meta, silu_value)
+    unary_f64_compute_bound(input, meta, silu_value)
 }
 
 pub fn leaky_relu_tensor_contiguous_f64(
@@ -2601,7 +2632,7 @@ pub fn elu_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_f64(input, meta, elu_value)
+    unary_f64_compute_bound(input, meta, elu_value)
 }
 
 pub fn rsqrt_tensor_contiguous_f64(
@@ -2615,7 +2646,7 @@ pub fn erf_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_f64(input, meta, erf_value)
+    unary_f64_compute_bound(input, meta, erf_value)
 }
 
 pub fn erfc_tensor_contiguous_f64(
@@ -2625,7 +2656,7 @@ pub fn erfc_tensor_contiguous_f64(
     // Use libm::erfc directly rather than `1.0 - erf(x)` — the latter
     // cancels down to 0.0 for |x| > ~5.95 even though `erfc(x)` is
     // still a tiny but non-zero positive number.
-    unary_f64(input, meta, erfc_value)
+    unary_f64_compute_bound(input, meta, erfc_value)
 }
 
 pub fn hardswish_tensor_contiguous_f64(
@@ -2653,14 +2684,14 @@ pub fn softplus_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_f64(input, meta, softplus_value)
+    unary_f64_compute_bound(input, meta, softplus_value)
 }
 
 pub fn mish_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_f64(input, meta, mish_value)
+    unary_f64_compute_bound(input, meta, mish_value)
 }
 
 pub fn square_tensor_contiguous_f64(
