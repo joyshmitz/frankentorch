@@ -14359,6 +14359,32 @@ pub fn cholesky_solve_backward_grad_l_f64(
     grad_l
 }
 
+/// VJP of `triangular_solve` wrt the triangular matrix A: grad_A = tri-mask(
+/// −grad_B·Xᵀ), where `grad_b` is the already-solved RHS cotangent (n×nrhs), `x`
+/// the saved solution (n×nrhs), and `upper` selects A's triangle. Routes the
+/// outer-product matmul through the parallel cache-blocked GEMM (BLAS-3) then masks.
+/// TOLERANCE (gradients are tolerance-parity). frankentorch-kgs4.82.
+pub fn triangular_solve_backward_grad_a_f64(
+    grad_b: &[f64],
+    x: &[f64],
+    n: usize,
+    nrhs: usize,
+    upper: bool,
+) -> Vec<f64> {
+    let mut m = vec![0.0f64; n * n];
+    gemm::dgemm_bt(n, nrhs, n, grad_b, x, &mut m); // grad_B · Xᵀ
+    let mut grad_a = vec![0.0f64; n * n];
+    for i in 0..n {
+        for k in 0..n {
+            let in_triangle = if upper { k >= i } else { k <= i };
+            if in_triangle {
+                grad_a[i * n + k] = -m[i * n + k];
+            }
+        }
+    }
+    grad_a
+}
+
 /// Compute just the eigenvalues of a symmetric matrix (sorted ascending).
 pub fn eigvalsh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
