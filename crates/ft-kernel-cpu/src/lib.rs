@@ -19375,117 +19375,45 @@ fn pinv_qr_full_column_rank_f64(a: &[f64], m: usize, n: usize) -> Option<Vec<f64
     if m == 0 || n == 0 || m < n {
         return None;
     }
-
-    let mut r = a.to_vec();
-    let mut reflectors = Vec::with_capacity(n);
-    let mut reflector_scales = Vec::with_capacity(n);
-    let mut diag = vec![0.0_f64; n];
-
-    for j in 0..n {
-        let col_len = m - j;
-        let mut norm_sq = 0.0_f64;
-        for i in 0..col_len {
-            let val = r[(j + i) * n + j];
-            norm_sq += val * val;
-        }
-        let norm = norm_sq.sqrt();
-        if norm == 0.0 {
-            return None;
-        }
-
-        let x0 = r[j * n + j];
-        let alpha = if x0 >= 0.0 { -norm } else { norm };
-        let mut v = vec![0.0_f64; col_len];
-        v[0] = x0 - alpha;
-        for i in 1..col_len {
-            v[i] = r[(j + i) * n + j];
-        }
-        let vnorm_sq: f64 = v.iter().map(|t| t * t).sum();
-        if vnorm_sq == 0.0 {
-            return None;
-        }
-        let inv = 2.0 / vnorm_sq;
-
-        for c in j..n {
-            let mut dot = 0.0;
-            for i in 0..col_len {
-                dot += v[i] * r[(j + i) * n + c];
-            }
-            let f = dot * inv;
-            for i in 0..col_len {
-                r[(j + i) * n + c] -= f * v[i];
-            }
-        }
-
-        diag[j] = alpha;
-        reflectors.push(v);
-        reflector_scales.push(inv);
-    }
-
+    // For full column rank, A = Q·R ⇒ A⁺ = R⁻¹·Qᵀ (sign-convention invariant, since
+    // Q/R sign flips cancel). Use the BLOCKED compact-WY QR (BLAS-3, parallel —
+    // qr_contiguous_f64) instead of an unblocked per-reflector scalar sweep, then
+    // form R⁻¹ (small triangular back-sub) and the final R⁻¹·Qᵀ via the parallel
+    // cache-blocked GEMM. Reassociates → tolerance (pinv is tolerance-parity,
+    // validated by reconstruction). frankentorch-kgs4.84.
+    let a_meta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+    let qr = qr_contiguous_f64(a, &a_meta, true).ok()?;
+    let q = qr.q; // m×n (reduced)
+    let r = qr.r; // n×n upper triangular
+    // Near-rank-deficiency guard on R's diagonal (defer those to the SVD path).
     let mut max_diag = 0.0_f64;
-    for value in &diag {
-        max_diag = max_diag.max(value.abs());
+    for i in 0..n {
+        max_diag = max_diag.max(r[i * n + i].abs());
     }
     if max_diag == 0.0 {
         return None;
     }
     let rank_tol = max_diag * f64::EPSILON.sqrt() * (m.max(n) as f64);
-    for value in &diag {
-        if value.abs() <= rank_tol {
+    for i in 0..n {
+        if r[i * n + i].abs() <= rank_tol {
             return None;
         }
     }
-
-    let mut q_t_rows = vec![0.0_f64; n * m];
-    for row in 0..n {
-        q_t_rows[row * m + row] = 1.0;
-    }
-
-    for j in (0..n).rev() {
-        let v = &reflectors[j];
-        let inv = reflector_scales[j];
-        let col_len = m - j;
-        let first_active_row = if inv.is_finite() && v.iter().all(|value| value.is_finite()) {
-            j
-        } else {
-            0
-        };
-        for row in first_active_row..n {
-            let row_offset = row * m;
-            let mut dot = 0.0;
-            for i in 0..col_len {
-                dot += q_t_rows[row_offset + j + i] * v[i];
+    // R⁻¹ (upper triangular) by back-substitution: solve R·Rinv = I.
+    let mut rinv = vec![0.0_f64; n * n];
+    for j in 0..n {
+        rinv[j * n + j] = 1.0 / r[j * n + j];
+        for i in (0..j).rev() {
+            let mut acc = 0.0_f64;
+            for l in (i + 1)..=j {
+                acc += r[i * n + l] * rinv[l * n + j];
             }
-            let f = dot * inv;
-            for i in 0..col_len {
-                q_t_rows[row_offset + j + i] -= f * v[i];
-            }
+            rinv[i * n + j] = -acc / r[i * n + i];
         }
     }
-
+    // pinv = R⁻¹ · Qᵀ  [n×m].
     let mut pinv = vec![0.0_f64; n * m];
-    for i in (0..n).rev() {
-        let row_offset = i * m;
-        pinv[row_offset..row_offset + m].copy_from_slice(&q_t_rows[row_offset..row_offset + m]);
-
-        for jj in (i + 1)..n {
-            let coeff = r[i * n + jj];
-            if coeff == 0.0 {
-                continue;
-            }
-            let solved_offset = jj * m;
-            for c in 0..m {
-                let solved = pinv[solved_offset + c];
-                pinv[row_offset + c] -= coeff * solved;
-            }
-        }
-
-        let inv_diag = 1.0 / diag[i];
-        for c in 0..m {
-            pinv[row_offset + c] *= inv_diag;
-        }
-    }
-
+    gemm::dgemm_bt(n, n, m, &rinv, &q, &mut pinv);
     Some(pinv)
 }
 
