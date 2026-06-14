@@ -2323,7 +2323,7 @@ fn elementwise_broadcast_f64<F>(
     op: F,
 ) -> Result<(Vec<f64>, Vec<usize>), KernelError>
 where
-    F: Fn(f64, f64) -> f64,
+    F: Fn(f64, f64) -> f64 + Sync,
 {
     let out_shape = compute_broadcast_shape(lhs_meta.shape(), rhs_meta.shape())?;
     let out_numel = checked_shape_numel(&out_shape, "broadcast output")?;
@@ -2337,12 +2337,21 @@ where
     let lhs_offset = lhs_meta.storage_offset();
     let rhs_offset = rhs_meta.storage_offset();
 
-    let mut output = Vec::with_capacity(out_numel);
-    for i in 0..out_numel {
+    // Each output element independently unravels its flat index `i` into the two
+    // source indices (per-dim div/mod over both operands) — that index arithmetic,
+    // not the scalar op, dominates the per-element cost, so the broadcast loop is
+    // compute-bound and parallelizes cleanly. Pure indexed map → bit-identical to
+    // the serial loop. frankentorch-kgs4.93.
+    let eval = |i: usize| {
         let lhs_idx = broadcast_idx(i, &out_shape, lhs_meta.shape(), lhs_strides, lhs_offset);
         let rhs_idx = broadcast_idx(i, &out_shape, rhs_meta.shape(), rhs_strides, rhs_offset);
-        output.push(op(lhs[lhs_idx], rhs[rhs_idx]));
-    }
+        op(lhs[lhs_idx], rhs[rhs_idx])
+    };
+    let output: Vec<f64> = if out_numel >= PARALLEL_THRESHOLD {
+        (0..out_numel).into_par_iter().map(eval).collect()
+    } else {
+        (0..out_numel).map(eval).collect()
+    };
 
     Ok((output, out_shape))
 }
