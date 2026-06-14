@@ -7154,9 +7154,22 @@ pub fn outer_tensor_contiguous_f64(
     // hoisting the lhs[i] load outside the inner loop with an
     // rhs slice gives the compiler a known-length iteration to
     // vectorize.
-    let mut out = Vec::with_capacity(out_numel);
     let lhs_slice = &lhs[lhs_start..lhs_start + m];
     let rhs_slice = &rhs[rhs_start..rhs_start + n];
+    // out[i*n + j] = lhs[i] * rhs[j]. Each row is independent and writes a disjoint
+    // chunk, so distribute the rows across the rayon pool (par_chunks_mut → no aliasing).
+    // Bit-identical to the serial fill. frankentorch-kgs4.104.
+    if out_numel >= PARALLEL_THRESHOLD {
+        let mut out = vec![0.0_f64; out_numel];
+        out.par_chunks_mut(n).enumerate().for_each(|(i, row)| {
+            let l = lhs_slice[i];
+            for (slot, &r) in row.iter_mut().zip(rhs_slice.iter()) {
+                *slot = l * r;
+            }
+        });
+        return Ok(out);
+    }
+    let mut out = Vec::with_capacity(out_numel);
     for &l in lhs_slice {
         out.extend(rhs_slice.iter().map(|&r| l * r));
     }
@@ -20212,11 +20225,21 @@ pub fn outer_tensor_contiguous_f32(
     ensure_storage_len_f32(rhs, rhs_meta, "rhs")?;
     let lhs_start = lhs_meta.storage_offset();
     let rhs_start = rhs_meta.storage_offset();
-    // Capacity-alloc + extend instead of zero-init + indexed
-    // overwrite (frankentorch-we9f, f32 mirror of the f64 fix).
-    let mut out = Vec::with_capacity(out_numel);
     let lhs_slice = &lhs[lhs_start..lhs_start + m];
     let rhs_slice = &rhs[rhs_start..rhs_start + n];
+    // Disjoint independent rows → distribute across the rayon pool (par_chunks_mut).
+    // Bit-identical to the serial fill. frankentorch-kgs4.104.
+    if out_numel >= PARALLEL_THRESHOLD {
+        let mut out = vec![0.0_f32; out_numel];
+        out.par_chunks_mut(n).enumerate().for_each(|(i, row)| {
+            let l = lhs_slice[i];
+            for (slot, &r) in row.iter_mut().zip(rhs_slice.iter()) {
+                *slot = l * r;
+            }
+        });
+        return Ok(out);
+    }
+    let mut out = Vec::with_capacity(out_numel);
     for &l in lhs_slice {
         out.extend(rhs_slice.iter().map(|&r| l * r));
     }
