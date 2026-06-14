@@ -4024,12 +4024,12 @@ pub fn dispatch_tensor_topk_contiguous_f64(
 /// it is safe to apply on both the F32 and the F16/BF16 arms.
 fn narrow_f32_to_storage_dtype(orig: &TensorStorage, values: Vec<f32>) -> TensorStorage {
     match orig {
-        TensorStorage::F16(_) => {
-            TensorStorage::F16(Arc::new(values.into_iter().map(Float16::from_f32).collect()))
-        }
-        TensorStorage::BF16(_) => {
-            TensorStorage::BF16(Arc::new(values.into_iter().map(BFloat16::from_f32).collect()))
-        }
+        TensorStorage::F16(_) => TensorStorage::F16(Arc::new(
+            values.into_iter().map(Float16::from_f32).collect(),
+        )),
+        TensorStorage::BF16(_) => TensorStorage::BF16(Arc::new(
+            values.into_iter().map(BFloat16::from_f32).collect(),
+        )),
         _ => TensorStorage::F32(Arc::new(values)),
     }
 }
@@ -4045,6 +4045,19 @@ pub fn dispatch_tensor_unary_contiguous_typed(
         TensorStorage::F64(data) => {
             let outcome =
                 dispatch_tensor_unary_contiguous_f64(op, mode, data, meta, requires_grad)?;
+            Ok(TypedUnaryOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
+        TensorStorage::F64Inline4(data) => {
+            let outcome = dispatch_tensor_unary_contiguous_f64(
+                op,
+                mode,
+                data.as_slice(),
+                meta,
+                requires_grad,
+            )?;
             Ok(TypedUnaryOutcome {
                 storage: TensorStorage::F64(Arc::new(outcome.values)),
                 decision: outcome.decision,
@@ -4114,6 +4127,51 @@ pub fn dispatch_tensor_binary_contiguous_typed(
                 decision: outcome.decision,
             })
         }
+        (TensorStorage::F64Inline4(lhs), TensorStorage::F64(rhs)) => {
+            let outcome = dispatch_tensor_binary_contiguous_f64(
+                op,
+                mode,
+                lhs.as_slice(),
+                rhs,
+                lhs_meta,
+                rhs_meta,
+                requires_grad,
+            )?;
+            Ok(TypedBinaryOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
+        (TensorStorage::F64(lhs), TensorStorage::F64Inline4(rhs)) => {
+            let outcome = dispatch_tensor_binary_contiguous_f64(
+                op,
+                mode,
+                lhs,
+                rhs.as_slice(),
+                lhs_meta,
+                rhs_meta,
+                requires_grad,
+            )?;
+            Ok(TypedBinaryOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
+        (TensorStorage::F64Inline4(lhs), TensorStorage::F64Inline4(rhs)) => {
+            let outcome = dispatch_tensor_binary_contiguous_f64(
+                op,
+                mode,
+                lhs.as_slice(),
+                rhs.as_slice(),
+                lhs_meta,
+                rhs_meta,
+                requires_grad,
+            )?;
+            Ok(TypedBinaryOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
         (TensorStorage::F32(lhs), TensorStorage::F32(rhs)) => {
             let outcome = dispatch_tensor_binary_contiguous_f32(
                 op,
@@ -4147,6 +4205,23 @@ pub fn dispatch_tensor_binary_contiguous_typed(
                 decision: outcome.decision,
             })
         }
+        (TensorStorage::F64Inline4(lhs), TensorStorage::F32(rhs_f32)) => {
+            let rhs: Vec<f64> = rhs_f32.iter().map(|&v| f64::from(v)).collect();
+            let promoted_rhs_meta = rhs_meta.clone().with_dtype(DType::F64);
+            let outcome = dispatch_tensor_binary_contiguous_f64(
+                op,
+                mode,
+                lhs.as_slice(),
+                &rhs,
+                lhs_meta,
+                &promoted_rhs_meta,
+                requires_grad,
+            )?;
+            Ok(TypedBinaryOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
         (TensorStorage::F32(lhs_f32), TensorStorage::F64(rhs)) => {
             let lhs: Vec<f64> = lhs_f32.iter().map(|&v| f64::from(v)).collect();
             let promoted_lhs_meta = lhs_meta.clone().with_dtype(DType::F64);
@@ -4155,6 +4230,23 @@ pub fn dispatch_tensor_binary_contiguous_typed(
                 mode,
                 &lhs,
                 rhs,
+                &promoted_lhs_meta,
+                rhs_meta,
+                requires_grad,
+            )?;
+            Ok(TypedBinaryOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
+        (TensorStorage::F32(lhs_f32), TensorStorage::F64Inline4(rhs)) => {
+            let lhs: Vec<f64> = lhs_f32.iter().map(|&v| f64::from(v)).collect();
+            let promoted_lhs_meta = lhs_meta.clone().with_dtype(DType::F64);
+            let outcome = dispatch_tensor_binary_contiguous_f64(
+                op,
+                mode,
+                &lhs,
+                rhs.as_slice(),
                 &promoted_lhs_meta,
                 rhs_meta,
                 requires_grad,
@@ -4299,6 +4391,7 @@ impl<'a> TryFrom<&'a TensorStorage> for NonComplexTensorStorageRef<'a> {
     fn try_from(storage: &'a TensorStorage) -> Result<Self, Self::Error> {
         match storage {
             TensorStorage::F64(values) => Ok(Self::F64(values.as_slice())),
+            TensorStorage::F64Inline4(values) => Ok(Self::F64(values.as_slice())),
             TensorStorage::F32(values) => Ok(Self::F32(values.as_slice())),
             TensorStorage::F16(values) => Ok(Self::F16(values.as_slice())),
             TensorStorage::BF16(values) => Ok(Self::BF16(values.as_slice())),
@@ -5210,6 +5303,19 @@ pub fn dispatch_tensor_reduction_contiguous_typed(
                 decision: outcome.decision,
             })
         }
+        TensorStorage::F64Inline4(data) => {
+            let outcome = dispatch_tensor_reduction_contiguous_f64(
+                op,
+                mode,
+                data.as_slice(),
+                meta,
+                requires_grad,
+            )?;
+            Ok(TypedReductionOutcome {
+                storage: TensorStorage::F64(Arc::new(vec![outcome.value])),
+                decision: outcome.decision,
+            })
+        }
         TensorStorage::F32(data) => {
             let outcome =
                 dispatch_tensor_reduction_contiguous_f32(op, mode, data, meta, requires_grad)?;
@@ -5262,6 +5368,20 @@ pub fn dispatch_tensor_reduction_dim_contiguous_typed(
                 op,
                 mode,
                 data,
+                meta,
+                dim,
+                requires_grad,
+            )?;
+            Ok(TypedReductionDimOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
+        TensorStorage::F64Inline4(data) => {
+            let outcome = dispatch_tensor_reduction_dim_contiguous_f64(
+                op,
+                mode,
+                data.as_slice(),
                 meta,
                 dim,
                 requires_grad,
@@ -5338,6 +5458,19 @@ pub fn dispatch_tensor_pow_contiguous_typed(
                 decision: outcome.decision,
             })
         }
+        TensorStorage::F64Inline4(data) => {
+            let outcome = dispatch_tensor_pow_contiguous_f64(
+                mode,
+                data.as_slice(),
+                meta,
+                exponent,
+                requires_grad,
+            )?;
+            Ok(TypedPowOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
         TensorStorage::F32(data) => {
             let outcome =
                 dispatch_tensor_pow_contiguous_f32(mode, data, meta, exponent, requires_grad)?;
@@ -5395,6 +5528,20 @@ pub fn dispatch_tensor_clamp_contiguous_typed(
             let outcome = dispatch_tensor_clamp_contiguous_f64(
                 mode,
                 data,
+                meta,
+                min_val,
+                max_val,
+                requires_grad,
+            )?;
+            Ok(TypedClampOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
+        TensorStorage::F64Inline4(data) => {
+            let outcome = dispatch_tensor_clamp_contiguous_f64(
+                mode,
+                data.as_slice(),
                 meta,
                 min_val,
                 max_val,
@@ -5471,6 +5618,14 @@ pub fn dispatch_tensor_norm_contiguous_typed(
                 decision: outcome.decision,
             })
         }
+        TensorStorage::F64Inline4(data) => {
+            let outcome =
+                dispatch_tensor_norm_contiguous_f64(mode, data.as_slice(), meta, p, requires_grad)?;
+            Ok(TypedNormOutcome {
+                storage: TensorStorage::F64(Arc::new(vec![outcome.value])),
+                decision: outcome.decision,
+            })
+        }
         TensorStorage::F32(data) => {
             let outcome = dispatch_tensor_norm_contiguous_f32(mode, data, meta, p, requires_grad)?;
             Ok(TypedNormOutcome {
@@ -5520,6 +5675,20 @@ pub fn dispatch_tensor_norm_dim_contiguous_typed(
         TensorStorage::F64(data) => {
             let outcome =
                 dispatch_tensor_norm_dim_contiguous_f64(mode, data, meta, p, dim, requires_grad)?;
+            Ok(TypedNormDimOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
+        TensorStorage::F64Inline4(data) => {
+            let outcome = dispatch_tensor_norm_dim_contiguous_f64(
+                mode,
+                data.as_slice(),
+                meta,
+                p,
+                dim,
+                requires_grad,
+            )?;
             Ok(TypedNormDimOutcome {
                 storage: TensorStorage::F64(Arc::new(outcome.values)),
                 decision: outcome.decision,
@@ -5587,6 +5756,20 @@ pub fn dispatch_tensor_scan_dim_contiguous_typed(
                 decision: outcome.decision,
             })
         }
+        TensorStorage::F64Inline4(data) => {
+            let outcome = dispatch_tensor_scan_dim_contiguous_f64(
+                op,
+                mode,
+                data.as_slice(),
+                meta,
+                dim,
+                requires_grad,
+            )?;
+            Ok(TypedScanDimOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
         TensorStorage::F32(data) => {
             let outcome =
                 dispatch_tensor_scan_dim_contiguous_f32(op, mode, data, meta, dim, requires_grad)?;
@@ -5641,6 +5824,20 @@ pub fn dispatch_tensor_normalize_dim_contiguous_typed(
                 op,
                 mode,
                 data,
+                meta,
+                dim,
+                requires_grad,
+            )?;
+            Ok(TypedNormalizeDimOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
+        TensorStorage::F64Inline4(data) => {
+            let outcome = dispatch_tensor_normalize_dim_contiguous_f64(
+                op,
+                mode,
+                data.as_slice(),
                 meta,
                 dim,
                 requires_grad,
@@ -5725,6 +5922,21 @@ pub fn dispatch_tensor_sort_contiguous_typed(
                 decision: outcome.decision,
             })
         }
+        TensorStorage::F64Inline4(data) => {
+            let outcome = dispatch_tensor_sort_contiguous_f64(
+                mode,
+                data.as_slice(),
+                meta,
+                dim,
+                descending,
+                requires_grad,
+            )?;
+            Ok(TypedSortOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                indices: outcome.indices,
+                decision: outcome.decision,
+            })
+        }
         TensorStorage::F32(data) => {
             let outcome = dispatch_tensor_sort_contiguous_f32(
                 mode,
@@ -5794,6 +6006,23 @@ pub fn dispatch_tensor_topk_contiguous_typed(
             let outcome = dispatch_tensor_topk_contiguous_f64(
                 mode,
                 data,
+                meta,
+                k,
+                dim,
+                largest,
+                sorted,
+                requires_grad,
+            )?;
+            Ok(TypedTopKOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                indices: outcome.indices,
+                decision: outcome.decision,
+            })
+        }
+        TensorStorage::F64Inline4(data) => {
+            let outcome = dispatch_tensor_topk_contiguous_f64(
+                mode,
+                data.as_slice(),
                 meta,
                 k,
                 dim,
@@ -5956,6 +6185,48 @@ pub fn dispatch_tensor_lerp_contiguous_typed(
                 decision: outcome.decision,
             })
         }
+        (TensorStorage::F64Inline4(start), TensorStorage::F64(end)) => {
+            let outcome = dispatch_tensor_lerp_contiguous_f64(
+                mode,
+                start.as_slice(),
+                end,
+                weight,
+                meta,
+                requires_grad,
+            )?;
+            Ok(TypedLerpOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
+        (TensorStorage::F64(start), TensorStorage::F64Inline4(end)) => {
+            let outcome = dispatch_tensor_lerp_contiguous_f64(
+                mode,
+                start,
+                end.as_slice(),
+                weight,
+                meta,
+                requires_grad,
+            )?;
+            Ok(TypedLerpOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
+        (TensorStorage::F64Inline4(start), TensorStorage::F64Inline4(end)) => {
+            let outcome = dispatch_tensor_lerp_contiguous_f64(
+                mode,
+                start.as_slice(),
+                end.as_slice(),
+                weight,
+                meta,
+                requires_grad,
+            )?;
+            Ok(TypedLerpOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
         (TensorStorage::F32(start), TensorStorage::F32(end)) => {
             let outcome =
                 dispatch_tensor_lerp_contiguous_f32(mode, start, end, weight, meta, requires_grad)?;
@@ -5982,12 +6253,42 @@ pub fn dispatch_tensor_lerp_contiguous_typed(
                 decision: outcome.decision,
             })
         }
+        (TensorStorage::F64Inline4(start), TensorStorage::F32(end_f32)) => {
+            let end: Vec<f64> = end_f32.iter().map(|&v| f64::from(v)).collect();
+            let outcome = dispatch_tensor_lerp_contiguous_f64(
+                mode,
+                start.as_slice(),
+                &end,
+                weight,
+                meta,
+                requires_grad,
+            )?;
+            Ok(TypedLerpOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
         (TensorStorage::F32(start_f32), TensorStorage::F64(end)) => {
             let start: Vec<f64> = start_f32.iter().map(|&v| f64::from(v)).collect();
             let outcome = dispatch_tensor_lerp_contiguous_f64(
                 mode,
                 &start,
                 end,
+                weight,
+                meta,
+                requires_grad,
+            )?;
+            Ok(TypedLerpOutcome {
+                storage: TensorStorage::F64(Arc::new(outcome.values)),
+                decision: outcome.decision,
+            })
+        }
+        (TensorStorage::F32(start_f32), TensorStorage::F64Inline4(end)) => {
+            let start: Vec<f64> = start_f32.iter().map(|&v| f64::from(v)).collect();
+            let outcome = dispatch_tensor_lerp_contiguous_f64(
+                mode,
+                &start,
+                end.as_slice(),
                 weight,
                 meta,
                 requires_grad,

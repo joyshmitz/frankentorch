@@ -4719,6 +4719,9 @@ impl TensorTape {
                 TensorStorage::F64(values) => TensorStorage::F64(Arc::new(
                     values.iter().map(|&value| value * scalar).collect(),
                 )),
+                TensorStorage::F64Inline4(values) => TensorStorage::F64(Arc::new(
+                    values.iter().map(|&value| value * scalar).collect(),
+                )),
                 TensorStorage::F32(values) => {
                     // Preserve f32 dtype (torch: `f32_tensor * scalar` stays f32).
                     // Previously upcast to F64 — a silent parity bug that made f32
@@ -9597,6 +9600,11 @@ impl TensorTape {
                 meta.shape(),
                 perm,
             )?)),
+            TensorStorage::F64Inline4(values) => TensorStorage::F64(Arc::new(Self::permute_slice(
+                Self::checked_storage_slice(values.as_slice(), start, end)?,
+                meta.shape(),
+                perm,
+            )?)),
             TensorStorage::F16(values) => TensorStorage::F16(Arc::new(Self::permute_slice(
                 Self::checked_storage_slice(values, start, end)?,
                 meta.shape(),
@@ -9781,6 +9789,11 @@ impl TensorTape {
             )?)),
             TensorStorage::F64(values) => TensorStorage::F64(Arc::new(Self::map_slice(
                 values,
+                output_len,
+                &mut src_index_for_output,
+            )?)),
+            TensorStorage::F64Inline4(values) => TensorStorage::F64(Arc::new(Self::map_slice(
+                values.as_slice(),
                 output_len,
                 &mut src_index_for_output,
             )?)),
@@ -18047,6 +18060,9 @@ impl TensorTape {
             TensorStorage::F64(values) => {
                 TensorStorage::F64(Arc::new(Self::flip_slice(values, shape, dims)?))
             }
+            TensorStorage::F64Inline4(values) => {
+                TensorStorage::F64(Arc::new(Self::flip_slice(values.as_slice(), shape, dims)?))
+            }
             TensorStorage::F16(values) => {
                 TensorStorage::F16(Arc::new(Self::flip_slice(values, shape, dims)?))
             }
@@ -18127,6 +18143,12 @@ impl TensorTape {
             )?)),
             TensorStorage::F64(values) => TensorStorage::F64(Arc::new(Self::repeat_slice(
                 values,
+                repeat_shape,
+                repeats,
+                output_shape,
+            )?)),
+            TensorStorage::F64Inline4(values) => TensorStorage::F64(Arc::new(Self::repeat_slice(
+                values.as_slice(),
                 repeat_shape,
                 repeats,
                 output_shape,
@@ -18217,6 +18239,12 @@ impl TensorTape {
             TensorStorage::F64(values) => {
                 TensorStorage::F64(Arc::new(Self::roll_slice(values, shape, shift, dim)?))
             }
+            TensorStorage::F64Inline4(values) => TensorStorage::F64(Arc::new(Self::roll_slice(
+                values.as_slice(),
+                shape,
+                shift,
+                dim,
+            )?)),
             TensorStorage::F16(values) => {
                 TensorStorage::F16(Arc::new(Self::roll_slice(values, shape, shift, dim)?))
             }
@@ -18336,6 +18364,13 @@ impl TensorTape {
             )?)),
             TensorStorage::F64(values) => TensorStorage::F64(Arc::new(Self::pad_slice(
                 values, shape, out_shape, pad_before, value,
+            )?)),
+            TensorStorage::F64Inline4(values) => TensorStorage::F64(Arc::new(Self::pad_slice(
+                values.as_slice(),
+                shape,
+                out_shape,
+                pad_before,
+                value,
             )?)),
             TensorStorage::F16(values) => TensorStorage::F16(Arc::new(Self::pad_slice(
                 values,
@@ -18498,6 +18533,14 @@ impl TensorTape {
                 start,
                 length,
             ))),
+            TensorStorage::F64Inline4(values) => TensorStorage::F64(Arc::new(Self::narrow_slice(
+                Self::checked_storage_slice(values.as_slice(), storage_start, storage_end)?,
+                outer_size,
+                inner_size,
+                dim_size,
+                start,
+                length,
+            ))),
             TensorStorage::F16(values) => TensorStorage::F16(Arc::new(Self::narrow_slice(
                 Self::checked_storage_slice(values, storage_start, storage_end)?,
                 outer_size,
@@ -18564,6 +18607,9 @@ impl TensorTape {
             ))),
             TensorStorage::F64(values) => Ok(TensorStorage::F64(Arc::new(
                 Self::checked_storage_slice(values, start, end)?.to_vec(),
+            ))),
+            TensorStorage::F64Inline4(values) => Ok(TensorStorage::F64(Arc::new(
+                Self::checked_storage_slice(values.as_slice(), start, end)?.to_vec(),
             ))),
             TensorStorage::F16(values) => Ok(TensorStorage::F16(Arc::new(
                 Self::checked_storage_slice(values, start, end)?.to_vec(),
