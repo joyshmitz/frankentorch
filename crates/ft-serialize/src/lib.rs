@@ -234,13 +234,23 @@ pub fn generate_raptorq_sidecar(
         .iter()
         .map(|symbol| ReceivedSymbol::source(symbol.esi, symbol.data.clone()))
         .collect();
-    let repair_received: Vec<ReceivedSymbol> = repair
-        .iter()
-        .map(|symbol| {
-            let (columns, coefficients) = decoder.repair_equation(symbol.esi);
-            ReceivedSymbol::repair(symbol.esi, columns, coefficients, symbol.data.clone())
-        })
-        .collect();
+    let mut repair_received = Vec::with_capacity(repair.len());
+    for symbol in &repair {
+        let (columns, coefficients) = decoder.repair_equation(symbol.esi).map_err(|error| {
+            SerializeError::RaptorQFailure {
+                reason: format!(
+                    "failed to derive repair equation for repair esi {}: {error:?}",
+                    symbol.esi
+                ),
+            }
+        })?;
+        repair_received.push(ReceivedSymbol::repair(
+            symbol.esi,
+            columns,
+            coefficients,
+            symbol.data.clone(),
+        ));
+    }
 
     let payload_hash = hash_bytes(payload_bytes);
     let object_id = ObjectId::new(0x4654_5f43_4b50_545f, 0x4455_5241_4249_4c45);
@@ -326,7 +336,9 @@ pub fn generate_raptorq_sidecar(
         });
     }
 
-    let proof_hash = decoded.proof.content_hash();
+    let proof_hash_full = decoded.proof.content_hash();
+    let [b0, b1, b2, b3, b4, b5, b6, b7, ..] = *proof_hash_full.as_bytes();
+    let proof_hash = u64::from_le_bytes([b0, b1, b2, b3, b4, b5, b6, b7]);
 
     let sidecar = RaptorQSidecar {
         schema_version: RAPTORQ_SIDECAR_SCHEMA_VERSION,
