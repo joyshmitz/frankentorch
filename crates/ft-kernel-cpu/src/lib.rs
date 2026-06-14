@@ -14214,6 +14214,95 @@ pub fn lu_backward_f64(lu: &[f64], perm: &[usize], grad_lu: &[f64], n: usize) ->
     grad_a
 }
 
+/// Reverse-mode VJP of `lu_solve` (A·X = B with packed LU = unit-lower L + upper U,
+/// `perm[i]` = original A row → B row i): returns `(grad_lu_packed, grad_B)` from the
+/// solution cotangent `grad_x` (n×m). Solves Aᵀ·grad_B = grad_X per RHS column
+/// (scalar triangular solves), then forms grad_A = −grad_B·Xᵀ and the packed
+/// grad_LU = stril(Pᵀgrad_A·Uᵀ) + triu(Lᵀ·Pᵀgrad_A) via the parallel cache-blocked
+/// GEMM (BLAS-3). TOLERANCE (gradients are tolerance-parity, finite-difference
+/// validated). frankentorch-kgs4.80.
+#[allow(clippy::needless_range_loop)] // perm-indexed scatter loops
+pub fn lu_solve_backward_f64(
+    lu: &[f64],
+    perm: &[usize],
+    x: &[f64],
+    grad_x: &[f64],
+    n: usize,
+    m: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let mut l = vec![0.0f64; n * n];
+    let mut u = vec![0.0f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            if j < i {
+                l[i * n + j] = lu[i * n + j];
+            } else {
+                u[i * n + j] = lu[i * n + j];
+                if j == i {
+                    l[i * n + j] = 1.0;
+                }
+            }
+        }
+    }
+    // grad_B: solve Aᵀ·grad_B = grad_X column by column (Uᵀ fwd, Lᵀ back, then P).
+    let mut grad_b = vec![0.0f64; n * m];
+    let mut v = vec![0.0f64; n];
+    let mut w = vec![0.0f64; n];
+    for c in 0..m {
+        for i in 0..n {
+            let mut s = grad_x[i * m + c];
+            for k in 0..i {
+                s -= u[k * n + i] * v[k];
+            }
+            v[i] = s / u[i * n + i];
+        }
+        for i in (0..n).rev() {
+            let mut s = v[i];
+            for k in (i + 1)..n {
+                s -= l[k * n + i] * w[k];
+            }
+            w[i] = s;
+        }
+        for i in 0..n {
+            grad_b[perm[i] * m + c] = w[i];
+        }
+    }
+    // grad_A = −grad_B·Xᵀ.
+    let mut grad_a = vec![0.0f64; n * n];
+    gemm::dgemm_bt(n, m, n, &grad_b, x, &mut grad_a);
+    for v in grad_a.iter_mut() {
+        *v = -*v;
+    }
+    // Pᵀ·grad_A: row i ← grad_A row perm[i].
+    let mut pt = vec![0.0f64; n * n];
+    for i in 0..n {
+        let src = perm[i] * n;
+        pt[i * n..i * n + n].copy_from_slice(&grad_a[src..src + n]);
+    }
+    // packed grad_LU: stril(Pᵀgrad_A·Uᵀ) + triu(Lᵀ·Pᵀgrad_A).
+    let mut ptut = vec![0.0f64; n * n];
+    gemm::dgemm_bt(n, n, n, &pt, &u, &mut ptut); // Pᵀgrad_A · Uᵀ
+    let mut lt = vec![0.0f64; n * n];
+    for k in 0..n {
+        for i in 0..n {
+            lt[i * n + k] = l[k * n + i];
+        }
+    }
+    let mut ltpt = vec![0.0f64; n * n];
+    gemm::dgemm(n, n, n, &lt, &pt, &mut ltpt); // Lᵀ · Pᵀgrad_A
+    let mut packed = vec![0.0f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            packed[i * n + j] = if j < i {
+                ptut[i * n + j]
+            } else {
+                ltpt[i * n + j]
+            };
+        }
+    }
+    (packed, grad_b)
+}
+
 /// Compute just the eigenvalues of a symmetric matrix (sorted ascending).
 pub fn eigvalsh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
