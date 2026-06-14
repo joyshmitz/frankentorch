@@ -13927,6 +13927,76 @@ pub fn eigh_eigenvector_vjp_f64(v: &[f64], w: &[f64], grad_v: &[f64], n: usize) 
     grad_a
 }
 
+/// Reverse-mode VJP of the reduced tall/square SVD (m≥n, distinct positive S) from
+/// the output cotangents (`gu`, `gs`, `gv`). `u` is m×k, `s` is [k], `vh` is k×n.
+/// Routes every matmul (Uᵀ·gU, Vh·gV, U·M, ·Vᵀ, the (I−UUᵀ) projection) through the
+/// parallel cache-blocked GEMM (BLAS-3) instead of scalar O(m·k·{k,n}) loops;
+/// TOLERANCE (gradients are tolerance-parity, finite-difference validated).
+/// frankentorch-kgs4.76.
+#[allow(clippy::too_many_arguments)]
+pub fn svd_backward_tall_f64(
+    u: &[f64],
+    s: &[f64],
+    vh: &[f64],
+    gu: &[f64],
+    gs: &[f64],
+    gv: &[f64],
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Vec<f64> {
+    // Uᵀ (k×m), reused for the two Uᵀ·X products.
+    let mut ut = vec![0.0f64; k * m];
+    for p in 0..m {
+        for i in 0..k {
+            ut[i * m + p] = u[p * k + i];
+        }
+    }
+    // a = Uᵀ·gU, b = Vh·gV  (both k×k).
+    let mut a = vec![0.0f64; k * k];
+    gemm::dgemm(k, m, k, &ut, gu, &mut a);
+    let mut bmat = vec![0.0f64; k * k];
+    gemm::dgemm(k, n, k, vh, gv, &mut bmat);
+    // M (k×k) — the antisymmetric/diagonal combination, scalar O(k²).
+    let mut mmat = vec![0.0f64; k * k];
+    for i in 0..k {
+        for j in 0..k {
+            if i == j {
+                mmat[i * k + j] = gs[i];
+            } else {
+                let num = s[j] * (a[i * k + j] - a[j * k + i])
+                    + s[i] * (bmat[i * k + j] - bmat[j * k + i]);
+                mmat[i * k + j] = num / (s[j] * s[j] - s[i] * s[i]);
+            }
+        }
+    }
+    // term1 = U·M·Vh.
+    let mut um = vec![0.0f64; m * k];
+    gemm::dgemm(m, k, k, u, &mmat, &mut um);
+    let mut grad_a = vec![0.0f64; m * n];
+    gemm::dgemm(m, k, n, &um, vh, &mut grad_a);
+    // Projection term: grad_A += (I − U Uᵀ)·(gU diag(1/S))·Vh.
+    let mut w = vec![0.0f64; m * k];
+    for p in 0..m {
+        for j in 0..k {
+            w[p * k + j] = gu[p * k + j] / s[j];
+        }
+    }
+    let mut utw = vec![0.0f64; k * k];
+    gemm::dgemm(k, m, k, &ut, &w, &mut utw);
+    let mut uutw = vec![0.0f64; m * k];
+    gemm::dgemm(m, k, k, u, &utw, &mut uutw);
+    for idx in 0..m * k {
+        w[idx] -= uutw[idx]; // w now holds projW = W − U(UᵀW)
+    }
+    let mut proj_vh = vec![0.0f64; m * n];
+    gemm::dgemm(m, k, n, &w, vh, &mut proj_vh);
+    for idx in 0..m * n {
+        grad_a[idx] += proj_vh[idx];
+    }
+    grad_a
+}
+
 /// Compute just the eigenvalues of a symmetric matrix (sorted ascending).
 pub fn eigvalsh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
