@@ -8438,25 +8438,28 @@ pub fn expand_tensor_contiguous_f64(
 
     let input_strides = broadcast_strides(shape, target_shape, "expand input strides overflow")?;
     let offset = meta.storage_offset();
-    let mut output = Vec::with_capacity(out_numel);
-    let mut coords = vec![0usize; ndim];
 
-    for _ in 0..out_numel {
+    // Row-major output strides so each flat index `i` unravels its coords
+    // independently (no sequential coords state) → the gather parallelizes. The
+    // per-element div/mod index math dominates the single read, so it scales like
+    // the broadcast path. Index order preserved → bit-identical. frankentorch-kgs4.94.
+    let mut out_strides = vec![1usize; ndim];
+    for d in (0..ndim.saturating_sub(1)).rev() {
+        out_strides[d] = out_strides[d + 1] * target_shape[d + 1];
+    }
+    let eval = |i: usize| {
         let mut idx = offset;
         for d in 0..ndim {
-            idx += coords[d] * input_strides[d];
+            let c = (i / out_strides[d]) % target_shape[d];
+            idx += c * input_strides[d];
         }
-        output.push(input[idx]);
-
-        // Increment coordinates (row-major order)
-        for d in (0..ndim).rev() {
-            coords[d] += 1;
-            if coords[d] < target_shape[d] {
-                break;
-            }
-            coords[d] = 0;
-        }
-    }
+        input[idx]
+    };
+    let output: Vec<f64> = if out_numel >= PARALLEL_THRESHOLD {
+        (0..out_numel).into_par_iter().map(eval).collect()
+    } else {
+        (0..out_numel).map(eval).collect()
+    };
 
     Ok(output)
 }
@@ -21035,22 +21038,26 @@ pub fn expand_tensor_contiguous_f32(
     }
     let input_strides = broadcast_strides(shape, target_shape, "expand_f32 strides overflow")?;
     let offset = meta.storage_offset();
-    let mut output = Vec::with_capacity(out_numel);
-    let mut coords = vec![0usize; ndim];
-    for _ in 0..out_numel {
+    // Per-flat-index unravel so the gather parallelizes (the per-element div/mod
+    // index math dominates the single read). Index order preserved → bit-identical
+    // to the serial coords sweep. frankentorch-kgs4.94.
+    let mut out_strides = vec![1usize; ndim];
+    for d in (0..ndim.saturating_sub(1)).rev() {
+        out_strides[d] = out_strides[d + 1] * target_shape[d + 1];
+    }
+    let eval = |i: usize| {
         let mut idx = offset;
         for d in 0..ndim {
-            idx += coords[d] * input_strides[d];
+            let c = (i / out_strides[d]) % target_shape[d];
+            idx += c * input_strides[d];
         }
-        output.push(input[idx]);
-        for d in (0..ndim).rev() {
-            coords[d] += 1;
-            if coords[d] < target_shape[d] {
-                break;
-            }
-            coords[d] = 0;
-        }
-    }
+        input[idx]
+    };
+    let output: Vec<f32> = if out_numel >= PARALLEL_THRESHOLD {
+        (0..out_numel).into_par_iter().map(eval).collect()
+    } else {
+        (0..out_numel).map(eval).collect()
+    };
     Ok(output)
 }
 
