@@ -13869,6 +13869,64 @@ pub fn eigh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EighResult
     })
 }
 
+/// VJP of the symmetric-eig EIGENVALUES wrt the input: `grad_A = V·diag(grad_l)·Vᵀ`
+/// (already symmetric). `v` is the n×n eigenvector matrix (eigenvectors in columns),
+/// `grad_l` the [n] eigenvalue cotangents. Computed as `(V⊙grad_l)·Vᵀ` through the
+/// parallel cache-blocked GEMM (BLAS-3) instead of a scalar O(n³) triple loop; the
+/// k-sum reassociates so it matches the scalar form to TOLERANCE (gradients are
+/// tolerance-parity, validated by finite-difference tests). frankentorch-kgs4.75.
+pub fn eigh_eigenvalue_vjp_f64(v: &[f64], grad_l: &[f64], n: usize) -> Vec<f64> {
+    let mut w = vec![0.0f64; n * n];
+    for i in 0..n {
+        let row = i * n;
+        for k in 0..n {
+            w[row + k] = v[row + k] * grad_l[k];
+        }
+    }
+    let mut grad_a = vec![0.0f64; n * n];
+    gemm::dgemm_bt(n, n, n, &w, v, &mut grad_a); // (V⊙grad_l) · Vᵀ
+    grad_a
+}
+
+/// VJP of the symmetric-eig EIGENVECTORS wrt the input:
+/// `grad_A = sym(V·(F∘(Vᵀ·grad_V))·Vᵀ)` with `F[a][b]=1/(w[b]-w[a])` for `a≠b` else 0.
+/// The three matmuls run through the parallel cache-blocked GEMM (BLAS-3) instead of
+/// scalar O(n³) loops; TOLERANCE (finite-difference validated). frankentorch-kgs4.75.
+pub fn eigh_eigenvector_vjp_f64(v: &[f64], w: &[f64], grad_v: &[f64], n: usize) -> Vec<f64> {
+    // M = Vᵀ · grad_V.
+    let mut vt = vec![0.0f64; n * n];
+    for i in 0..n {
+        let row = i * n;
+        for a in 0..n {
+            vt[a * n + i] = v[row + a];
+        }
+    }
+    let mut m = vec![0.0f64; n * n];
+    gemm::dgemm(n, n, n, &vt, grad_v, &mut m);
+    // P = F ∘ M.
+    let mut p = vec![0.0f64; n * n];
+    for a in 0..n {
+        for b in 0..n {
+            if a != b {
+                p[a * n + b] = m[a * n + b] / (w[b] - w[a]);
+            }
+        }
+    }
+    // T = V · P, then result = T · Vᵀ.
+    let mut t = vec![0.0f64; n * n];
+    gemm::dgemm(n, n, n, v, &p, &mut t);
+    let mut result = vec![0.0f64; n * n];
+    gemm::dgemm_bt(n, n, n, &t, v, &mut result);
+    // Symmetrize.
+    let mut grad_a = vec![0.0f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            grad_a[i * n + j] = 0.5 * (result[i * n + j] + result[j * n + i]);
+        }
+    }
+    grad_a
+}
+
 /// Compute just the eigenvalues of a symmetric matrix (sorted ascending).
 pub fn eigvalsh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
