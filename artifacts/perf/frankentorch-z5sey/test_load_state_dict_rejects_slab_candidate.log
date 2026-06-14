@@ -1,0 +1,478 @@
+  [2m2026-06-14T05:15:19.866869Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSelected worker: vmi1149989 at root@212.90.121.76 (7 slots remaining after reservation, speed 50.0)[0m
+    [2;3mat[0m rch/src/hook.rs:514 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:20.185034Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mStarting remote compilation pipeline for frankentorch (hash: 3d6dc0f5ca5d2899)[0m
+    [2;3mat[0m rch/src/hook.rs:5994 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:20.185102Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mPrepared dependency sync manifest for 13 roots[0m
+    [2;3mat[0m rch/src/hook.rs:6016 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:22.328092Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSyncing project to worker vmi1149989...[0m
+    [2;3mat[0m rch/src/hook.rs:6046 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:22.328151Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch -> /data/projects/frankentorch on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:33.187497Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 10859ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:33.187563Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-api -> /data/projects/frankentorch/crates/ft-api on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:35.447392Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2259ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:35.447459Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-autograd -> /data/projects/frankentorch/crates/ft-autograd on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:37.829102Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2381ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:37.829171Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-conformance -> /data/projects/frankentorch/crates/ft-conformance on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:40.170310Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2341ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:40.170388Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-core -> /data/projects/frankentorch/crates/ft-core on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:42.635909Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2465ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:42.635993Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-data -> /data/projects/frankentorch/crates/ft-data on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:44.828367Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2192ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:44.828441Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-device -> /data/projects/frankentorch/crates/ft-device on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:47.050239Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2221ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:47.050304Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-dispatch -> /data/projects/frankentorch/crates/ft-dispatch on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:49.341299Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2290ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:49.341372Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-kernel-cpu -> /data/projects/frankentorch/crates/ft-kernel-cpu on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:51.627341Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2285ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:51.627431Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-nn -> /data/projects/frankentorch/crates/ft-nn on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:53.729927Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2102ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:53.730014Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-optim -> /data/projects/frankentorch/crates/ft-optim on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:56.233233Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2503ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:56.233330Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-runtime -> /data/projects/frankentorch/crates/ft-runtime on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:58.646717Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2413ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:15:58.646863Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-serialize -> /data/projects/frankentorch/crates/ft-serialize on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1434 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:16:01.045837Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2398ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1503 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:16:01.045880Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSync complete: 51987 files, 1858935 bytes in 38709ms[0m
+    [2;3mat[0m rch/src/hook.rs:6209 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:16:07.897834Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mExecuting command remotely: cargo test -j 1 -p ft-serialize load_state_dict_rejects -- --nocapture[0m
+    [2;3mat[0m rch/src/hook.rs:6252 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-14T05:16:07.897880Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRewriting CARGO_TARGET_DIR for remote execution (worker-scoped path): /data/tmp/cargo-target -> /data/projects/frankentorch/.rch-target-vmi1149989-job-29884606035530887-1781414122328085074-0[0m
+    [2;3mat[0m rch/src/transfer.rs:712 [2;3mon[0m ThreadId(1)
+
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded aead v0.5.2
+  Downloaded opaque-debug v0.3.1
+  Downloaded once_cell v1.21.4
+  Downloaded allocator-api2 v0.2.21
+  Downloaded anes v0.1.6
+  Downloaded parking_lot v0.12.5
+  Downloaded plotters-svg v0.3.7
+  Downloaded rand_chacha v0.3.1
+  Downloaded bincode_derive-next v2.1.0
+  Downloaded cfg_aliases v0.2.1
+  Downloaded ciborium-ll v0.2.2
+  Downloaded bit-set v0.8.0
+  Downloaded clap_lex v1.1.0
+  Downloaded quick-error v1.2.3
+  Downloaded itoa v1.0.18
+  Downloaded generic-array v0.14.7
+  Downloaded plotters-backend v0.3.7
+  Downloaded crypto-common v0.2.1
+  Downloaded curve25519-dalek-derive v0.1.1
+  Downloaded futures-io v0.3.32
+  Downloaded lazy_static v1.5.0
+  Downloaded cpufeatures v0.3.0
+  Downloaded crypto-common v0.1.7
+  Downloaded futures-core v0.3.32
+  Downloaded cfg-if v1.0.4
+  Downloaded equivalent v1.0.2
+  Downloaded errno v0.3.14
+  Downloaded parking v2.2.1
+  Downloaded rand_xorshift v0.4.0
+  Downloaded oorandom v11.1.5
+  Downloaded rand_chacha v0.9.0
+  Downloaded rand_core v0.6.4
+  Downloaded quote v1.0.45
+  Downloaded hex v0.4.3
+  Downloaded memoffset v0.9.1
+  Downloaded block-buffer v0.10.4
+  Downloaded cast v0.3.0
+  Downloaded ciborium-io v0.2.2
+  Downloaded franken-kernel v0.3.4
+  Downloaded block-buffer v0.12.0
+  Downloaded cpufeatures v0.2.17
+  Downloaded fnv v1.0.7
+  Downloaded is-terminal v0.4.17
+  Downloaded rand_core v0.9.5
+  Downloaded scopeguard v1.2.0
+  Downloaded visibility v0.1.1
+  Downloaded zeroize_derive v1.4.3
+  Downloaded inout v0.1.4
+  Downloaded unty-next v0.1.1
+  Downloaded rustc_version v0.4.1
+  Downloaded signature v2.2.0
+  Downloaded autocfg v1.5.0
+  Downloaded crossbeam-queue v0.3.12
+  Downloaded bit-vec v0.8.0
+  Downloaded cipher v0.4.4
+  Downloaded cmov v0.5.3
+  Downloaded ghash v0.5.1
+  Downloaded nkeys v0.4.5
+  Downloaded digest v0.10.7
+  Downloaded ctutils v0.4.2
+  Downloaded ed25519 v2.2.3
+  Downloaded crossbeam-deque v0.8.6
+  Downloaded ctr v0.9.2
+  Downloaded either v1.15.0
+  Downloaded fastrand v2.4.1
+  Downloaded data-encoding v2.11.0
+  Downloaded same-file v1.0.6
+  Downloaded version_check v0.9.5
+  Downloaded franken-evidence v0.3.4
+  Downloaded num-complex v0.4.6
+  Downloaded subtle v2.6.1
+  Downloaded base64ct v1.8.3
+  Downloaded chacha20 v0.9.1
+  Downloaded criterion-plot v0.5.0
+  Downloaded foldhash v0.2.0
+  Downloaded universal-hash v0.5.1
+  Downloaded wait-timeout v0.2.1
+  Downloaded pin-project-internal v1.1.11
+  Downloaded bytemuck_derive v1.10.2
+  Downloaded prost-derive v0.14.4
+  Downloaded digest v0.11.2
+  Downloaded pkcs8 v0.10.2
+  Downloaded polyval v0.6.2
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded prost v0.14.4
+  Downloaded rusty-fork v0.3.1
+  Downloaded sha1 v0.11.0
+  Downloaded tinytemplate v1.2.1
+  Downloaded poly1305 v0.8.0
+  Downloaded signal-hook-registry v1.4.8
+  Downloaded spki v0.7.3
+  Downloaded thiserror-impl v2.0.18
+  Downloaded sha2 v0.10.9
+  Downloaded slab v0.4.12
+  Downloaded thiserror v2.0.18
+  Downloaded thread_local v1.1.9
+  Downloaded unarray v0.1.4
+  Downloaded lock_api v0.4.14
+  Downloaded walkdir v2.5.0
+  Downloaded zeroize v1.8.2
+  Downloaded zmij v1.0.21
+  Downloaded franken-decision v0.3.4
+  Downloaded bitflags v2.11.1
+  Downloaded ciborium v0.2.2
+  Downloaded console v0.16.3
+  Downloaded const-oid v0.9.6
+  Downloaded hybrid-array v0.4.10
+  Downloaded anstyle v1.0.14
+  Downloaded crc32fast v1.5.0
+  Downloaded getrandom v0.2.17
+  Downloaded hmac v0.12.1
+  Downloaded parking_lot_core v0.9.12
+  Downloaded pem-rfc7468 v0.7.0
+  Downloaded crossbeam-epoch v0.9.18
+  Downloaded rmp v0.8.15
+  Downloaded signal-hook v0.4.4
+  Downloaded aes-gcm v0.10.3
+  Downloaded anyhow v1.0.102
+  Downloaded rmp-serde v1.3.1
+  Downloaded semver v1.0.28
+  Downloaded tracing-attributes v0.1.31
+  Downloaded safetensors v0.7.0
+  Downloaded hmac v0.13.0
+  Downloaded sha2 v0.11.0
+  Downloaded futures-lite v2.6.1
+  Downloaded tempfile v3.27.0
+  Downloaded tracing-log v0.2.0
+  Downloaded proc-macro2 v1.0.106
+  Downloaded num-traits v0.2.19
+  Downloaded pin-project v1.1.11
+  Downloaded pin-project-lite v0.2.17
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded nu-ansi-term v0.50.3
+  Downloaded polling v3.11.0
+  Downloaded sharded-slab v0.1.7
+  Downloaded smallvec v1.15.1
+  Downloaded tracing-core v0.1.36
+  Downloaded virtue-next v0.1.3
+  Downloaded serde_derive v1.0.228
+  Downloaded similar v2.7.0
+  Downloaded socket2 v0.6.3
+  Downloaded unicode-ident v1.0.24
+  Downloaded getrandom v0.3.4
+  Downloaded getrandom v0.4.2
+  Downloaded serde_core v1.0.228
+  Downloaded bytemuck v1.25.0
+  Downloaded log v0.4.29
+  Downloaded rand v0.8.6
+  Downloaded rayon-core v1.13.0
+  Downloaded serde v1.0.228
+  Downloaded clap v4.6.1
+  Downloaded chacha20poly1305 v0.10.1
+  Downloaded rand v0.9.4
+  Downloaded const-oid v0.10.2
+  Downloaded half v2.7.1
+  Downloaded zerocopy-derive v0.8.48
+  Downloaded bytes v1.11.1
+  Downloaded typenum v1.20.0
+  Downloaded aes v0.8.4
+  Downloaded signatory v0.27.1
+  Downloaded base64 v0.22.1
+  Downloaded bincode-next v2.1.0
+  Downloaded der v0.7.10
+  Downloaded plotters v0.3.7
+  Downloaded ed25519-dalek v2.2.0
+  Downloaded serde_json v1.0.149
+  Downloaded itertools v0.10.5
+  Downloaded criterion v0.5.1
+  Downloaded insta v1.47.2
+  Downloaded memchr v2.8.0
+  Downloaded regex v1.12.3
+  Downloaded rayon v1.12.0
+  Downloaded aho-corasick v1.1.4
+  Downloaded sysinfo v0.33.1
+  Downloaded hashbrown v0.16.1
+  Downloaded proptest v1.11.0
+  Downloaded tracing-subscriber v0.3.23
+  Downloaded clap_builder v4.6.0
+  Downloaded hashbrown v0.17.0
+  Downloaded hkdf v0.12.4
+  Downloaded syn v2.0.117
+  Downloaded zerocopy v0.8.48
+  Downloaded regex-syntax v0.8.10
+  Downloaded rustix v1.1.4
+  Downloaded tracing v0.1.44
+  Downloaded regex-automata v0.4.14
+  Downloaded curve25519-dalek v4.1.3
+  Downloaded nix v0.31.2
+  Downloaded libc v0.2.185
+  Downloaded linux-raw-sys v0.12.1
+  Downloaded asupersync v0.3.4
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling cfg-if v1.0.4
+   Compiling libc v0.2.185
+   Compiling syn v2.0.117
+   Compiling typenum v1.20.0
+   Compiling version_check v0.9.5
+   Compiling generic-array v0.14.7
+   Compiling getrandom v0.2.17
+   Compiling rand_core v0.6.4
+   Compiling crypto-common v0.1.7
+   Compiling subtle v2.6.1
+   Compiling serde_core v1.0.228
+   Compiling autocfg v1.5.0
+   Compiling zerocopy v0.8.48
+   Compiling zerocopy-derive v0.8.48
+   Compiling zeroize_derive v1.4.3
+   Compiling zeroize v1.8.2
+   Compiling cpufeatures v0.2.17
+   Compiling serde v1.0.228
+   Compiling block-buffer v0.10.4
+   Compiling serde_derive v1.0.228
+   Compiling getrandom v0.3.4
+   Compiling digest v0.10.7
+   Compiling num-traits v0.2.19
+   Compiling crossbeam-utils v0.8.21
+   Compiling once_cell v1.21.4
+   Compiling zmij v1.0.21
+   Compiling memchr v2.8.0
+   Compiling rustix v1.1.4
+   Compiling either v1.15.0
+   Compiling serde_json v1.0.149
+   Compiling bitflags v2.11.1
+   Compiling inout v0.1.4
+   Compiling hybrid-array v0.4.10
+   Compiling linux-raw-sys v0.12.1
+   Compiling base64ct v1.8.3
+   Compiling semver v1.0.28
+   Compiling itoa v1.0.18
+   Compiling rustc_version v0.4.1
+   Compiling pem-rfc7468 v0.7.0
+   Compiling cipher v0.4.4
+   Compiling crossbeam-epoch v0.9.18
+   Compiling ppv-lite86 v0.2.21
+   Compiling universal-hash v0.5.1
+   Compiling bytemuck_derive v1.10.2
+   Compiling fastrand v2.4.1
+   Compiling cmov v0.5.3
+   Compiling rayon-core v1.13.0
+   Compiling opaque-debug v0.3.1
+   Compiling const-oid v0.9.6
+   Compiling der v0.7.10
+   Compiling ctutils v0.4.2
+   Compiling bytemuck v1.25.0
+   Compiling crossbeam-deque v0.8.6
+   Compiling curve25519-dalek v4.1.3
+   Compiling block-buffer v0.12.0
+   Compiling crypto-common v0.2.1
+   Compiling itertools v0.10.5
+   Compiling signature v2.2.0
+   Compiling anyhow v1.0.102
+   Compiling const-oid v0.10.2
+   Compiling digest v0.11.2
+   Compiling half v2.7.1
+   Compiling spki v0.7.3
+   Compiling tempfile v3.27.0
+   Compiling rand_core v0.9.5
+   Compiling tracing-core v0.1.36
+   Compiling memoffset v0.9.1
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling cfg_aliases v0.2.1
+   Compiling smallvec v1.15.1
+   Compiling equivalent v1.0.2
+   Compiling foldhash v0.2.0
+   Compiling allocator-api2 v0.2.21
+   Compiling log v0.4.29
+   Compiling parking_lot_core v0.9.12
+   Compiling regex-syntax v0.8.10
+   Compiling nix v0.31.2
+   Compiling pkcs8 v0.10.2
+   Compiling rayon v1.12.0
+   Compiling ed25519 v2.2.3
+   Compiling polyval v0.6.2
+   Compiling rand_chacha v0.3.1
+   Compiling sha2 v0.10.9
+   Compiling aead v0.5.2
+   Compiling errno v0.3.14
+   Compiling ciborium-io v0.2.2
+   Compiling scopeguard v1.2.0
+   Compiling anstyle v1.0.14
+   Compiling plotters-backend v0.3.7
+   Compiling virtue-next v0.1.3
+   Compiling thiserror v2.0.18
+   Compiling crc32fast v1.5.0
+   Compiling lazy_static v1.5.0
+   Compiling clap_lex v1.1.0
+   Compiling pin-project-lite v0.2.17
+   Compiling cpufeatures v0.3.0
+   Compiling getrandom v0.4.2
+   Compiling signal-hook v0.4.4
+   Compiling clap_builder v4.6.0
+   Compiling sharded-slab v0.1.7
+   Compiling bincode_derive-next v2.1.0
+   Compiling plotters-svg v0.3.7
+   Compiling lock_api v0.4.14
+   Compiling ciborium-ll v0.2.2
+   Compiling signal-hook-registry v1.4.8
+   Compiling ed25519-dalek v2.2.0
+   Compiling rand v0.8.6
+   Compiling ghash v0.5.1
+   Compiling prost-derive v0.14.4
+   Compiling signatory v0.27.1
+   Compiling regex-automata v0.4.14
+   Compiling tracing-log v0.2.0
+   Compiling poly1305 v0.8.0
+   Compiling ctr v0.9.2
+   Compiling chacha20 v0.9.1
+   Compiling aes v0.8.4
+   Compiling franken-evidence v0.3.4
+   Compiling rmp v0.8.15
+   Compiling hmac v0.12.1
+   Compiling franken-kernel v0.3.4
+   Compiling wait-timeout v0.2.1
+   Compiling pin-project-internal v1.1.11
+   Compiling tracing-attributes v0.1.31
+   Compiling thiserror-impl v2.0.18
+   Compiling thread_local v1.1.9
+   Compiling fnv v1.0.7
+   Compiling bytes v1.11.1
+   Compiling bit-vec v0.8.0
+   Compiling data-encoding v2.11.0
+   Compiling same-file v1.0.6
+   Compiling quick-error v1.2.3
+   Compiling nu-ansi-term v0.50.3
+   Compiling futures-io v0.3.32
+   Compiling parking v2.2.1
+   Compiling futures-core v0.3.32
+   Compiling cast v0.3.0
+   Compiling unty-next v0.1.1
+   Compiling bincode-next v2.1.0
+   Compiling criterion-plot v0.5.0
+   Compiling futures-lite v2.6.1
+   Compiling tracing-subscriber v0.3.23
+   Compiling rusty-fork v0.3.1
+   Compiling walkdir v2.5.0
+   Compiling nkeys v0.4.5
+   Compiling bit-set v0.8.0
+   Compiling prost v0.14.4
+   Compiling tracing v0.1.44
+   Compiling pin-project v1.1.11
+   Compiling franken-decision v0.3.4
+   Compiling hkdf v0.12.4
+   Compiling rmp-serde v1.3.1
+   Compiling aes-gcm v0.10.3
+   Compiling chacha20poly1305 v0.10.1
+   Compiling regex v1.12.3
+   Compiling parking_lot v0.12.5
+   Compiling ciborium v0.2.2
+   Compiling plotters v0.3.7
+   Compiling clap v4.6.1
+   Compiling sha2 v0.11.0
+   Compiling sha1 v0.11.0
+   Compiling sysinfo v0.33.1
+   Compiling hashbrown v0.16.1
+   Compiling hashbrown v0.17.0
+   Compiling rand_xorshift v0.4.0
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.4
+   Compiling hmac v0.13.0
+   Compiling polling v3.11.0
+   Compiling tinytemplate v1.2.1
+   Compiling crossbeam-queue v0.3.12
+   Compiling num-complex v0.4.6
+   Compiling socket2 v0.6.3
+   Compiling console v0.16.3
+   Compiling is-terminal v0.4.17
+   Compiling visibility v0.1.1
+   Compiling unarray v0.1.4
+   Compiling anes v0.1.6
+   Compiling base64 v0.22.1
+   Compiling slab v0.4.12
+   Compiling similar v2.7.0
+   Compiling oorandom v11.1.5
+   Compiling hex v0.4.3
+   Compiling asupersync v0.3.4
