@@ -6952,24 +6952,6 @@ pub fn matmul_rhs_transposed_contiguous_f64_into(
     Ok(())
 }
 
-/// Prechecked sister to [`matmul_rhs_transposed_contiguous_f64_into`] for hot
-/// loops that have already proved dimensions and own an exact-size scratch
-/// buffer. This preserves the same `dgemm_bt` traversal and only removes the
-/// repeated checked-mul/resize branch from each recurrent timestep.
-pub fn matmul_rhs_transposed_contiguous_f64_into_prechecked(
-    out: &mut [f64],
-    m: usize,
-    k: usize,
-    n: usize,
-    lhs: &[f64],
-    rhs_nk: &[f64],
-) {
-    debug_assert_eq!(lhs.len(), m * k);
-    debug_assert_eq!(rhs_nk.len(), n * k);
-    debug_assert_eq!(out.len(), m * n);
-    gemm::dgemm_bt(m, k, n, lhs, rhs_nk, out);
-}
-
 pub fn lerp_tensor_contiguous_f64(
     start: &[f64],
     end: &[f64],
@@ -7708,7 +7690,7 @@ pub fn softmax_dim_tensor_contiguous_f64(
             for v in scratch.iter_mut() {
                 *v = (*v - max_val).exp();
             }
-            let sum = pairwise_sum_f64(&scratch);
+            let sum = pairwise_sum_f64(scratch);
             for (r, &exp_x) in scratch.iter().enumerate() {
                 out_block[r * inner_size + inner] = exp_x / sum;
             }
@@ -7802,7 +7784,7 @@ pub fn log_softmax_dim_tensor_contiguous_f64(
                 scratch[r] = in_block[r * inner_size + inner];
             }
             let max_val = scratch.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let sum_exp = pairwise_sum_map_f64(&scratch, |x| (x - max_val).exp());
+            let sum_exp = pairwise_sum_map_f64(scratch, |x| (x - max_val).exp());
             let log_sum_exp = sum_exp.ln();
             for (r, &x) in scratch.iter().enumerate() {
                 out_block[r * inner_size + inner] = (x - max_val) - log_sum_exp;
@@ -20774,7 +20756,7 @@ pub fn softmax_dim_tensor_contiguous_f32(
         return Err(KernelError::InvalidDimension { dim, ndim });
     }
     let reduce_size = shape[dim];
-    let (outer_size, inner_size, numel) =
+    let (_, inner_size, numel) =
         checked_dim_loop_sizes(shape, dim, "softmax_f32 overflow")?;
     if numel == 0 {
         return Ok(Vec::new());
@@ -20785,40 +20767,67 @@ pub fn softmax_dim_tensor_contiguous_f32(
 
     // F32 mirror of `softmax_dim_tensor_contiguous_f64`. F32's 24-bit
     // mantissa makes the pairwise vs sequential precision win even
-    // larger here than in the f64 path.
+    // larger here than in the f64 path. Independent outer rows are
+    // dispatched across Rayon above the gate (each row's max/exp/pairwise-
+    // sum/normalise order is unchanged → bit-for-bit == serial). The f64
+    // twin was already parallel; this closes the same gap for f32.
     if inner_size == 1 {
-        for outer in 0..outer_size {
-            let start = outer * reduce_size;
-            let end = start + reduce_size;
-            let in_slice = &data[start..end];
+        let process = |out_slice: &mut [f32], in_slice: &[f32]| {
             let max_val = in_slice.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            for (out, &x) in output[start..end].iter_mut().zip(in_slice.iter()) {
+            for (out, &x) in out_slice.iter_mut().zip(in_slice.iter()) {
                 *out = (x - max_val).exp();
             }
-            let sum = pairwise_sum_f32(&output[start..end]);
-            for v in &mut output[start..end] {
+            let sum = pairwise_sum_f32(out_slice);
+            for v in out_slice {
                 *v /= sum;
             }
+        };
+        if numel >= SOFTMAX_PARALLEL_NUMEL_THRESHOLD {
+            output
+                .par_chunks_mut(reduce_size)
+                .zip(data[..numel].par_chunks(reduce_size))
+                .for_each(|(out_slice, in_slice)| process(out_slice, in_slice));
+        } else {
+            output
+                .chunks_mut(reduce_size)
+                .zip(data[..numel].chunks(reduce_size))
+                .for_each(|(out_slice, in_slice)| process(out_slice, in_slice));
         }
         return Ok(output);
     }
 
-    let mut scratch = vec![0.0f32; reduce_size];
-    for outer in 0..outer_size {
+    let block = reduce_size * inner_size;
+    let process_block = |scratch: &mut [f32], out_block: &mut [f32], in_block: &[f32]| {
         for inner in 0..inner_size {
             for r in 0..reduce_size {
-                scratch[r] = data[outer * reduce_size * inner_size + r * inner_size + inner];
+                scratch[r] = in_block[r * inner_size + inner];
             }
             let max_val = scratch.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             for v in scratch.iter_mut() {
                 *v = (*v - max_val).exp();
             }
-            let sum = pairwise_sum_f32(&scratch);
+            let sum = pairwise_sum_f32(scratch);
             for (r, &exp_x) in scratch.iter().enumerate() {
-                output[outer * reduce_size * inner_size + r * inner_size + inner] = exp_x / sum;
+                out_block[r * inner_size + inner] = exp_x / sum;
             }
         }
+    };
+    if numel >= PARALLEL_THRESHOLD && rayon::current_num_threads() > 1 {
+        output
+            .par_chunks_mut(block)
+            .zip(data[..numel].par_chunks(block))
+            .for_each_init(
+                || vec![0.0_f32; reduce_size],
+                |scratch, (out_block, in_block)| process_block(scratch, out_block, in_block),
+            );
+    } else {
+        let mut scratch = vec![0.0_f32; reduce_size];
+        output
+            .chunks_mut(block)
+            .zip(data[..numel].chunks(block))
+            .for_each(|(out_block, in_block)| process_block(&mut scratch, out_block, in_block));
     }
+
     Ok(output)
 }
 
@@ -28209,6 +28218,66 @@ mod tests {
         assert_eq!(got.len(), want.len());
         for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(g.to_bits(), w.to_bits(), "strided erf idx={i}");
+        }
+    }
+
+    #[test]
+    fn softmax_f32_parallel_matches_serial_bit_exact() {
+        // softmax_dim_tensor_contiguous_f32 was fully serial; now parallel over
+        // independent rows above the gate. Drive both the inner_size==1 (last-dim)
+        // and the general strided (dim=1 of a 3D tensor) branches at sizes past
+        // the threshold, comparing the production kernel against an independent
+        // serial reference BIT-FOR-BIT (rows are independent → order-invariant).
+        let serial_softmax = |data: &[f32], shape: &[usize], dim: usize| -> Vec<f32> {
+            let reduce = shape[dim];
+            let inner: usize = shape[dim + 1..].iter().product();
+            let outer: usize = shape[..dim].iter().product();
+            let mut out = vec![0.0f32; data.len()];
+            let mut scratch = vec![0.0f32; reduce];
+            for o in 0..outer {
+                for i in 0..inner {
+                    for r in 0..reduce {
+                        scratch[r] = data[o * reduce * inner + r * inner + i];
+                    }
+                    let m = scratch.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                    for v in scratch.iter_mut() {
+                        *v = (*v - m).exp();
+                    }
+                    let s = super::pairwise_sum_f32(&scratch);
+                    for (r, &e) in scratch.iter().enumerate() {
+                        out[o * reduce * inner + r * inner + i] = e / s;
+                    }
+                }
+            }
+            out
+        };
+        // (a) last-dim path: [40000, 16] → numel 640000 > gates, inner_size==1.
+        let shape_a = vec![40_000usize, 16];
+        let na: usize = shape_a.iter().product();
+        let da: Vec<f32> = (0..na).map(|i| ((i % 9001) as f32) * 0.001 - 4.0).collect();
+        let meta_a = TensorMeta::from_shape(shape_a.clone(), DType::F32, Device::Cpu);
+        let got_a = super::softmax_dim_tensor_contiguous_f32(&da, &meta_a, 1).unwrap();
+        let want_a = serial_softmax(&da, &shape_a, 1);
+        for i in 0..na {
+            assert_eq!(
+                got_a[i].to_bits(),
+                want_a[i].to_bits(),
+                "softmax f32 lastdim idx={i}"
+            );
+        }
+        // (b) general strided path: [64, 32, 64], dim=1 (inner_size==64 > 1).
+        let shape_b = vec![64usize, 32, 64];
+        let nb: usize = shape_b.iter().product(); // 131072 > PARALLEL_THRESHOLD
+        let db: Vec<f32> = (0..nb).map(|i| ((i % 7001) as f32) * 0.0013 - 3.0).collect();
+        let meta_b = TensorMeta::from_shape(shape_b.clone(), DType::F32, Device::Cpu);
+        let got_b = super::softmax_dim_tensor_contiguous_f32(&db, &meta_b, 1).unwrap();
+        let want_b = serial_softmax(&db, &shape_b, 1);
+        for i in 0..nb {
+            assert_eq!(
+                got_b[i].to_bits(),
+                want_b[i].to_bits(),
+                "softmax f32 strided idx={i}"
+            );
         }
     }
 
