@@ -4823,6 +4823,102 @@ pub fn depthwise_conv2d_forward_f32(
     out
 }
 
+/// Backward of [`depthwise_conv2d_forward_f64`]. Given `dout` `[N, C, oh, ow]`,
+/// the `padded` input `[N, C, ph, pw]`, and `weight` `[C, 1, kh, kw]`, returns
+/// `(dpadded [N,C,ph,pw], dweight [C·kh·kw], dbias [C]?)`. `dpadded` is the
+/// full-correlation (col2im) parallel over the `N·C` disjoint planes; `dweight`
+/// correlates `padded` with `dout` per channel (parallel over `C`); `dbias` sums
+/// `dout` per channel. The caller's `tensor_pad` backward turns `dpadded` into
+/// `dinput`. Tolerance parity (sums over `(n,oy,ox)` like the grouped path's
+/// per-channel GEMM backward). frankentorch-0hfri (depthwise backward).
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn depthwise_conv2d_backward_f64(
+    dout: &[f64],
+    padded: &[f64],
+    weight: &[f64],
+    batch: usize,
+    channels: usize,
+    ph: usize,
+    pw: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+    has_bias: bool,
+) -> (Vec<f64>, Vec<f64>, Option<Vec<f64>>) {
+    let outplane = oh * ow;
+    let inplane = ph * pw;
+    let wsz = kh * kw;
+    // dpadded: parallel over the N*C disjoint input planes (overlapping windows
+    // accumulate serially within a plane, race-free across planes).
+    let mut dpadded = vec![0.0f64; batch * channels * inplane];
+    dpadded
+        .par_chunks_mut(inplane)
+        .enumerate()
+        .for_each(|(plane, dp)| {
+            let c = plane % channels;
+            let wb = c * wsz;
+            let db = &dout[plane * outplane..plane * outplane + outplane];
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let g = db[oy * ow + ox];
+                    for kr in 0..kh {
+                        let row = (oy * sh + kr) * pw + ox * sw;
+                        let wr = wb + kr * kw;
+                        for kc in 0..kw {
+                            dp[row + kc] += g * weight[wr + kc];
+                        }
+                    }
+                }
+            }
+        });
+    // dweight: parallel over channels (each channel's [kh,kw] accumulates over all
+    // n,oy,ox; disjoint per-channel write region).
+    let mut dweight = vec![0.0f64; channels * wsz];
+    dweight
+        .par_chunks_mut(wsz)
+        .enumerate()
+        .for_each(|(c, dw)| {
+            for n in 0..batch {
+                let plane = n * channels + c;
+                let db = &dout[plane * outplane..plane * outplane + outplane];
+                let pb = &padded[plane * inplane..plane * inplane + inplane];
+                for oy in 0..oh {
+                    for ox in 0..ow {
+                        let g = db[oy * ow + ox];
+                        for kr in 0..kh {
+                            let row = (oy * sh + kr) * pw + ox * sw;
+                            for kc in 0..kw {
+                                dw[kr * kw + kc] += g * pb[row + kc];
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    // dbias: per-channel sum of dout.
+    let dbias = if has_bias {
+        let mut db = vec![0.0f64; channels];
+        db.par_iter_mut().enumerate().for_each(|(c, dbc)| {
+            let mut s = 0.0f64;
+            for n in 0..batch {
+                let base = (n * channels + c) * outplane;
+                for i in 0..outplane {
+                    s += dout[base + i];
+                }
+            }
+            *dbc = s;
+        });
+        Some(db)
+    } else {
+        None
+    };
+    (dpadded, dweight, dbias)
+}
+
 /// Direct depthwise conv3d forward (groups == channels). 3-D analog of
 /// [`depthwise_conv2d_forward_f64`]: `padded` `[N, C, pd, ph, pw]`, `weight`
 /// `[C, 1, kd, kh, kw]` flattened, `bias` `[C]`, output `[N, C, od, oh, ow]`.
@@ -23836,6 +23932,55 @@ mod tests {
         assert_eq!(got.len(), want.len());
         for i in 0..want.len() {
             assert_eq!(got[i].to_bits(), want[i].to_bits(), "depthwise3d idx={i}");
+        }
+    }
+
+    #[test]
+    fn depthwise_conv2d_backward_matches_naive_reference() {
+        // depthwise_conv2d_backward_f64 (dpadded/dweight/dbias) must equal a naive
+        // serial reference bit-for-bit. Multi batch/channel, stride 2, non-square
+        // kernel, with bias.
+        let (n, c, ph, pw, kh, kw, sh, sw) = (2usize, 3, 9, 11, 3, 2, 2, 2);
+        let oh = (ph - kh) / sh + 1;
+        let ow = (pw - kw) / sw + 1;
+        let padded: Vec<f64> = (0..n * c * ph * pw).map(|i| (i % 877) as f64 * 0.02 - 6.0).collect();
+        let weight: Vec<f64> = (0..c * kh * kw).map(|i| (i % 47) as f64 * 0.1 - 2.0).collect();
+        let dout: Vec<f64> = (0..n * c * oh * ow).map(|i| (i % 53) as f64 * 0.05 - 1.3).collect();
+        let (dpadded, dweight, dbias) = super::depthwise_conv2d_backward_f64(
+            &dout, &padded, &weight, n, c, ph, pw, kh, kw, oh, ow, sh, sw, true,
+        );
+        let mut wp = vec![0.0f64; n * c * ph * pw];
+        let mut ww = vec![0.0f64; c * kh * kw];
+        let mut wb = vec![0.0f64; c];
+        for ni in 0..n {
+            for ci in 0..c {
+                let ib = (ni * c + ci) * ph * pw;
+                let ob = (ni * c + ci) * oh * ow;
+                let wbse = ci * kh * kw;
+                for oy in 0..oh {
+                    for ox in 0..ow {
+                        let g = dout[ob + oy * ow + ox];
+                        wb[ci] += g;
+                        for kr in 0..kh {
+                            for kc in 0..kw {
+                                let ip = ib + (oy * sh + kr) * pw + ox * sw + kc;
+                                wp[ip] += g * weight[wbse + kr * kw + kc];
+                                ww[wbse + kr * kw + kc] += g * padded[ip];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for i in 0..wp.len() {
+            assert_eq!(dpadded[i].to_bits(), wp[i].to_bits(), "dpadded idx={i}");
+        }
+        for i in 0..ww.len() {
+            assert_eq!(dweight[i].to_bits(), ww[i].to_bits(), "dweight idx={i}");
+        }
+        let db = dbias.unwrap();
+        for i in 0..wb.len() {
+            assert_eq!(db[i].to_bits(), wb[i].to_bits(), "dbias idx={i}");
         }
     }
 
