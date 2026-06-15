@@ -1462,6 +1462,21 @@ type AutogradFunctionBackwardWithBorrowedInputs = dyn Fn(
     + Sync
     + 'static;
 
+/// Backward for a custom function whose forward OUTPUT is f32 (e.g. an f32 conv
+/// grad fast path). The incoming output gradient is f64 (the tape grad-space is
+/// always f64), the borrowed inputs are re-read as f32, and the returned input
+/// gradients are f64 (accumulated in the tape's f64 grad-space, narrowed to the
+/// input dtype on read). This keeps grad precision while producing a correct f32
+/// output leaf. frankentorch-48w0b.
+type AutogradFunctionBackwardWithBorrowedInputsF32 = dyn Fn(
+        &FunctionCtx,
+        &[&[f64]],
+        &[(&[f32], &[usize])],
+    ) -> Result<Vec<Option<Vec<f64>>>, AutogradError>
+    + Send
+    + Sync
+    + 'static;
+
 /// A tape-building second-order backward for a custom function: given the output
 /// gradient node(s), the original input node(s), and the tape, it constructs the
 /// input-gradient node(s) using ordinary differentiable tape ops, so a further
@@ -1481,6 +1496,8 @@ type AutogradFunctionCreateGraphBackward = dyn Fn(
 enum CustomFunctionBackward {
     Owned(Arc<AutogradFunctionBackward>),
     BorrowedInputsF64(Arc<AutogradFunctionBackwardWithBorrowedInputs>),
+    /// f32-output custom function: borrowed inputs re-read as f32, f64 grads out.
+    BorrowedInputsF32Output(Arc<AutogradFunctionBackwardWithBorrowedInputsF32>),
 }
 
 #[derive(Clone)]
@@ -8683,6 +8700,101 @@ impl TensorTape {
         Ok(out)
     }
 
+    /// f32-output variant of [`Self::apply_function_f64_borrowed_inputs`]: inputs
+    /// are read as f32, the forward returns an f32 output (built as an F32 leaf so
+    /// the output dtype matches torch f32 ops), and the backward receives the f64
+    /// incoming gradient + f32 borrowed inputs and returns f64 input gradients
+    /// (the tape grad-space stays f64). Used by the f32 conv/depthwise/linear grad
+    /// fast paths. frankentorch-48w0b.
+    pub fn apply_function_f32_output_borrowed_inputs<F, B>(
+        &mut self,
+        inputs: &[TensorNodeId],
+        forward_fn: F,
+        backward_fn: B,
+    ) -> Result<TensorNodeId, AutogradError>
+    where
+        F: FnOnce(
+            &mut FunctionCtx,
+            &[(&[f32], &[usize])],
+        ) -> Result<(Vec<f32>, Vec<usize>), AutogradError>,
+        B: Fn(
+                &FunctionCtx,
+                &[&[f64]],
+                &[(&[f32], &[usize])],
+            ) -> Result<Vec<Option<Vec<f64>>>, AutogradError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let mut needs_input_grad = Vec::with_capacity(inputs.len());
+        let mut input_numels = Vec::with_capacity(inputs.len());
+        let mut any_requires_grad = false;
+        let mut output_device = Device::Cpu;
+
+        let (ctx, output_values, output_shape) = {
+            let mut input_refs: Vec<(&[f32], &[usize])> = Vec::with_capacity(inputs.len());
+            for &input_id in inputs {
+                let node = self.node(input_id)?;
+                let rg = node.requires_grad && self.grad_enabled;
+                needs_input_grad.push(rg);
+                if rg {
+                    any_requires_grad = true;
+                }
+                let vals = node.tensor.contiguous_values_f32()?;
+                input_numels.push(vals.len());
+                output_device = node.tensor.meta().device();
+                input_refs.push((vals, node.tensor.meta().shape()));
+            }
+
+            let mut ctx = FunctionCtx::new(needs_input_grad);
+            let (output_values, output_shape) = forward_fn(&mut ctx, &input_refs)?;
+            (ctx, output_values, output_shape)
+        };
+
+        let inputs_owned = inputs.to_vec();
+        let out = TensorNodeId(self.nodes.len());
+
+        if !any_requires_grad || !self.grad_enabled {
+            self.nodes.push(TensorNode {
+                tensor: DenseTensor::from_contiguous_values_f32(
+                    output_values,
+                    output_shape,
+                    output_device,
+                )?,
+                requires_grad: false,
+                op: TensorNodeOp::Leaf,
+            });
+            return Ok(out);
+        }
+
+        let function_id = self.next_custom_function_id;
+        self.next_custom_function_id += 1;
+
+        self.custom_functions.insert(
+            function_id,
+            CustomFunctionRecord {
+                ctx,
+                backward: CustomFunctionBackward::BorrowedInputsF32Output(Arc::new(backward_fn)),
+                input_numel: input_numels,
+                create_graph_backward: None,
+            },
+        );
+
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_contiguous_values_f32(
+                output_values,
+                output_shape,
+                output_device,
+            )?,
+            requires_grad: any_requires_grad,
+            op: TensorNodeOp::CustomFunction {
+                inputs: inputs_owned,
+                function_id,
+            },
+        });
+        Ok(out)
+    }
+
     pub fn masked_fill(
         &mut self,
         input: TensorNodeId,
@@ -13858,6 +13970,20 @@ impl TensorTape {
                                     let input_node = self.node(input_id)?;
                                     borrowed_inputs.push((
                                         input_node.tensor.contiguous_values()?,
+                                        input_node.tensor.meta().shape(),
+                                    ));
+                                }
+                                backward_fn(&record.ctx, &grad_outputs, &borrowed_inputs)?
+                            }
+                            CustomFunctionBackward::BorrowedInputsF32Output(backward_fn) => {
+                                // f32-output custom op: re-read inputs as f32; the
+                                // incoming output grad stays f64 (tape grad-space);
+                                // the closure returns f64 input grads.
+                                let mut borrowed_inputs = Vec::with_capacity(inputs.len());
+                                for &input_id in inputs {
+                                    let input_node = self.node(input_id)?;
+                                    borrowed_inputs.push((
+                                        input_node.tensor.contiguous_values_f32()?,
                                         input_node.tensor.meta().shape(),
                                     ));
                                 }
@@ -20920,6 +21046,46 @@ mod tests {
         // dz/dy = w = [10, 20, 30, 40] in shape [2, 2]
         // dz/dx = inverse_transpose(dz/dy) = transpose([10, 20, 30, 40]) = [10, 30, 20, 40]
         assert_eq!(grad, &[10.0, 30.0, 20.0, 40.0]);
+    }
+
+    #[test]
+    fn apply_function_f32_output_borrowed_inputs_square_grad() {
+        // Foundational test for the f32-output custom-op infra (frankentorch-48w0b):
+        // a trivial f32 square op (fwd x², bwd 2x·g). Verifies the f32 output leaf
+        // (dtype F32, correct values) and that the backward (f64 incoming grad +
+        // f32 borrowed inputs -> f64 grads) yields the right gradient.
+        let mut tape = TensorTape::new();
+        let x = tape
+            .leaf_f32(vec![2.0f32, 3.0, 4.0], vec![3], true)
+            .expect("f32 leaf");
+        let y = tape
+            .apply_function_f32_output_borrowed_inputs(
+                &[x],
+                |_ctx, ins| {
+                    let (xv, _) = ins[0];
+                    Ok((xv.iter().map(|v| v * v).collect::<Vec<f32>>(), vec![3]))
+                },
+                |_ctx, grad_outputs, borrowed| {
+                    let g = grad_outputs[0];
+                    let (xv, _) = borrowed[0];
+                    let dx: Vec<f64> = xv
+                        .iter()
+                        .zip(g.iter())
+                        .map(|(&xi, &gi)| 2.0 * xi as f64 * gi)
+                        .collect();
+                    Ok(vec![Some(dx)])
+                },
+            )
+            .expect("f32 custom op");
+        // Output must be an F32 leaf with values x².
+        assert_eq!(tape.node(y).unwrap().tensor.meta().dtype(), DType::F32);
+        let yvals = tape.node(y).unwrap().tensor.contiguous_values_f32().unwrap();
+        assert_eq!(yvals, &[4.0f32, 9.0, 16.0]);
+        // backward of sum(x²): d/dx = 2x = [4,6,8].
+        let (s, _) = tape.sum(y, ExecutionMode::Strict).expect("sum");
+        let report = tape.backward(s).expect("backward");
+        let gx = report.gradient(x).expect("x grad");
+        assert_eq!(gx, &[4.0, 6.0, 8.0]);
     }
 
     #[test]
