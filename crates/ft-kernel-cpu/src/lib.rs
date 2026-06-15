@@ -1929,7 +1929,7 @@ fn elementwise_strided_f64<F>(
     op: F,
 ) -> Result<Vec<f64>, KernelError>
 where
-    F: Fn(f64, f64) -> f64,
+    F: Fn(f64, f64) -> f64 + Sync,
 {
     let shape = lhs_meta.shape();
     let numel = lhs_meta.numel();
@@ -1941,18 +1941,38 @@ where
     let rhs_strides = rhs_meta.strides();
     let lhs_offset = lhs_meta.storage_offset();
     let rhs_offset = rhs_meta.storage_offset();
+    let ndim = shape.len();
 
-    let mut output = Vec::with_capacity(numel);
-    let mut coords = vec![0usize; shape.len()];
-
-    loop {
-        let lhs_idx = strided_index(&coords, lhs_strides, lhs_offset);
-        let rhs_idx = strided_index(&coords, rhs_strides, rhs_offset);
-        output.push(op(lhs[lhs_idx], rhs[rhs_idx]));
-        if !increment_coords(&mut coords, shape) {
-            break;
-        }
+    // Row-major contiguous strides of the (logical) output, so a flat output
+    // index unravels to per-dim coords WITHOUT a running coords vector — making
+    // each output element independent. The unravel walks dims in the same order
+    // as the old `increment_coords` sweep (last dim fastest), so the indexed map
+    // yields output[i] in identical order => bit-for-bit identical to the serial
+    // loop. The per-element strided index decode (div/mod over dims) is the work,
+    // so this is compute-bound and parallelizes cleanly above PARALLEL_THRESHOLD.
+    let mut out_strides = vec![1usize; ndim];
+    for d in (0..ndim.saturating_sub(1)).rev() {
+        out_strides[d] = out_strides[d + 1] * shape[d + 1];
     }
+
+    let compute = |i: usize| -> f64 {
+        let mut rem = i;
+        let mut lhs_idx = lhs_offset;
+        let mut rhs_idx = rhs_offset;
+        for d in 0..ndim {
+            let coord = rem / out_strides[d];
+            rem %= out_strides[d];
+            lhs_idx += coord * lhs_strides[d];
+            rhs_idx += coord * rhs_strides[d];
+        }
+        op(lhs[lhs_idx], rhs[rhs_idx])
+    };
+
+    let output: Vec<f64> = if numel >= PARALLEL_THRESHOLD {
+        (0..numel).into_par_iter().map(compute).collect()
+    } else {
+        (0..numel).map(compute).collect()
+    };
 
     Ok(output)
 }
@@ -7632,15 +7652,16 @@ pub fn softmax_dim_tensor_contiguous_f64(
         return Ok(output);
     }
 
-    // General strided case: gather each (outer, inner) slice into a
-    // reusable scratch buffer, compute exp(x - max) in place there,
-    // pairwise-sum, then scatter the normalised values back to the
-    // strided output positions. One allocation per call, not per cell.
-    let mut scratch = vec![0.0_f64; reduce_size];
-    for outer in 0..outer_size {
+    // General strided case: gather each (outer, inner) slice into reusable
+    // scratch, compute exp(x - max) in place there, pairwise-sum, then scatter
+    // the normalised values back to the strided output positions. Independent
+    // outer blocks are disjoint, so they can be scheduled across Rayon while
+    // each lane's gather/max/exp/sum/scatter order stays serial and bit-exact.
+    let block = reduce_size * inner_size;
+    let process_block = |scratch: &mut [f64], out_block: &mut [f64], in_block: &[f64]| {
         for inner in 0..inner_size {
             for r in 0..reduce_size {
-                scratch[r] = data[outer * reduce_size * inner_size + r * inner_size + inner];
+                scratch[r] = in_block[r * inner_size + inner];
             }
             let max_val = scratch.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             for v in scratch.iter_mut() {
@@ -7648,9 +7669,24 @@ pub fn softmax_dim_tensor_contiguous_f64(
             }
             let sum = pairwise_sum_f64(&scratch);
             for (r, &exp_x) in scratch.iter().enumerate() {
-                output[outer * reduce_size * inner_size + r * inner_size + inner] = exp_x / sum;
+                out_block[r * inner_size + inner] = exp_x / sum;
             }
         }
+    };
+    if numel >= PARALLEL_THRESHOLD && rayon::current_num_threads() > 1 {
+        output
+            .par_chunks_mut(block)
+            .zip(data[..numel].par_chunks(block))
+            .for_each_init(
+                || vec![0.0_f64; reduce_size],
+                |scratch, (out_block, in_block)| process_block(scratch, out_block, in_block),
+            );
+    } else {
+        let mut scratch = vec![0.0_f64; reduce_size];
+        output
+            .chunks_mut(block)
+            .zip(data[..numel].chunks(block))
+            .for_each(|(out_block, in_block)| process_block(&mut scratch, out_block, in_block));
     }
 
     Ok(output)
@@ -7678,9 +7714,10 @@ pub fn log_softmax_dim_tensor_contiguous_f64(
     let data = &input[offset..];
 
     // Same fast/general split as `softmax_dim_tensor_contiguous_f64`.
-    // log-sum-exp = max + log(sum(exp(x - max))) — the max subtraction
-    // is the standard numerical-stability trick; pairwise replaces the
-    // sum-of-exps accumulator.
+    // log-sum-exp = max + log(sum(exp(x - max))) — the max subtraction is the
+    // standard numerical-stability trick; pairwise replaces the sum-of-exps
+    // accumulator. The strided general path also parallelizes over independent
+    // outer blocks while keeping every lane's serial FP order unchanged.
     // The output formulation is (x - max) - log(sum_exp), NOT
     // x - (max + log(sum_exp)). Algebraically identical, but the
     // first preserves precision when x and max are large-magnitude
@@ -7717,20 +7754,34 @@ pub fn log_softmax_dim_tensor_contiguous_f64(
         return Ok(output);
     }
 
-    let mut scratch = vec![0.0_f64; reduce_size];
-    for outer in 0..outer_size {
+    let block = reduce_size * inner_size;
+    let process_block = |scratch: &mut [f64], out_block: &mut [f64], in_block: &[f64]| {
         for inner in 0..inner_size {
             for r in 0..reduce_size {
-                scratch[r] = data[outer * reduce_size * inner_size + r * inner_size + inner];
+                scratch[r] = in_block[r * inner_size + inner];
             }
             let max_val = scratch.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             let sum_exp = pairwise_sum_map_f64(&scratch, |x| (x - max_val).exp());
             let log_sum_exp = sum_exp.ln();
             for (r, &x) in scratch.iter().enumerate() {
-                output[outer * reduce_size * inner_size + r * inner_size + inner] =
-                    (x - max_val) - log_sum_exp;
+                out_block[r * inner_size + inner] = (x - max_val) - log_sum_exp;
             }
         }
+    };
+    if numel >= PARALLEL_THRESHOLD && rayon::current_num_threads() > 1 {
+        output
+            .par_chunks_mut(block)
+            .zip(data[..numel].par_chunks(block))
+            .for_each_init(
+                || vec![0.0_f64; reduce_size],
+                |scratch, (out_block, in_block)| process_block(scratch, out_block, in_block),
+            );
+    } else {
+        let mut scratch = vec![0.0_f64; reduce_size];
+        output
+            .chunks_mut(block)
+            .zip(data[..numel].chunks(block))
+            .for_each(|(out_block, in_block)| process_block(&mut scratch, out_block, in_block));
     }
 
     Ok(output)
@@ -26553,6 +26604,7 @@ mod tests {
         // a last-dim shape for the fast path.
         for (shape, dim) in [
             (vec![7usize, 16usize, 5usize], 1usize), // strided: inner_size = 5
+            (vec![257usize, 33usize, 2usize], 1usize), // strided, above parallel gate
             (vec![64usize, 48usize], 1usize),        // fast path: inner_size = 1
         ] {
             let numel: usize = shape.iter().product();
@@ -28021,6 +28073,44 @@ mod tests {
                     "f32 shape={shape:?} dim={dim} idx={i}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn elementwise_strided_parallel_matches_serial_bit_exact() {
+        // The non-contiguous same-shape binary path (elementwise_strided_f64) only
+        // parallelizes above PARALLEL_THRESHOLD (>=8192), so small tests exercise
+        // the serial fallback. Drive a LARGE transposed (non-contiguous) view of a
+        // row-major buffer through atan2 and compare against an independent serial
+        // strided reference BIT-FOR-BIT (the unravel must reproduce the old
+        // coords-increment order exactly).
+        let rows = 200usize;
+        let cols = 173usize; // numel = 34600 > 8192, non-square + odd to stress the unravel
+        let n = rows * cols;
+        let lhs: Vec<f64> = (0..n).map(|i| ((i % 617) as f64) * 0.01 - 3.0).collect();
+        let rhs: Vec<f64> = (0..n).map(|i| ((i % 953) as f64) * 0.01 + 0.5).collect();
+        // Transposed view: logical [cols, rows], strides [1, cols] => non-contiguous.
+        let meta = TensorMeta::from_shape_and_strides(
+            vec![cols, rows],
+            vec![1, cols],
+            0,
+            DType::F64,
+            Device::Cpu,
+        )
+        .unwrap();
+        let got = super::atan2_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("atan2");
+
+        // Serial reference: row-major over [cols, rows], strided index decode.
+        let mut want = Vec::with_capacity(n);
+        for c in 0..cols {
+            for r in 0..rows {
+                let idx = c * 1 + r * cols; // strides [1, cols]
+                want.push(lhs[idx].atan2(rhs[idx]));
+            }
+        }
+        assert_eq!(got.len(), want.len());
+        for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "strided atan2 idx={i}");
         }
     }
 
