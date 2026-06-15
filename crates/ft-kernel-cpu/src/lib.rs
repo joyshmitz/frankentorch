@@ -6952,6 +6952,24 @@ pub fn matmul_rhs_transposed_contiguous_f64_into(
     Ok(())
 }
 
+/// Prechecked sister to [`matmul_rhs_transposed_contiguous_f64_into`] for hot
+/// loops that have already proved dimensions and own an exact-size scratch
+/// buffer. This preserves the same `dgemm_bt` traversal and only removes the
+/// repeated checked-mul/resize branch from each recurrent timestep.
+pub fn matmul_rhs_transposed_contiguous_f64_into_prechecked(
+    out: &mut [f64],
+    m: usize,
+    k: usize,
+    n: usize,
+    lhs: &[f64],
+    rhs_nk: &[f64],
+) {
+    debug_assert_eq!(lhs.len(), m * k);
+    debug_assert_eq!(rhs_nk.len(), n * k);
+    debug_assert_eq!(out.len(), m * n);
+    gemm::dgemm_bt(m, k, n, lhs, rhs_nk, out);
+}
+
 pub fn lerp_tensor_contiguous_f64(
     start: &[f64],
     end: &[f64],
@@ -7636,7 +7654,7 @@ pub fn softmax_dim_tensor_contiguous_f64(
         return Err(KernelError::InvalidDimension { dim, ndim });
     }
     let reduce_size = shape[dim];
-    let (outer_size, inner_size, numel) =
+    let (_, inner_size, numel) =
         checked_dim_loop_sizes(shape, dim, "softmax shape volume overflow")?;
     if numel == 0 {
         return Ok(Vec::new());
@@ -7727,7 +7745,7 @@ pub fn log_softmax_dim_tensor_contiguous_f64(
         return Err(KernelError::InvalidDimension { dim, ndim });
     }
     let reduce_size = shape[dim];
-    let (outer_size, inner_size, numel) =
+    let (_, inner_size, numel) =
         checked_dim_loop_sizes(shape, dim, "log_softmax shape volume overflow")?;
     if numel == 0 {
         return Ok(Vec::new());
@@ -7752,7 +7770,7 @@ pub fn log_softmax_dim_tensor_contiguous_f64(
     // form; tracked under frankentorch-ebrb.
     // log_softmax over the last dim is the cross-entropy / NLLLoss hot path;
     // parallelize independent contiguous rows there. The strided general path
-    // stays serial because Criterion showed Rayon overhead dominates there.
+    // uses the same independent-block scheduling below.
     // exp is compute-bound and each slice is independent -> bit-identical.
     if inner_size == 1 {
         let process = |out_slice: &mut [f64], in_slice: &[f64]| {
@@ -19456,9 +19474,10 @@ fn elementwise_contiguous_f32<F>(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
     op: F,
+    parallel_threshold: usize,
 ) -> Result<Vec<f32>, KernelError>
 where
-    F: Fn(f32, f32) -> f32,
+    F: Fn(f32, f32) -> f32 + Sync,
 {
     ensure_meta_shape_and_dtype(lhs_meta, rhs_meta)?;
     ensure_storage_len_f32(lhs, lhs_meta, "lhs")?;
@@ -19471,11 +19490,24 @@ where
     let rhs_start = rhs_meta.storage_offset();
     let lhs_window = &lhs[lhs_start..lhs_start + numel];
     let rhs_window = &rhs[rhs_start..rhs_start + numel];
-    Ok(lhs_window
-        .iter()
-        .zip(rhs_window.iter())
-        .map(|(left, right)| op(*left, *right))
-        .collect())
+    // f32 macro binary kernels were entirely serial (mirrors the pre-kgs4.90 f32
+    // unary gap). Compute-bound ones (atan2) parallelise cleanly above their low
+    // threshold; pure per-element map, so par == serial bit-for-bit. The cheap
+    // ops keep a high default threshold so rayon split/join only amortises at the
+    // very large sizes where even a bandwidth-bound map benefits.
+    if numel >= parallel_threshold {
+        Ok(lhs_window
+            .par_iter()
+            .zip(rhs_window.par_iter())
+            .map(|(left, right)| op(*left, *right))
+            .collect())
+    } else {
+        Ok(lhs_window
+            .iter()
+            .zip(rhs_window.iter())
+            .map(|(left, right)| op(*left, *right))
+            .collect())
+    }
 }
 
 fn simd_elementwise_f32<F, S>(
@@ -19966,14 +19998,20 @@ define_unary_f32!(isfinite_tensor_contiguous_f32, |v: f32| if v.is_finite() {
 // ── Macro-generated simple f32 binary kernels ───────────────────────────
 
 macro_rules! define_binary_f32 {
+    // Cheap/bandwidth-bound binary ops (min/max/comparisons/fmod): keep the high
+    // threshold so rayon only kicks in at very large N.
     ($name:ident, $op:expr) => {
+        define_binary_f32!($name, $op, SCALAR_UNARY_PARALLEL_THRESHOLD);
+    };
+    // Compute-bound binary ops (atan2): low threshold, parallelise early.
+    ($name:ident, $op:expr, $threshold:expr) => {
         pub fn $name(
             lhs: &[f32],
             rhs: &[f32],
             lhs_meta: &TensorMeta,
             rhs_meta: &TensorMeta,
         ) -> Result<Vec<f32>, KernelError> {
-            elementwise_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta, $op)
+            elementwise_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta, $op, $threshold)
         }
     };
 }
@@ -19992,7 +20030,11 @@ define_binary_f32!(max_tensor_contiguous_f32, |l: f32, r: f32| {
         l.max(r)
     }
 });
-define_binary_f32!(atan2_tensor_contiguous_f32, |y: f32, x: f32| y.atan2(x));
+define_binary_f32!(
+    atan2_tensor_contiguous_f32,
+    |y: f32, x: f32| y.atan2(x),
+    PARALLEL_THRESHOLD
+);
 define_binary_f32!(fmod_tensor_contiguous_f32, |a: f32, b: f32| a % b);
 define_binary_f32!(remainder_tensor_contiguous_f32, |a: f32, b: f32| a
     - (a / b).floor() * b);
@@ -28167,6 +28209,24 @@ mod tests {
         assert_eq!(got.len(), want.len());
         for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(g.to_bits(), w.to_bits(), "strided erf idx={i}");
+        }
+    }
+
+    #[test]
+    fn atan2_f32_parallel_matches_serial_bit_exact() {
+        // The macro f32 binary kernels were fully serial; atan2 now parallelises
+        // above PARALLEL_THRESHOLD. Drive a contiguous input > the gate so the
+        // par_iter branch runs, and compare against an independent serial map
+        // BIT-FOR-BIT (pure per-element map → order-independent).
+        let n = 40_000usize; // > PARALLEL_THRESHOLD (8192)
+        let y: Vec<f32> = (0..n).map(|i| ((i % 4001) as f32) * 0.001 - 2.0).collect();
+        let x: Vec<f32> = (0..n).map(|i| ((i % 3001) as f32) * 0.001 - 1.5).collect();
+        let meta = TensorMeta::from_shape(vec![n], DType::F32, Device::Cpu);
+        let got = super::atan2_tensor_contiguous_f32(&y, &x, &meta, &meta).expect("atan2 f32");
+        assert_eq!(got.len(), n);
+        for i in 0..n {
+            let want = y[i].atan2(x[i]);
+            assert_eq!(got[i].to_bits(), want.to_bits(), "atan2 f32 idx={i}");
         }
     }
 
