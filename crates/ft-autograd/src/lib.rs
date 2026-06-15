@@ -9661,25 +9661,33 @@ impl TensorTape {
             ));
         }
 
-        // Cache-blocked fast path for a last-two-dims swap — the 2-D transpose
-        // (perm == [1, 0]) AND its batched form matrix_transpose/.mT/adjoint
-        // (perm == [0, 1, …, ndim-1, ndim-2], ubiquitous in attention's QKᵀ and
-        // batched linalg). The generic per-element scatter below misses cache on
-        // nearly every write for a large plane — dst[j*r + i] strides by `r`, so
-        // consecutive source elements land a full column apart. Tiling confines
-        // each TILE×TILE block's reads and writes to cache, cutting DRAM
-        // round-trips ~TILE-fold. Each leading (batch) index maps to itself, so
-        // the op is an independent transpose of each contiguous [r, c] plane. This
-        // is a pure permuted clone (no FP arithmetic), bit-for-bit identical to the
-        // generic loop for every dtype regardless of copy order.
-        let is_last_two_swap = ndim >= 2
-            && perm[ndim - 2] == ndim - 1
-            && perm[ndim - 1] == ndim - 2
-            && (0..ndim - 2).all(|d| perm[d] == d);
-        if is_last_two_swap {
-            let r = src_shape[ndim - 2];
-            let c = src_shape[ndim - 1];
-            let plane = r * c;
+        // Cache-blocked fast path for any "block-rotation" permute: an identity
+        // prefix of `p` dims followed by a left-rotation of the remaining dims.
+        // Such a permute is EXACTLY a batched 2-D transpose of [A, B] planes
+        // (A = product of the rotated-to-back dim group, B = the rotated-to-front
+        // group): within each prefix plane src[a*B + b] -> dst[b*A + a]. This
+        // covers the 2-D transpose ([1,0]), batched matrix_transpose/.mT/adjoint
+        // ([0,…,n-1,n-2]), AND the NCHW<->NHWC conv-layout permutes
+        // ([0,2,3,1] / [0,3,1,2]) — all of which otherwise hit the generic
+        // per-element scatter and miss cache on nearly every write (dst strides by
+        // A). Tiling confines each block's reads+writes to cache, cutting DRAM
+        // round-trips ~TILE-fold. Pure permuted clone (no FP arithmetic) →
+        // bit-for-bit identical to the generic loop for every dtype.
+        let mut prefix = 0;
+        while prefix < ndim && perm[prefix] == prefix {
+            prefix += 1;
+        }
+        let rot_dims = ndim - prefix;
+        let rotation = if rot_dims >= 2 {
+            (1..rot_dims).find(|&s| (0..rot_dims).all(|k| perm[prefix + k] == prefix + (s + k) % rot_dims))
+        } else {
+            None
+        };
+        if let Some(s) = rotation {
+            // A-group = the first `s` rotated dims (move to back); B-group = rest.
+            let a_dim: usize = src_shape[prefix..prefix + s].iter().product();
+            let b_dim: usize = src_shape[prefix + s..ndim].iter().product();
+            let plane = a_dim * b_dim;
             let mut dst = vec![src[0].clone(); numel];
             // 16×16 (~2 KB f64) fits L1, minimizing the transpose's destination
             // write cache-misses — a TILE sweep showed 16 clearly beats 32/64/128
@@ -9688,20 +9696,22 @@ impl TensorTape {
             const TILE: usize = 16;
             if plane > 0 {
                 let batch = numel / plane;
-                for b in 0..batch {
-                    let base = b * plane;
-                    let s = &src[base..base + plane];
-                    let d = &mut dst[base..base + plane];
+                for bi in 0..batch {
+                    let base = bi * plane;
+                    let sgn = &src[base..base + plane];
+                    let dgn = &mut dst[base..base + plane];
+                    // transpose [a_dim, b_dim] -> [b_dim, a_dim]:
+                    // dgn[j*a_dim + i] = sgn[i*b_dim + j].
                     let mut ii = 0;
-                    while ii < r {
-                        let i_end = (ii + TILE).min(r);
+                    while ii < a_dim {
+                        let i_end = (ii + TILE).min(a_dim);
                         let mut jj = 0;
-                        while jj < c {
-                            let j_end = (jj + TILE).min(c);
+                        while jj < b_dim {
+                            let j_end = (jj + TILE).min(b_dim);
                             for i in ii..i_end {
-                                let src_row = i * c;
+                                let src_row = i * b_dim;
                                 for j in jj..j_end {
-                                    d[j * r + i] = s[src_row + j].clone();
+                                    dgn[j * a_dim + i] = sgn[src_row + j].clone();
                                 }
                             }
                             jj += TILE;
@@ -20960,6 +20970,50 @@ mod tests {
         assert_eq!(got.len(), want.len());
         for k in 0..want.len() {
             assert_eq!(got[k].to_bits(), want[k].to_bits(), "batched mT idx={k}");
+        }
+    }
+
+    #[test]
+    fn tensor_conv_layout_permute_blocked_matches_naive() {
+        // NCHW<->NHWC conv-layout permutes are block-rotations -> must hit the
+        // cache-blocked transpose path and stay bit-identical to a generic
+        // strided scatter. Verify both directions on a multi-tile [N,C,H,W].
+        let (n, c, h, w) = (2usize, 33usize, 18usize, 20usize);
+        let shape = vec![n, c, h, w];
+        let total = n * c * h * w;
+        let data: Vec<f64> = (0..total).map(|i| (i % 9973) as f64 * 0.3 - 7.0).collect();
+        // Generic strided reference for an arbitrary perm.
+        let generic = |src: &[f64], src_shape: &[usize], perm: &[usize]| -> Vec<f64> {
+            let nd = src_shape.len();
+            let sstr = ft_core::contiguous_strides(src_shape);
+            let dshape: Vec<usize> = perm.iter().map(|&d| src_shape[d]).collect();
+            let dstr = ft_core::contiguous_strides(&dshape);
+            let mut dst = vec![0.0f64; src.len()];
+            for (fs, &v) in src.iter().enumerate() {
+                let mut rem = fs;
+                let mut coord = vec![0usize; nd];
+                for d in 0..nd {
+                    coord[d] = rem / sstr[d];
+                    rem %= sstr[d];
+                }
+                let mut fd = 0;
+                for d in 0..nd {
+                    fd += coord[perm[d]] * dstr[d];
+                }
+                dst[fd] = v;
+            }
+            dst
+        };
+        for perm in [vec![0usize, 2, 3, 1], vec![0usize, 3, 1, 2]] {
+            let mut tape = TensorTape::new();
+            let x = tape.leaf(data.clone(), shape.clone(), false).expect("leaf");
+            let y = tape.permute(x, perm.clone()).expect("permute");
+            let got = tape.values(y).expect("values");
+            let want = generic(&data, &shape, &perm);
+            assert_eq!(got.len(), want.len());
+            for k in 0..want.len() {
+                assert_eq!(got[k].to_bits(), want[k].to_bits(), "conv perm {perm:?} idx={k}");
+            }
         }
     }
 
