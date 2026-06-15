@@ -4823,6 +4823,125 @@ pub fn depthwise_conv2d_forward_f32(
     out
 }
 
+/// Direct depthwise conv3d forward (groups == channels). 3-D analog of
+/// [`depthwise_conv2d_forward_f64`]: `padded` `[N, C, pd, ph, pw]`, `weight`
+/// `[C, 1, kd, kh, kw]` flattened, `bias` `[C]`, output `[N, C, od, oh, ow]`.
+/// Every output is a direct `kd·kh·kw` dot-product against its channel filter,
+/// parallel over the `N·C` independent planes — avoiding the grouped-conv
+/// anti-pattern (`C` separate narrow + im2col + GEMM + cat). Dilation is already
+/// baked into `weight` by the caller (zero-stuffed taps), like conv2d. Matches
+/// torch depthwise conv3d to fp tolerance. frankentorch-tsflc.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn depthwise_conv3d_forward_f64(
+    padded: &[f64],
+    weight: &[f64],
+    bias: Option<&[f64]>,
+    batch: usize,
+    channels: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; batch * channels * od * oh * ow];
+    out.par_chunks_mut(od * oh * ow)
+        .enumerate()
+        .for_each(|(plane, orow)| {
+            let c = plane % channels;
+            let in_base = plane * pd * ph * pw; // plane = n*channels + c
+            let w_base = c * kd * kh * kw;
+            let bo = bias.map_or(0.0, |b| b[c]);
+            for oz in 0..od {
+                let base_d = oz * sd;
+                for oy in 0..oh {
+                    let base_h = oy * sh;
+                    for ox in 0..ow {
+                        let base_w = ox * sw;
+                        let mut acc = 0.0f64;
+                        for kdd in 0..kd {
+                            let d_off = in_base + (base_d + kdd) * ph * pw;
+                            let wd = w_base + kdd * kh * kw;
+                            for kr in 0..kh {
+                                let irow = d_off + (base_h + kr) * pw + base_w;
+                                let wrow = wd + kr * kw;
+                                for kc in 0..kw {
+                                    acc += padded[irow + kc] * weight[wrow + kc];
+                                }
+                            }
+                        }
+                        orow[(oz * oh + oy) * ow + ox] = acc + bo;
+                    }
+                }
+            }
+        });
+    out
+}
+
+/// f32 mirror of [`depthwise_conv3d_forward_f64`].
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn depthwise_conv3d_forward_f32(
+    padded: &[f32],
+    weight: &[f32],
+    bias: Option<&[f32]>,
+    batch: usize,
+    channels: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * channels * od * oh * ow];
+    out.par_chunks_mut(od * oh * ow)
+        .enumerate()
+        .for_each(|(plane, orow)| {
+            let c = plane % channels;
+            let in_base = plane * pd * ph * pw;
+            let w_base = c * kd * kh * kw;
+            let bo = bias.map_or(0.0, |b| b[c]);
+            for oz in 0..od {
+                let base_d = oz * sd;
+                for oy in 0..oh {
+                    let base_h = oy * sh;
+                    for ox in 0..ow {
+                        let base_w = ox * sw;
+                        let mut acc = 0.0f32;
+                        for kdd in 0..kd {
+                            let d_off = in_base + (base_d + kdd) * ph * pw;
+                            let wd = w_base + kdd * kh * kw;
+                            for kr in 0..kh {
+                                let irow = d_off + (base_h + kr) * pw + base_w;
+                                let wrow = wd + kr * kw;
+                                for kc in 0..kw {
+                                    acc += padded[irow + kc] * weight[wrow + kc];
+                                }
+                            }
+                        }
+                        orow[(oz * oh + oy) * ow + ox] = acc + bo;
+                    }
+                }
+            }
+        });
+    out
+}
+
 /// Backward of [`conv2d_forward_f64`]. Returns `(dpadded, dweight_flat, dbias?)`.
 /// `dweight = dout^T @ panel`, `dpanel = dout @ weight_flat`, `dpadded =
 /// col2im(dpanel)`, `dbias = sum over (n,oh,ow)`.
@@ -23652,6 +23771,72 @@ mod tests {
             0x1f80,
             "transcendental sweep changed MXCSR control bits"
         );
+    }
+
+    #[test]
+    fn depthwise_conv3d_forward_matches_naive_reference() {
+        // Parallel direct depthwise conv3d == naive serial reference, bit-for-bit.
+        let (n, c, id, ih, iw, kd, kh, kw, sd, sh, sw) = (2usize, 4, 7, 6, 8, 2, 3, 2, 2, 1, 2);
+        let od = (id - kd) / sd + 1;
+        let oh = (ih - kh) / sh + 1;
+        let ow = (iw - kw) / sw + 1;
+        let padded: Vec<f64> = (0..n * c * id * ih * iw)
+            .map(|i| (i % 911) as f64 * 0.02 - 5.0)
+            .collect();
+        let weight: Vec<f64> = (0..c * kd * kh * kw)
+            .map(|i| (i % 41) as f64 * 0.1 - 1.5)
+            .collect();
+        let bias: Vec<f64> = (0..c).map(|i| i as f64 * 0.3 - 0.7).collect();
+        let got = super::depthwise_conv3d_forward_f64(
+            &padded,
+            &weight,
+            Some(&bias),
+            n,
+            c,
+            id,
+            ih,
+            iw,
+            kd,
+            kh,
+            kw,
+            od,
+            oh,
+            ow,
+            sd,
+            sh,
+            sw,
+        );
+        let mut want = vec![0.0f64; n * c * od * oh * ow];
+        for ni in 0..n {
+            for ci in 0..c {
+                let ib = (ni * c + ci) * id * ih * iw;
+                let wb = ci * kd * kh * kw;
+                for oz in 0..od {
+                    for oy in 0..oh {
+                        for ox in 0..ow {
+                            let mut acc = 0.0f64;
+                            for kdd in 0..kd {
+                                for kr in 0..kh {
+                                    for kc in 0..kw {
+                                        acc += padded[ib
+                                            + ((oz * sd + kdd) * ih + (oy * sh + kr)) * iw
+                                            + ox * sw
+                                            + kc]
+                                            * weight[wb + (kdd * kh + kr) * kw + kc];
+                                    }
+                                }
+                            }
+                            want[((ni * c + ci) * od * oh + oz * oh + oy) * ow + ox] =
+                                acc + bias[ci];
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(got.len(), want.len());
+        for i in 0..want.len() {
+            assert_eq!(got[i].to_bits(), want[i].to_bits(), "depthwise3d idx={i}");
+        }
     }
 
     #[test]
