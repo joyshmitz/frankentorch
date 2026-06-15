@@ -32,8 +32,12 @@ fn s() -> FrankenTorchSession {
 #[test]
 fn complex_real_imag_bridge_backward_matches_torch() {
     let mut s = s();
-    let re = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
-    let im = s.tensor_variable(vec![0.5, 1.5, 2.5, 3.5], vec![4], true).unwrap();
+    let re = s
+        .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+        .unwrap();
+    let im = s
+        .tensor_variable(vec![0.5, 1.5, 2.5, 3.5], vec![4], true)
+        .unwrap();
     let z = s.tensor_complex(re, im).unwrap();
     let rp = s.tensor_real(z).unwrap();
     let ip = s.tensor_imag(z).unwrap();
@@ -42,16 +46,28 @@ fn complex_real_imag_bridge_backward_matches_torch() {
     let sum = s.tensor_add(a, b).unwrap();
     let out = s.tensor_sum(sum).unwrap();
     let rep = s.tensor_backward(out).unwrap();
-    assert_close("A re", s.tensor_gradient(&rep, re).unwrap(), &[2.0, 2.0, 2.0, 2.0]);
-    assert_close("A im", s.tensor_gradient(&rep, im).unwrap(), &[3.0, 3.0, 3.0, 3.0]);
+    assert_close(
+        "A re",
+        s.tensor_gradient(&rep, re).unwrap(),
+        &[2.0, 2.0, 2.0, 2.0],
+    );
+    assert_close(
+        "A im",
+        s.tensor_gradient(&rep, im).unwrap(),
+        &[3.0, 3.0, 3.0, 3.0],
+    );
 }
 
 /// Chain B: abs(z) — grad re = re/|z|, im = im/|z|.
 #[test]
 fn complex_abs_backward_matches_torch() {
     let mut s = s();
-    let re = s.tensor_variable(vec![3.0, 1.0, -2.0, 0.5], vec![4], true).unwrap();
-    let im = s.tensor_variable(vec![4.0, 1.0, 2.0, -0.5], vec![4], true).unwrap();
+    let re = s
+        .tensor_variable(vec![3.0, 1.0, -2.0, 0.5], vec![4], true)
+        .unwrap();
+    let im = s
+        .tensor_variable(vec![4.0, 1.0, 2.0, -0.5], vec![4], true)
+        .unwrap();
     let z = s.tensor_complex(re, im).unwrap();
     let mag = s.tensor_abs(z).unwrap();
     let out = s.tensor_sum(mag).unwrap();
@@ -72,29 +88,45 @@ fn complex_abs_backward_matches_torch() {
 #[test]
 fn fft_backward_matches_torch() {
     let mut s = s();
-    let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+    let x = s
+        .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+        .unwrap();
     let y = s.tensor_fft(x, None).unwrap();
     let re = s.tensor_real(y).unwrap();
     let im = s.tensor_imag(y).unwrap();
-    let a = s.tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![4], false).unwrap();
-    let b = s.tensor_variable(vec![0.5, 0.6, 0.7, 0.8], vec![4], false).unwrap();
+    let a = s
+        .tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![4], false)
+        .unwrap();
+    let b = s
+        .tensor_variable(vec![0.5, 0.6, 0.7, 0.8], vec![4], false)
+        .unwrap();
     let ra = s.tensor_mul(re, a).unwrap();
     let ib = s.tensor_mul(im, b).unwrap();
     let sum = s.tensor_add(ra, ib).unwrap();
     let out = s.tensor_sum(sum).unwrap();
     let rep = s.tensor_backward(out).unwrap();
-    assert_close("D fft", s.tensor_gradient(&rep, x).unwrap(), &[1.0, 0.0, -0.2, -0.4]);
+    assert_close(
+        "D fft",
+        s.tensor_gradient(&rep, x).unwrap(),
+        &[1.0, 0.0, -0.2, -0.4],
+    );
 }
 
 /// Chains E/F: fft with zero-padding (n=6) and truncation (n=2).
 #[test]
 fn fft_resize_backward_matches_torch() {
     for (label, n, golden) in [
-        ("E pad n=6", 6usize, vec![2.1, 2.298076211, 0.566025404, -0.3]),
+        (
+            "E pad n=6",
+            6usize,
+            vec![2.1, 2.298076211, 0.566025404, -0.3],
+        ),
         ("F trunc n=2", 2usize, vec![0.3, -0.1, 0.0, 0.0]),
     ] {
         let mut s = s();
-        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .unwrap();
         let y = s.tensor_fft(x, Some(n)).unwrap();
         let re = s.tensor_real(y).unwrap();
         let im = s.tensor_imag(y).unwrap();
@@ -130,8 +162,12 @@ fn ifft_backward_matches_torch() {
         ),
     ] {
         let mut s = s();
-        let xr = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
-        let xi = s.tensor_variable(vec![0.5, 1.0, 1.5, 2.0], vec![4], true).unwrap();
+        let xr = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .unwrap();
+        let xi = s
+            .tensor_variable(vec![0.5, 1.0, 1.5, 2.0], vec![4], true)
+            .unwrap();
         let z = s.tensor_complex(xr, xi).unwrap();
         let y = s.tensor_ifft(z, Some(n)).unwrap();
         let re = s.tensor_real(y).unwrap();
@@ -145,8 +181,16 @@ fn ifft_backward_matches_torch() {
         let sum = s.tensor_add(ra, ib).unwrap();
         let out = s.tensor_sum(sum).unwrap();
         let rep = s.tensor_backward(out).unwrap();
-        assert_close(&format!("{label} xr"), s.tensor_gradient(&rep, xr).unwrap(), &gr);
-        assert_close(&format!("{label} xi"), s.tensor_gradient(&rep, xi).unwrap(), &gi);
+        assert_close(
+            &format!("{label} xr"),
+            s.tensor_gradient(&rep, xr).unwrap(),
+            &gr,
+        );
+        assert_close(
+            &format!("{label} xi"),
+            s.tensor_gradient(&rep, xi).unwrap(),
+            &gi,
+        );
     }
 }
 

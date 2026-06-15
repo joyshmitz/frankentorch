@@ -13,7 +13,10 @@ use ft_core::ExecutionMode;
 fn close(label: &str, got: &[f64], want: &[f64]) {
     assert_eq!(got.len(), want.len(), "{label}: length mismatch");
     for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-        assert!((g - w).abs() <= 1e-6, "{label}[{i}]: got {g}, want {w} (torch)");
+        assert!(
+            (g - w).abs() <= 1e-6,
+            "{label}[{i}]: got {g}, want {w} (torch)"
+        );
     }
 }
 
@@ -121,7 +124,11 @@ fn det_hessian_matches_torch() {
     let m2 = s2.tensor_variable(A.to_vec(), vec![2, 2], true).unwrap();
     let d2 = s2.tensor_det(m2).unwrap();
     let rep = s2.tensor_backward(d2).unwrap();
-    close("det.grad", s2.tensor_gradient(&rep, m2).unwrap(), &[1.5, -0.5, -0.5, 2.0]);
+    close(
+        "det.grad",
+        s2.tensor_gradient(&rep, m2).unwrap(),
+        &[1.5, -0.5, -0.5, 2.0],
+    );
     // 2nd-order: full 4x4 Hessian = [[0,0,0,1],[0,0,-1,0],[0,-1,0,0],[1,0,0,0]]
     let h = s.tensor_functional_hessian(d, m).unwrap();
     let want = [

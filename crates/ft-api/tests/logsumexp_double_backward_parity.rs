@@ -14,7 +14,10 @@ fn close(label: &str, got: &[f64], want: &[f64]) {
     assert_eq!(got.len(), want.len(), "{label}: length mismatch");
     for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
         // goldens are torch values rounded to 6 decimals
-        assert!((g - w).abs() <= 1e-6, "{label}[{i}]: got {g}, want {w} (torch)");
+        assert!(
+            (g - w).abs() <= 1e-6,
+            "{label}[{i}]: got {g}, want {w} (torch)"
+        );
     }
 }
 
@@ -52,7 +55,9 @@ fn logsumexp_forward_and_first_grad_match_torch() {
 #[test]
 fn logsumexp_hessian_vector_matches_torch() {
     let mut s = sess();
-    let x = s.tensor_variable(vec![0.5, 1.0, 1.5, 2.0], vec![4], true).unwrap();
+    let x = s
+        .tensor_variable(vec![0.5, 1.0, 1.5, 2.0], vec![4], true)
+        .unwrap();
     let y = s.tensor_logsumexp(x, 0).unwrap();
     let h = s.tensor_functional_hessian(y, x).unwrap();
     let diag: Vec<f64> = (0..4).map(|i| h[i * 4 + i]).collect();

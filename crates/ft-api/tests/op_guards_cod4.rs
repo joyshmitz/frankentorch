@@ -160,7 +160,10 @@ fn view_as_complex_requires_grad_input_is_differentiable() {
     let back = session.tensor_view_as_real(z).unwrap();
     let out = session.tensor_sum(back).unwrap();
     let rep = session.tensor_backward(out).unwrap();
-    assert_eq!(session.tensor_gradient(&rep, input).unwrap(), &[1.0, 1.0, 1.0, 1.0]);
+    assert_eq!(
+        session.tensor_gradient(&rep, input).unwrap(),
+        &[1.0, 1.0, 1.0, 1.0]
+    );
 }
 
 #[test]
@@ -181,7 +184,10 @@ fn view_as_real_requires_grad_complex_input_is_differentiable() {
     let out = session.tensor_sum(real_view).unwrap();
     let rep = session.tensor_backward(out).unwrap();
     // d sum(view_as_real(z))/dz = ones over both re/im lanes (2 complex -> 4 reals).
-    assert_eq!(session.tensor_gradient(&rep, input).unwrap(), &[1.0, 1.0, 1.0, 1.0]);
+    assert_eq!(
+        session.tensor_gradient(&rep, input).unwrap(),
+        &[1.0, 1.0, 1.0, 1.0]
+    );
 }
 
 #[test]

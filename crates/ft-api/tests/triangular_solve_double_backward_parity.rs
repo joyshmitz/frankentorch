@@ -14,7 +14,10 @@ use ft_core::ExecutionMode;
 fn close(label: &str, got: &[f64], want: &[f64]) {
     assert_eq!(got.len(), want.len(), "{label}: length mismatch");
     for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-        assert!((g - w).abs() <= 1e-6, "{label}[{i}]: got {g}, want {w} (torch)");
+        assert!(
+            (g - w).abs() <= 1e-6,
+            "{label}[{i}]: got {g}, want {w} (torch)"
+        );
     }
 }
 
@@ -30,7 +33,9 @@ const B: [f64; 2] = [1.0, 2.0];
 fn triangular_solve_forward_and_first_grad_match_torch() {
     // forward: solve_triangular(A, b, upper=False) = [0.5, 1.166666667]
     let mut s = sess();
-    let a = s.tensor_variable(A_LOWER.to_vec(), vec![2, 2], false).unwrap();
+    let a = s
+        .tensor_variable(A_LOWER.to_vec(), vec![2, 2], false)
+        .unwrap();
     let b = s.tensor_variable(B.to_vec(), vec![2], false).unwrap();
     let x = s.tensor_triangular_solve(a, b, false).unwrap();
     let xv = s.tensor_values(x).unwrap();
@@ -38,7 +43,9 @@ fn triangular_solve_forward_and_first_grad_match_torch() {
 
     // 1st-order grad wrt A (upper entry A[0,1] is masked -> 0)
     let mut s = sess();
-    let a = s.tensor_variable(A_LOWER.to_vec(), vec![2, 2], true).unwrap();
+    let a = s
+        .tensor_variable(A_LOWER.to_vec(), vec![2, 2], true)
+        .unwrap();
     let b = s.tensor_variable(B.to_vec(), vec![2], false).unwrap();
     let x = s.tensor_triangular_solve(a, b, false).unwrap();
     let out = s.tensor_sum(x).unwrap();
@@ -56,7 +63,9 @@ fn triangular_solve_forward_and_first_grad_match_torch() {
 #[test]
 fn triangular_solve_hessian_over_a_matches_torch() {
     let mut s = sess();
-    let a = s.tensor_variable(A_LOWER.to_vec(), vec![2, 2], true).unwrap();
+    let a = s
+        .tensor_variable(A_LOWER.to_vec(), vec![2, 2], true)
+        .unwrap();
     let b = s.tensor_variable(B.to_vec(), vec![2], false).unwrap();
     let x = s.tensor_triangular_solve(a, b, false).unwrap();
     let out = s.tensor_sum(x).unwrap();

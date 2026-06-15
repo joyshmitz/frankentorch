@@ -14,7 +14,10 @@ use ft_core::ExecutionMode;
 fn close(label: &str, got: &[f64], want: &[f64]) {
     assert_eq!(got.len(), want.len(), "{label}: length mismatch");
     for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-        assert!((g - w).abs() <= 1e-6, "{label}[{i}]: got {g}, want {w} (torch)");
+        assert!(
+            (g - w).abs() <= 1e-6,
+            "{label}[{i}]: got {g}, want {w} (torch)"
+        );
     }
 }
 
