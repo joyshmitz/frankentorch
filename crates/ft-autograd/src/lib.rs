@@ -10497,8 +10497,16 @@ impl TensorTape {
         let mut execution_order = Vec::with_capacity(self.nodes.len());
 
         while let Some(node_id) = queue.pop() {
-            let incoming = self.apply_tensor_hooks(node_id, &grads[node_id.0])?;
-            grads[node_id.0] = incoming.clone();
+            // Move this node's accumulated gradient OUT of `grads` (no clone) and
+            // run its hooks on the owned buffer — the no-hook common case is a
+            // zero-copy take. Operating on an owned `incoming` (rather than a
+            // borrow of `grads[node_id.0]`) lets the match arms below mutate
+            // `grads[input.0]` without a borrow conflict. The buffer is moved back
+            // into `grads[node_id.0]` at the end of the loop body so post-backward
+            // gradient lookups see the hook-adjusted incoming. (Replaces two
+            // per-node ~numel f64 clones that capped through-tape throughput.)
+            let incoming =
+                self.apply_tensor_hooks(node_id, std::mem::take(&mut grads[node_id.0]))?;
             execution_order.push(node_id);
 
             match self.nodes[node_id.0].op {
@@ -11306,10 +11314,11 @@ impl TensorTape {
                 TensorNodeOp::Silu { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
-                    let contrib = Self::tensor_backward_zip_map(&incoming, &input_values, |g, x| {
-                        let s = 1.0 / (1.0 + (-x).exp());
-                        g * s * (1.0 + x * (1.0 - s))
-                    });
+                    let contrib =
+                        Self::tensor_backward_zip_map(&incoming, &input_values, |g, x| {
+                            let s = 1.0 / (1.0 + (-x).exp());
+                            g * s * (1.0 + x * (1.0 - s))
+                        });
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
@@ -11337,10 +11346,11 @@ impl TensorTape {
                 TensorNodeOp::Elu { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
-                    let contrib = Self::tensor_backward_zip_map(&incoming, &input_values, |g, x| {
-                        let derivative = if x <= 0.0 { x.exp() } else { 1.0 };
-                        g * derivative
-                    });
+                    let contrib =
+                        Self::tensor_backward_zip_map(&incoming, &input_values, |g, x| {
+                            let derivative = if x <= 0.0 { x.exp() } else { 1.0 };
+                            g * derivative
+                        });
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
@@ -11369,9 +11379,10 @@ impl TensorTape {
                     let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let coeff = 2.0 / std::f64::consts::PI.sqrt();
-                    let contrib = Self::tensor_backward_zip_map(&incoming, &input_values, |g, x| {
-                        g * coeff * (-x * x).exp()
-                    });
+                    let contrib =
+                        Self::tensor_backward_zip_map(&incoming, &input_values, |g, x| {
+                            g * coeff * (-x * x).exp()
+                        });
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
@@ -11384,9 +11395,10 @@ impl TensorTape {
                     let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let coeff = 2.0 / std::f64::consts::PI.sqrt();
-                    let contrib = Self::tensor_backward_zip_map(&incoming, &input_values, |g, x| {
-                        g * (-coeff) * (-x * x).exp()
-                    });
+                    let contrib =
+                        Self::tensor_backward_zip_map(&incoming, &input_values, |g, x| {
+                            g * (-coeff) * (-x * x).exp()
+                        });
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
@@ -11460,14 +11472,15 @@ impl TensorTape {
                 TensorNodeOp::Softplus { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
-                    let contrib = Self::tensor_backward_zip_map(&incoming, &input_values, |g, x| {
-                        let grad = if x > 20.0 {
-                            1.0
-                        } else {
-                            1.0 / (1.0 + (-x).exp())
-                        };
-                        g * grad
-                    });
+                    let contrib =
+                        Self::tensor_backward_zip_map(&incoming, &input_values, |g, x| {
+                            let grad = if x > 20.0 {
+                                1.0
+                            } else {
+                                1.0 / (1.0 + (-x).exp())
+                            };
+                            g * grad
+                        });
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
@@ -13789,6 +13802,12 @@ impl TensorTape {
                     });
                 }
             }
+
+            // Restore the (hook-adjusted) gradient we moved out at the top of the
+            // loop so post-backward lookups for this node return it. A node is
+            // never its own input, so `grads[node_id.0]` was untouched by the
+            // match arms above and this move is the single owner write-back.
+            grads[node_id.0] = incoming;
         }
 
         let gradients: Vec<Option<Vec<f64>>> = grads
@@ -18882,22 +18901,26 @@ impl TensorTape {
         Ok(())
     }
 
+    /// Apply this node's registered backward hooks to its accumulated gradient,
+    /// taking ownership of `incoming` so the no-hook common case is zero-copy
+    /// (the `Vec` is moved straight through). Each hook that returns `Some`
+    /// replaces the running gradient; the bytes are identical to the prior
+    /// `&[f64]` form when no hook fires.
     fn apply_tensor_hooks(
         &self,
         node: TensorNodeId,
-        incoming: &[f64],
+        mut incoming: Vec<f64>,
     ) -> Result<Vec<f64>, AutogradError> {
         let Some(hooks) = self.tensor_hooks.get(&node.0) else {
-            return Ok(incoming.to_vec());
+            return Ok(incoming);
         };
-        let mut current = incoming.to_vec();
         for hook in hooks {
-            if let Some(updated) = (hook.callback)(current.as_slice())? {
-                Self::ensure_tensor_len(node, current.len(), updated.len())?;
-                current = updated;
+            if let Some(updated) = (hook.callback)(incoming.as_slice())? {
+                Self::ensure_tensor_len(node, incoming.len(), updated.len())?;
+                incoming = updated;
             }
         }
-        Ok(current)
+        Ok(incoming)
     }
 
     fn accumulate_persistent_gradients(
