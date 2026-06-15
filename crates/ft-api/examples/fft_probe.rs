@@ -11,7 +11,11 @@ fn main() {
         let rev = s.tensor_values(re).unwrap();
         let im = s.tensor_imag(c).unwrap();
         let imv = s.tensor_values(im).unwrap();
-        let r = |v: &[f64]| v.iter().map(|x| (x * 1e5).round() / 1e5).collect::<Vec<_>>();
+        let r = |v: &[f64]| {
+            v.iter()
+                .map(|x| (x * 1e5).round() / 1e5)
+                .collect::<Vec<_>>()
+        };
         (r(&rev), r(&imv))
     };
 

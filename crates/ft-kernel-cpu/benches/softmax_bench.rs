@@ -61,6 +61,14 @@ fn bench_softmax(c: &mut Criterion) {
             )
         })
     });
+    c.bench_function("log_softmax_f64_strided_4096x32x8_dim1", |b| {
+        b.iter(|| {
+            black_box(
+                log_softmax_dim_tensor_contiguous_f64(black_box(&data_s), &meta_s, 1)
+                    .expect("valid log_softmax input"),
+            )
+        })
+    });
 }
 
 criterion_group!(benches, bench_softmax);

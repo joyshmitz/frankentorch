@@ -4,7 +4,9 @@ use ft_api::FrankenTorchSession;
 use ft_core::ExecutionMode;
 
 fn hess(s: &mut FrankenTorchSession, name: &str, inp: Vec<f64>, op: &str) {
-    let x = s.tensor_variable(inp.clone(), vec![inp.len()], true).unwrap();
+    let x = s
+        .tensor_variable(inp.clone(), vec![inp.len()], true)
+        .unwrap();
     let y = match op {
         "selu" => s.tensor_selu(x),
         "elu" => s.tensor_elu(x),

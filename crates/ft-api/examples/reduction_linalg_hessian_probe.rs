@@ -21,19 +21,27 @@ fn main() {
             let build: &dyn Fn(
                 &mut FrankenTorchSession,
                 ft_autograd::TensorNodeId,
-            ) -> Result<ft_autograd::TensorNodeId, ft_autograd::AutogradError> = &$build;
+            )
+                -> Result<ft_autograd::TensorNodeId, ft_autograd::AutogradError> = &$build;
             match build(&mut s, x).and_then(|y| s.tensor_functional_hessian(y, x)) {
                 Ok(h) => {
                     // print diagonal + H[0,1] + H[0,2]
                     let diag: Vec<f64> = (0..4).map(|i| h[i * 4 + i]).collect();
-                    println!("{:<14} diag={:?} H01={:.6} H02={:.6}", $name, r6(&diag), h[1], h[2]);
+                    println!(
+                        "{:<14} diag={:?} H01={:.6} H02={:.6}",
+                        $name,
+                        r6(&diag),
+                        h[1],
+                        h[2]
+                    );
                 }
                 Err(e) => println!("{:<14} ERR {:?}", $name, e),
             }
         }};
     }
 
-    red!("logsumexp", |s: &mut FrankenTorchSession, x| s.tensor_logsumexp(x, 0));
+    red!("logsumexp", |s: &mut FrankenTorchSession, x| s
+        .tensor_logsumexp(x, 0));
     red!("softmax_sq", |s: &mut FrankenTorchSession, x| {
         let sm = s.tensor_softmax(x, 0)?;
         let sq = s.tensor_mul(sm, sm)?;
@@ -45,13 +53,16 @@ fn main() {
         let prod = s.tensor_mul(ls, w)?;
         s.tensor_sum(prod)
     });
-    red!("var_unbiased", |s: &mut FrankenTorchSession, x| s.tensor_var(x, 1));
-    red!("std_unbiased", |s: &mut FrankenTorchSession, x| s.tensor_std(x, 1));
+    red!("var_unbiased", |s: &mut FrankenTorchSession, x| s
+        .tensor_var(x, 1));
+    red!("std_unbiased", |s: &mut FrankenTorchSession, x| s
+        .tensor_std(x, 1));
     red!("mean_sq", |s: &mut FrankenTorchSession, x| {
         let sq = s.tensor_mul(x, x)?;
         s.tensor_mean(sq)
     });
-    red!("norm2", |s: &mut FrankenTorchSession, x| s.tensor_norm(x, 2.0));
+    red!("norm2", |s: &mut FrankenTorchSession, x| s
+        .tensor_norm(x, 2.0));
 
     // Linalg losses on a 2x2 SPD matrix A = [[2,0.5],[0.5,1.5]]. Hessian is 4x4.
     let a = vec![2.0f64, 0.5, 0.5, 1.5];
@@ -62,7 +73,8 @@ fn main() {
             let build: &dyn Fn(
                 &mut FrankenTorchSession,
                 ft_autograd::TensorNodeId,
-            ) -> Result<ft_autograd::TensorNodeId, ft_autograd::AutogradError> = &$build;
+            )
+                -> Result<ft_autograd::TensorNodeId, ft_autograd::AutogradError> = &$build;
             match build(&mut s, m).and_then(|y| s.tensor_functional_hessian(y, m)) {
                 Ok(h) => {
                     let diag: Vec<f64> = (0..4).map(|i| h[i * 4 + i]).collect();
@@ -73,7 +85,8 @@ fn main() {
         }};
     }
 
-    lin!("logdet", |s: &mut FrankenTorchSession, m| s.tensor_logdet(m));
+    lin!("logdet", |s: &mut FrankenTorchSession, m| s
+        .tensor_logdet(m));
     lin!("sum_inv", |s: &mut FrankenTorchSession, m| {
         let inv = s.tensor_inverse(m)?;
         s.tensor_sum(inv)

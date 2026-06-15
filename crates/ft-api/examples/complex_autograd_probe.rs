@@ -14,7 +14,9 @@ fn main() {
     // Chain A: loss = sum(real(z)*2 + imag(z)*3); grad re=2, im=3.
     {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let re = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+        let re = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .unwrap();
         let im = s
             .tensor_variable(vec![0.5, 1.5, 2.5, 3.5], vec![4], true)
             .unwrap();
@@ -26,8 +28,14 @@ fn main() {
         let sum = s.tensor_add(a, b).unwrap();
         let out = s.tensor_sum(sum).unwrap();
         let rep = s.tensor_backward(out).unwrap();
-        println!("A re.grad {:?}  (torch [2,2,2,2])", r(s.tensor_gradient(&rep, re).unwrap()));
-        println!("A im.grad {:?}  (torch [3,3,3,3])", r(s.tensor_gradient(&rep, im).unwrap()));
+        println!(
+            "A re.grad {:?}  (torch [2,2,2,2])",
+            r(s.tensor_gradient(&rep, re).unwrap())
+        );
+        println!(
+            "A im.grad {:?}  (torch [3,3,3,3])",
+            r(s.tensor_gradient(&rep, im).unwrap())
+        );
     }
 
     // Chain B: loss = sum(abs(z)); grad re = re/|z|, im = im/|z|.
@@ -56,12 +64,18 @@ fn main() {
     // Chain D: real -> fft -> sum(real(y)*a + imag(y)*b); grad matches torch.
     {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .unwrap();
         let y = s.tensor_fft(x, None).unwrap();
         let re = s.tensor_real(y).unwrap();
         let im = s.tensor_imag(y).unwrap();
-        let a = s.tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![4], false).unwrap();
-        let b = s.tensor_variable(vec![0.5, 0.6, 0.7, 0.8], vec![4], false).unwrap();
+        let a = s
+            .tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![4], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![0.5, 0.6, 0.7, 0.8], vec![4], false)
+            .unwrap();
         let ra = s.tensor_mul(re, a).unwrap();
         let ib = s.tensor_mul(im, b).unwrap();
         let sum = s.tensor_add(ra, ib).unwrap();
@@ -79,7 +93,9 @@ fn main() {
         ("F trunc n=2", 2usize, "[0.3,-0.1,0.0,0.0]"),
     ] {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .unwrap();
         let y = s.tensor_fft(x, Some(nval)).unwrap();
         let re = s.tensor_real(y).unwrap();
         let im = s.tensor_imag(y).unwrap();
@@ -92,7 +108,10 @@ fn main() {
         let sum = s.tensor_add(ra, ib).unwrap();
         let out = s.tensor_sum(sum).unwrap();
         let rep = s.tensor_backward(out).unwrap();
-        println!("{label} x.grad {:?}  (torch {golden})", r(s.tensor_gradient(&rep, x).unwrap()));
+        println!(
+            "{label} x.grad {:?}  (torch {golden})",
+            r(s.tensor_gradient(&rep, x).unwrap())
+        );
     }
 
     // Chains G/H: real,imag -> complex -> ifft(n) -> sum(real*a + imag*b).
@@ -111,8 +130,12 @@ fn main() {
         ),
     ] {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let xr = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
-        let xi = s.tensor_variable(vec![0.5, 1.0, 1.5, 2.0], vec![4], true).unwrap();
+        let xr = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .unwrap();
+        let xi = s
+            .tensor_variable(vec![0.5, 1.0, 1.5, 2.0], vec![4], true)
+            .unwrap();
         let z = s.tensor_complex(xr, xi).unwrap();
         let y = s.tensor_ifft(z, Some(nval)).unwrap();
         let re = s.tensor_real(y).unwrap();
@@ -126,8 +149,14 @@ fn main() {
         let sum = s.tensor_add(ra, ib).unwrap();
         let out = s.tensor_sum(sum).unwrap();
         let rep = s.tensor_backward(out).unwrap();
-        println!("{label} xr.grad {:?}  (torch {gr_golden})", r(s.tensor_gradient(&rep, xr).unwrap()));
-        println!("{label} xi.grad {:?}  (torch {gi_golden})", r(s.tensor_gradient(&rep, xi).unwrap()));
+        println!(
+            "{label} xr.grad {:?}  (torch {gr_golden})",
+            r(s.tensor_gradient(&rep, xr).unwrap())
+        );
+        println!(
+            "{label} xi.grad {:?}  (torch {gi_golden})",
+            r(s.tensor_gradient(&rep, xi).unwrap())
+        );
     }
 
     // Chain C: r[...,2] -> view_as_complex -> view_as_real -> *w -> sum; grad r = w.
