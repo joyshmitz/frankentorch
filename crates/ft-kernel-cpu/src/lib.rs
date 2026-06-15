@@ -5226,6 +5226,20 @@ pub fn avg_pool2d_forward_f64(
     iw: usize,
     count_include_pad: bool,
 ) -> Vec<f64> {
+    if kh == 2
+        && kw == 2
+        && sh == 2
+        && sw == 2
+        && pad_h == 0
+        && pad_w == 0
+        && count_include_pad
+        && ph == ih
+        && pw == iw
+        && oh == ih / 2
+        && ow == iw / 2
+    {
+        return avg_pool2d_forward_2x2s2_f64(padded, batch, ch, ih, iw, oh, ow);
+    }
     let mut out = vec![0.0f64; batch * ch * oh * ow];
     out.par_chunks_mut(oh * ow)
         .enumerate()
@@ -5258,6 +5272,36 @@ pub fn avg_pool2d_forward_f64(
     out
 }
 
+fn avg_pool2d_forward_2x2s2_f64(
+    input: &[f64],
+    batch: usize,
+    ch: usize,
+    ih: usize,
+    iw: usize,
+    oh: usize,
+    ow: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; batch * ch * oh * ow];
+    out.par_chunks_mut(oh * ow)
+        .enumerate()
+        .for_each(|(plane, orow)| {
+            let ibase = plane * ih * iw;
+            for oy in 0..oh {
+                let r0 = (oy * 2) * iw;
+                let r1 = r0 + iw;
+                for ox in 0..ow {
+                    let c0 = ox * 2;
+                    let v00 = input[ibase + r0 + c0];
+                    let v01 = input[ibase + r0 + c0 + 1];
+                    let v10 = input[ibase + r1 + c0];
+                    let v11 = input[ibase + r1 + c0 + 1];
+                    orow[oy * ow + ox] = (((v00 + v01) + v10) + v11) / 4.0;
+                }
+            }
+        });
+    out
+}
+
 /// f32 mirror of [`avg_pool2d_forward_f64`]: one windowed-mean pass over the
 /// padded input, parallel over `(batch,ch)` planes. Replaces the f32 op-graph
 /// (narrow/sum/div/cat) the f32 no-grad path fell through to.
@@ -5281,6 +5325,20 @@ pub fn avg_pool2d_forward_f32(
     iw: usize,
     count_include_pad: bool,
 ) -> Vec<f32> {
+    if kh == 2
+        && kw == 2
+        && sh == 2
+        && sw == 2
+        && pad_h == 0
+        && pad_w == 0
+        && count_include_pad
+        && ph == ih
+        && pw == iw
+        && oh == ih / 2
+        && ow == iw / 2
+    {
+        return avg_pool2d_forward_2x2s2_f32(padded, batch, ch, ih, iw, oh, ow);
+    }
     let mut out = vec![0.0f32; batch * ch * oh * ow];
     out.par_chunks_mut(oh * ow)
         .enumerate()
@@ -5307,6 +5365,36 @@ pub fn avg_pool2d_forward_f32(
                         (vrlen * vclen) as f32
                     };
                     orow[oy * ow + ox] = sum / div;
+                }
+            }
+        });
+    out
+}
+
+fn avg_pool2d_forward_2x2s2_f32(
+    input: &[f32],
+    batch: usize,
+    ch: usize,
+    ih: usize,
+    iw: usize,
+    oh: usize,
+    ow: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * ch * oh * ow];
+    out.par_chunks_mut(oh * ow)
+        .enumerate()
+        .for_each(|(plane, orow)| {
+            let ibase = plane * ih * iw;
+            for oy in 0..oh {
+                let r0 = (oy * 2) * iw;
+                let r1 = r0 + iw;
+                for ox in 0..ow {
+                    let c0 = ox * 2;
+                    let v00 = input[ibase + r0 + c0];
+                    let v01 = input[ibase + r0 + c0 + 1];
+                    let v10 = input[ibase + r1 + c0];
+                    let v11 = input[ibase + r1 + c0 + 1];
+                    orow[oy * ow + ox] = (((v00 + v01) + v10) + v11) / 4.0;
                 }
             }
         });
@@ -7608,16 +7696,30 @@ pub fn norm_dim_tensor_contiguous_f64(
             }
         }
     } else {
-        for outer in 0..outer_size {
-            for inner in 0..inner_size {
-                let mut sum_pow = 0.0;
-                for r in 0..reduce_size {
-                    sum_pow += data[outer * reduce_size * inner_size + r * inner_size + inner]
-                        .abs()
-                        .powf(p);
-                }
-                output.push(sum_pow.powf(1.0 / p));
+        // General fractional p: one `powf` per element + a final `powf` per
+        // output makes this branch COMPUTE-bound (unlike the cheap p=1/2/inf
+        // abs/square branches, which stay serial — bandwidth-bound). Output
+        // rows are independent and each row's r-ascending sum order is
+        // unchanged, so dispatching rows across Rayon is bit-for-bit identical
+        // to the serial push (the serial loop visited o = outer*inner_size +
+        // inner in row-major order, exactly the 0..out_numel index here).
+        let compute = |o: usize| -> f64 {
+            let outer = o / inner_size;
+            let inner = o % inner_size;
+            let mut sum_pow = 0.0;
+            for r in 0..reduce_size {
+                sum_pow += data[outer * reduce_size * inner_size + r * inner_size + inner]
+                    .abs()
+                    .powf(p);
             }
+            sum_pow.powf(1.0 / p)
+        };
+        if checked_mul(out_numel, reduce_size, "norm_dim work").unwrap_or(usize::MAX)
+            >= PARALLEL_THRESHOLD
+        {
+            output = (0..out_numel).into_par_iter().map(compute).collect();
+        } else {
+            output.extend((0..out_numel).map(compute));
         }
     }
 
@@ -20729,16 +20831,26 @@ pub fn norm_dim_tensor_contiguous_f32(
             }
         }
     } else {
-        for outer in 0..outer_size {
-            for inner in 0..inner_size {
-                let mut sum_pow = 0.0f32;
-                for r in 0..reduce_size {
-                    sum_pow += data[outer * reduce_size * inner_size + r * inner_size + inner]
-                        .abs()
-                        .powf(p);
-                }
-                output.push(sum_pow.powf(1.0f32 / p));
+        // General fractional p is COMPUTE-bound (powf per element); parallelise
+        // over independent output rows, bit-exact (see the f64 twin). The cheap
+        // p=1/2/inf branches stay serial (bandwidth-bound).
+        let compute = |o: usize| -> f32 {
+            let outer = o / inner_size;
+            let inner = o % inner_size;
+            let mut sum_pow = 0.0f32;
+            for r in 0..reduce_size {
+                sum_pow += data[outer * reduce_size * inner_size + r * inner_size + inner]
+                    .abs()
+                    .powf(p);
             }
+            sum_pow.powf(1.0f32 / p)
+        };
+        if checked_mul(out_numel, reduce_size, "norm_dim_f32 work").unwrap_or(usize::MAX)
+            >= PARALLEL_THRESHOLD
+        {
+            output = (0..out_numel).into_par_iter().map(compute).collect();
+        } else {
+            output.extend((0..out_numel).map(compute));
         }
     }
     Ok(output)
@@ -23239,6 +23351,82 @@ mod tests {
             vec![0.0, 2.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0]
         );
         assert_eq!(from_indices, from_rescan);
+    }
+
+    #[test]
+    fn avg_pool2d_2x2s2_direct_matches_generic_bit_exact() {
+        let (batch, ch, ih, iw) = (2usize, 3usize, 5usize, 7usize);
+        let (oh, ow) = (ih / 2, iw / 2);
+        let n = batch * ch * ih * iw;
+
+        let input64: Vec<f64> = (0..n)
+            .map(|i| (((i * 37 + 11) % 251) as f64 - 103.0) * 0.03125)
+            .collect();
+        let got64 = super::avg_pool2d_forward_f64(
+            &input64, batch, ch, ih, iw, 2, 2, oh, ow, 2, 2, 0, 0, ih, iw, true,
+        );
+        let mut want64 = vec![0.0f64; batch * ch * oh * ow];
+        for plane in 0..batch * ch {
+            let ibase = plane * ih * iw;
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let rs = oy * 2;
+                    let cs = ox * 2;
+                    let mut sum = 0.0f64;
+                    for r in rs..rs + 2 {
+                        let irow = ibase + r * iw;
+                        for c in cs..cs + 2 {
+                            sum += input64[irow + c];
+                        }
+                    }
+                    want64[plane * oh * ow + oy * ow + ox] = sum / 4.0;
+                }
+            }
+        }
+        assert_eq!(
+            got64.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            want64.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+
+        let input32: Vec<f32> = (0..n)
+            .map(|i| (((i * 29 + 7) % 127) as f32 - 61.0) * 0.03125)
+            .collect();
+        let got32 = super::avg_pool2d_forward_f32(
+            &input32, batch, ch, ih, iw, 2, 2, oh, ow, 2, 2, 0, 0, ih, iw, true,
+        );
+        let mut want32 = vec![0.0f32; batch * ch * oh * ow];
+        for plane in 0..batch * ch {
+            let ibase = plane * ih * iw;
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let rs = oy * 2;
+                    let cs = ox * 2;
+                    let mut sum = 0.0f32;
+                    for r in rs..rs + 2 {
+                        let irow = ibase + r * iw;
+                        for c in cs..cs + 2 {
+                            sum += input32[irow + c];
+                        }
+                    }
+                    want32[plane * oh * ow + oy * ow + ox] = sum / 4.0;
+                }
+            }
+        }
+        assert_eq!(
+            got32.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            want32.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+
+        let mut digest = 0xcbf29ce484222325u64;
+        for bits in got64.iter().map(|v| v.to_bits()) {
+            digest ^= bits;
+            digest = digest.wrapping_mul(0x100000001b3);
+        }
+        for bits in got32.iter().map(|v| u64::from(v.to_bits())) {
+            digest ^= bits;
+            digest = digest.wrapping_mul(0x100000001b3);
+        }
+        assert_eq!(digest, 0x7af37c5e805fbec5, "avg_pool2d 2x2s2 golden digest");
     }
 
     #[test]
@@ -28218,6 +28406,64 @@ mod tests {
         assert_eq!(got.len(), want.len());
         for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(g.to_bits(), w.to_bits(), "strided erf idx={i}");
+        }
+    }
+
+    #[test]
+    fn norm_dim_general_p_parallel_matches_serial_bit_exact() {
+        // The general fractional-p branch of norm_dim now parallelises over
+        // output rows above the work gate. Drive it past the threshold and
+        // compare against an independent serial reference BIT-FOR-BIT (each
+        // output's r-ascending powf sum is order-fixed; rows are independent).
+        let serial_norm = |data: &[f64], shape: &[usize], p: f64, dim: usize| -> Vec<f64> {
+            let reduce = shape[dim];
+            let inner: usize = shape[dim + 1..].iter().product();
+            let outer: usize = shape[..dim].iter().product();
+            let mut out = Vec::with_capacity(outer * inner);
+            for o in 0..outer {
+                for i in 0..inner {
+                    let mut s = 0.0;
+                    for r in 0..reduce {
+                        s += data[o * reduce * inner + r * inner + i].abs().powf(p);
+                    }
+                    out.push(s.powf(1.0 / p));
+                }
+            }
+            out
+        };
+        // [512, 64, 8] reduce over dim=1: out_numel=4096, work=262144 > gate.
+        let shape = vec![512usize, 64, 8];
+        let n: usize = shape.iter().product();
+        let data: Vec<f64> = (0..n).map(|i| ((i % 9973) as f64) * 0.0007 - 3.0).collect();
+        let meta = TensorMeta::from_shape(shape.clone(), DType::F64, Device::Cpu);
+        for &p in &[3.0f64, 0.5, 1.5] {
+            let got = super::norm_dim_tensor_contiguous_f64(&data, &meta, p, 1).unwrap();
+            let want = serial_norm(&data, &shape, p, 1);
+            assert_eq!(got.len(), want.len());
+            for i in 0..got.len() {
+                assert_eq!(got[i].to_bits(), want[i].to_bits(), "norm_dim p={p} idx={i}");
+            }
+        }
+        // f32 twin, same shape/p.
+        let dataf: Vec<f32> = (0..n).map(|i| ((i % 9973) as f32) * 0.0007 - 3.0).collect();
+        let metaf = TensorMeta::from_shape(shape.clone(), DType::F32, Device::Cpu);
+        let pf = 3.0f32;
+        let gotf = super::norm_dim_tensor_contiguous_f32(&dataf, &metaf, pf, 1).unwrap();
+        let reduce = shape[1];
+        let inner = shape[2];
+        let outer = shape[0];
+        let mut wantf = Vec::with_capacity(outer * inner);
+        for o in 0..outer {
+            for i in 0..inner {
+                let mut s = 0.0f32;
+                for r in 0..reduce {
+                    s += dataf[o * reduce * inner + r * inner + i].abs().powf(pf);
+                }
+                wantf.push(s.powf(1.0f32 / pf));
+            }
+        }
+        for i in 0..gotf.len() {
+            assert_eq!(gotf[i].to_bits(), wantf[i].to_bits(), "norm_dim_f32 idx={i}");
         }
     }
 
