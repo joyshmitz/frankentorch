@@ -1902,6 +1902,9 @@ fn ensure_unary_layout_and_storage(buffer: &[f64], meta: &TensorMeta) -> Result<
     ensure_storage_len(buffer, meta, "input")
 }
 
+// Retained utility: the strided f64 kernels now unravel flat indices inline, but
+// this coords->index helper is kept for the coords-based strided paths and tests.
+#[allow(dead_code)]
 fn strided_index(coords: &[usize], strides: &[usize], offset: usize) -> usize {
     let mut idx = offset;
     for (c, s) in coords.iter().zip(strides.iter()) {
@@ -1910,6 +1913,9 @@ fn strided_index(coords: &[usize], strides: &[usize], offset: usize) -> usize {
     idx
 }
 
+// Retained utility: the strided f64 kernels now unravel flat indices inline; this
+// row-major coords incrementer is kept for any remaining coords-based traversal.
+#[allow(dead_code)]
 fn increment_coords(coords: &mut [usize], shape: &[usize]) -> bool {
     for d in (0..coords.len()).rev() {
         coords[d] += 1;
@@ -1979,7 +1985,7 @@ where
 
 fn unary_strided_f64<F>(input: &[f64], meta: &TensorMeta, op: F) -> Result<Vec<f64>, KernelError>
 where
-    F: Fn(f64) -> f64,
+    F: Fn(f64) -> f64 + Sync,
 {
     let shape = meta.shape();
     let numel = meta.numel();
@@ -1989,17 +1995,34 @@ where
 
     let strides = meta.strides();
     let offset = meta.storage_offset();
+    let ndim = shape.len();
 
-    let mut output = Vec::with_capacity(numel);
-    let mut coords = vec![0usize; shape.len()];
-
-    loop {
-        let idx = strided_index(&coords, strides, offset);
-        output.push(op(input[idx]));
-        if !increment_coords(&mut coords, shape) {
-            break;
-        }
+    // Per-flat-index unravel (row-major over the logical shape, last dim fastest),
+    // identical traversal order to the old `increment_coords` sweep, so output[i]
+    // is byte-identical => bit-for-bit == serial. Per-element strided decode +
+    // (for transcendental ops) the op itself make this compute-bound; fans over
+    // the rayon pool above PARALLEL_THRESHOLD, serial fallback below.
+    let mut out_strides = vec![1usize; ndim];
+    for d in (0..ndim.saturating_sub(1)).rev() {
+        out_strides[d] = out_strides[d + 1] * shape[d + 1];
     }
+
+    let compute = |i: usize| -> f64 {
+        let mut rem = i;
+        let mut idx = offset;
+        for d in 0..ndim {
+            let coord = rem / out_strides[d];
+            rem %= out_strides[d];
+            idx += coord * strides[d];
+        }
+        op(input[idx])
+    };
+
+    let output: Vec<f64> = if numel >= PARALLEL_THRESHOLD {
+        (0..numel).into_par_iter().map(compute).collect()
+    } else {
+        (0..numel).map(compute).collect()
+    };
 
     Ok(output)
 }
@@ -28111,6 +28134,39 @@ mod tests {
         assert_eq!(got.len(), want.len());
         for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(g.to_bits(), w.to_bits(), "strided atan2 idx={i}");
+        }
+    }
+
+    #[test]
+    fn unary_strided_parallel_matches_serial_bit_exact() {
+        // Same as the binary strided test but for the non-contiguous UNARY path
+        // (unary_strided_f64), reached by e.g. `x.t().erf()`. Large transposed
+        // view (> PARALLEL_THRESHOLD) so the parallel branch runs; compare against
+        // an independent serial strided reference BIT-FOR-BIT.
+        let rows = 200usize;
+        let cols = 173usize; // numel 34600 > 8192
+        let n = rows * cols;
+        let x: Vec<f64> = (0..n).map(|i| ((i % 617) as f64) * 0.006 - 1.8).collect();
+        let meta = TensorMeta::from_shape_and_strides(
+            vec![cols, rows],
+            vec![1, cols],
+            0,
+            DType::F64,
+            Device::Cpu,
+        )
+        .unwrap();
+        let got = super::erf_tensor_contiguous_f64(&x, &meta).expect("erf");
+
+        let mut want = Vec::with_capacity(n);
+        for c in 0..cols {
+            for r in 0..rows {
+                let idx = c + r * cols; // strides [1, cols]
+                want.push(super::erf_value(x[idx]));
+            }
+        }
+        assert_eq!(got.len(), want.len());
+        for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "strided erf idx={i}");
         }
     }
 
