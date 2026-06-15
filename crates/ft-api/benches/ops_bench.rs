@@ -1951,10 +1951,41 @@ fn bench_quantile_dim_multi(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_histogramdd(c: &mut Criterion) {
+    let mut group = c.benchmark_group("histogramdd");
+    let samples = 1usize << 20;
+    let dims = 3usize;
+    let bins = [16usize, 16, 16];
+    let ranges = [(0.0, 1.0), (0.0, 1.0), (0.0, 1.0)];
+    let data: Vec<f64> = (0..samples * dims)
+        .map(|i| ((i.wrapping_mul(1_103_515_245).wrapping_add(12_345)) & 0xffff) as f64 / 65535.0)
+        .collect();
+    group.throughput(Throughput::Elements(samples as u64));
+    group.bench_function("f64_1m_3d_16bins", |bch| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(data.clone(), vec![samples, dims], false)
+            .unwrap();
+        bch.iter(|| {
+            black_box(
+                s.tensor_histogramdd(
+                    black_box(t),
+                    black_box(bins.as_slice()),
+                    Some(black_box(ranges.as_slice())),
+                    false,
+                )
+                .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_unique,
     bench_quantile_dim_multi,
+    bench_histogramdd,
     bench_einsum,
     bench_multi_dot,
     bench_triangular_solve,

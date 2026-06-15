@@ -1,0 +1,1576 @@
+Diff in /data/projects/frankentorch/crates/ft-api/benches/ops_bench.rs:1958:
+     let bins = [16usize, 16, 16];
+     let ranges = [(0.0, 1.0), (0.0, 1.0), (0.0, 1.0)];
+     let data: Vec<f64> = (0..samples * dims)
+[31m-        .map(|i| {
+[m[31m-            ((i.wrapping_mul(1_103_515_245).wrapping_add(12_345)) & 0xffff) as f64 / 65535.0
+[m[31m-        })
+[m[32m+        .map(|i| ((i.wrapping_mul(1_103_515_245).wrapping_add(12_345)) & 0xffff) as f64 / 65535.0)
+[m         .collect();
+     group.throughput(Throughput::Elements(samples as u64));
+     group.bench_function("f64_1m_3d_16bins", |bch| {
+Diff in /data/projects/frankentorch/crates/ft-api/benches/ops_bench.rs:1967:
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let t = s.tensor_variable(data.clone(), vec![samples, dims], false).unwrap();
+[m[32m+        let t = s
+[m[32m+            .tensor_variable(data.clone(), vec![samples, dims], false)
+[m[32m+            .unwrap();
+[m         bch.iter(|| {
+             black_box(
+                 s.tensor_histogramdd(
+Diff in /data/projects/frankentorch/crates/ft-api/examples/bincount_ab.rs:25:
+ fn main() {
+     let nthreads = rayon::current_num_threads();
+     let (numel, n_classes) = (4_000_000usize, 1000usize);
+[31m-    let p1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+[m[32m+    let p1 = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(1)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m     let old = p1.install(|| run_once(numel, n_classes, 20));
+     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+     let new = pn.install(|| run_once(numel, n_classes, 20));
+Diff in /data/projects/frankentorch/crates/ft-api/examples/embbag_ab.rs:12:
+         .map(|i| ((i * 2654435761usize) % num_emb) as f64)
+         .collect();
+     let offsets: Vec<f64> = (0..num_bags).map(|b| (b * bag_sz) as f64).collect();
+[31m-    let weight: Vec<f64> = (0..num_emb * dim).map(|i| (i % 1000) as f64 * 0.001).collect();
+[m[32m+    let weight: Vec<f64> = (0..num_emb * dim)
+[m[32m+        .map(|i| (i % 1000) as f64 * 0.001)
+[m[32m+        .collect();
+[m     let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+     let inp = s.tensor_variable(input, vec![input_len], false).unwrap();
+[31m-    let w = s.tensor_variable(weight, vec![num_emb, dim], false).unwrap();
+[m[32m+    let w = s
+[m[32m+        .tensor_variable(weight, vec![num_emb, dim], false)
+[m[32m+        .unwrap();
+[m     let off = s.tensor_variable(offsets, vec![num_bags], false).unwrap();
+     let _ = s.tensor_embedding_bag(inp, w, off, "sum").unwrap();
+     let mut best = f64::INFINITY;
+Diff in /data/projects/frankentorch/crates/ft-api/examples/embbag_ab.rs:31:
+     let nthreads = rayon::current_num_threads();
+     // recsys-style: 8192 bags x 32 items each, weight [50000, 128]
+     let (num_bags, bag_sz, num_emb, dim) = (16384usize, 32, 8192, 64);
+[31m-    let p1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+[m[32m+    let p1 = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(1)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m     let old = p1.install(|| run_once(num_bags, bag_sz, num_emb, dim, 20));
+     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+     let new = pn.install(|| run_once(num_bags, bag_sz, num_emb, dim, 20));
+Diff in /data/projects/frankentorch/crates/ft-api/examples/exp2_ab.rs:20:
+     let n = 4_000_000usize;
+     let x: Vec<f64> = (0..n).map(|i| ((i % 257) as f64) * 0.02 - 2.5).collect();
+     let want = old_serial_with_save(&x);
+[31m-    let want_grad: Vec<f64> = x.iter().map(|&xi| xi.exp2() * std::f64::consts::LN_2).collect();
+[m[32m+    let want_grad: Vec<f64> = x
+[m[32m+        .iter()
+[m[32m+        .map(|&xi| xi.exp2() * std::f64::consts::LN_2)
+[m[32m+        .collect();
+[m
+     let mut old = f64::INFINITY;
+     for _ in 0..15 {
+Diff in /data/projects/frankentorch/crates/ft-api/examples/flip_roll_ab.rs:23:
+         for d in 0..shape.len() {
+             let c = rem / st[d];
+             rem %= st[d];
+[31m-            let c2 = if dims.contains(&d) { shape[d] - 1 - c } else { c };
+[m[32m+            let c2 = if dims.contains(&d) {
+[m[32m+                shape[d] - 1 - c
+[m[32m+            } else {
+[m[32m+                c
+[m[32m+            };
+[m             dst += c2 * st[d];
+         }
+         out[dst] = *val;
+Diff in /data/projects/frankentorch/crates/ft-api/examples/flip_roll_ab.rs:41:
+     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+     let new = pn.install(|| {
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let v = s.tensor_variable(data.clone(), shape.to_vec(), false).unwrap();
+[m[32m+        let v = s
+[m[32m+            .tensor_variable(data.clone(), shape.to_vec(), false)
+[m[32m+            .unwrap();
+[m         let f = s.tensor_flip(v, &[0, 1]).unwrap();
+         let got = s.tensor_values(f).unwrap();
+         for (g, w) in got.iter().zip(want.iter()) {
+Diff in /data/projects/frankentorch/crates/ft-api/examples/flip_roll_ab.rs:49:
+         }
+         let mut best = f64::INFINITY;
+         for _ in 0..15 {
+[31m-            let v = s.tensor_variable(data.clone(), shape.to_vec(), false).unwrap();
+[m[32m+            let v = s
+[m[32m+                .tensor_variable(data.clone(), shape.to_vec(), false)
+[m[32m+                .unwrap();
+[m             let t = Instant::now();
+             std::hint::black_box(s.tensor_flip(v, &[0, 1]).unwrap());
+             best = best.min(t.elapsed().as_secs_f64() * 1e3);
+Diff in /data/projects/frankentorch/crates/ft-api/examples/flip_roll_ab.rs:62:
+         std::hint::black_box(flip_serial(&data, &shape, &[0, 1]));
+         old = old.min(t.elapsed().as_secs_f64() * 1e3);
+     }
+[31m-    println!("flip [2048,2048] (bit-exact OK): OLD serial {old:.2}ms  NEW({nthreads}t) {new:.2}ms  =>  {:.2}x", old / new);
+[m[32m+    println!(
+[m[32m+        "flip [2048,2048] (bit-exact OK): OLD serial {old:.2}ms  NEW({nthreads}t) {new:.2}ms  =>  {:.2}x",
+[m[32m+        old / new
+[m[32m+    );
+[m }
+
+Diff in /data/projects/frankentorch/crates/ft-api/examples/histc_ab.rs:25:
+ fn main() {
+     let nthreads = rayon::current_num_threads();
+     let (numel, bins) = (4_000_000usize, 256usize);
+[31m-    let p1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+[m[32m+    let p1 = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(1)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m     let old = p1.install(|| run_once(numel, bins, 20));
+     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+     let new = pn.install(|| run_once(numel, bins, 20));
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logcumsumexp_ab.rs:55:
+     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+     let new = pn.install(|| {
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let v = s.tensor_variable(data.clone(), vec![rows, cols], false).unwrap();
+[m[32m+        let v = s
+[m[32m+            .tensor_variable(data.clone(), vec![rows, cols], false)
+[m[32m+            .unwrap();
+[m         let r = s.tensor_logcumsumexp(v, 1).unwrap();
+         let got = s.tensor_values(r).unwrap();
+         for (g, w) in got.iter().zip(want.iter()) {
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logcumsumexp_ab.rs:63:
+         }
+         let mut best = f64::INFINITY;
+         for _ in 0..15 {
+[31m-            let v = s.tensor_variable(data.clone(), vec![rows, cols], false).unwrap();
+[m[32m+            let v = s
+[m[32m+                .tensor_variable(data.clone(), vec![rows, cols], false)
+[m[32m+                .unwrap();
+[m             let t = Instant::now();
+             let lcse = s.tensor_logcumsumexp(v, 1).unwrap();
+             std::hint::black_box(lcse);
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logcumsumexp_bwd_ab.rs:28:
+     y
+ }
+
+[31m-fn bwd_lane(base: usize, out: &mut [f64], x: &[f64], y: &[f64], gy: &[f64], dim: usize, inner: usize) {
+[m[32m+fn bwd_lane(
+[m[32m+    base: usize,
+[m[32m+    out: &mut [f64],
+[m[32m+    x: &[f64],
+[m[32m+    y: &[f64],
+[m[32m+    gy: &[f64],
+[m[32m+    dim: usize,
+[m[32m+    inner: usize,
+[m[32m+) {
+[m     for i in 0..inner {
+         for k in 0..dim {
+             let kl = k * inner + i;
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logcumsumexp_bwd_ab.rs:43:
+     }
+ }
+
+[31m-fn run_best(threads: usize, x: &[f64], y: &[f64], gy: &[f64], outer: usize, dim: usize, inner: usize) -> (f64, Vec<f64>) {
+[m[32m+fn run_best(
+[m[32m+    threads: usize,
+[m[32m+    x: &[f64],
+[m[32m+    y: &[f64],
+[m[32m+    gy: &[f64],
+[m[32m+    outer: usize,
+[m[32m+    dim: usize,
+[m[32m+    inner: usize,
+[m[32m+) -> (f64, Vec<f64>) {
+[m     let lane = dim * inner;
+[31m-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+[m[32m+    let pool = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(threads)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m     pool.install(|| {
+         let run = || {
+             let mut g = vec![0.0; x.len()];
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logcumsumexp_bwd_ab.rs:52:
+             if threads > 1 {
+[31m-                g.par_chunks_mut(lane).enumerate().for_each(|(o, c)| bwd_lane(o * lane, c, x, y, gy, dim, inner));
+[m[32m+                g.par_chunks_mut(lane)
+[m[32m+                    .enumerate()
+[m[32m+                    .for_each(|(o, c)| bwd_lane(o * lane, c, x, y, gy, dim, inner));
+[m             } else {
+[31m-                for o in 0..outer { let b = o * lane; bwd_lane(b, &mut g[b..b + lane], x, y, gy, dim, inner); }
+[m[32m+                for o in 0..outer {
+[m[32m+                    let b = o * lane;
+[m[32m+                    bwd_lane(b, &mut g[b..b + lane], x, y, gy, dim, inner);
+[m[32m+                }
+[m             }
+             g
+         };
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logcumsumexp_bwd_ab.rs:59:
+         let out = run();
+         let mut best = f64::INFINITY;
+[31m-        for _ in 0..15 { let t = Instant::now(); std::hint::black_box(run()); best = best.min(t.elapsed().as_secs_f64() * 1e3); }
+[m[32m+        for _ in 0..15 {
+[m[32m+            let t = Instant::now();
+[m[32m+            std::hint::black_box(run());
+[m[32m+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+[m[32m+        }
+[m         (best, out)
+     })
+ }
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logcumsumexp_bwd_ab.rs:76:
+     for (a, b) in gs.iter().zip(gp.iter()) {
+         assert_eq!(a.to_bits(), b.to_bits(), "parallel != serial bit-exact");
+     }
+[31m-    println!("logcumsumexp_backward [{rows},{cols}] dim=1 (bit-exact OK): serial(1t) {ser:.2}ms  parallel({nthreads}t) {par:.2}ms  =>  {:.2}x", ser / par);
+[m[32m+    println!(
+[m[32m+        "logcumsumexp_backward [{rows},{cols}] dim=1 (bit-exact OK): serial(1t) {ser:.2}ms  parallel({nthreads}t) {par:.2}ms  =>  {:.2}x",
+[m[32m+        ser / par
+[m[32m+    );
+[m }
+
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logsoftmax_bwd_ab.rs:30:
+ fn par(incoming: &[f64], output: &[f64], outer: usize, reduce: usize, inner: usize) -> Vec<f64> {
+     let stride = reduce * inner;
+     let mut out = vec![0.0; outer * reduce * inner];
+[31m-    out.par_chunks_mut(stride).enumerate().for_each(|(o, block)| {
+[m[31m-        let base = o * stride;
+[m[31m-        for i in 0..inner {
+[m[31m-            let mut gs = 0.0;
+[m[31m-            for r in 0..reduce {
+[m[31m-                gs += incoming[base + r * inner + i];
+[m[32m+    out.par_chunks_mut(stride)
+[m[32m+        .enumerate()
+[m[32m+        .for_each(|(o, block)| {
+[m[32m+            let base = o * stride;
+[m[32m+            for i in 0..inner {
+[m[32m+                let mut gs = 0.0;
+[m[32m+                for r in 0..reduce {
+[m[32m+                    gs += incoming[base + r * inner + i];
+[m[32m+                }
+[m[32m+                for r in 0..reduce {
+[m[32m+                    let l = r * inner + i;
+[m[32m+                    block[l] = incoming[base + l] - output[base + l].exp() * gs;
+[m[32m+                }
+[m             }
+[31m-            for r in 0..reduce {
+[m[31m-                let l = r * inner + i;
+[m[31m-                block[l] = incoming[base + l] - output[base + l].exp() * gs;
+[m[31m-            }
+[m[31m-        }
+[m[31m-    });
+[m[32m+        });
+[m     out
+ }
+
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logsoftmax_bwd_ab.rs:68:
+         std::hint::black_box(par(&incoming, &output, outer, reduce, inner));
+         new = new.min(t.elapsed().as_secs_f64() * 1e3);
+     }
+[31m-    println!("{label} [{outer}x{reduce}x{inner}] ({nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x", old / new);
+[m[32m+    println!(
+[m[32m+        "{label} [{outer}x{reduce}x{inner}] ({nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x",
+[m[32m+        old / new
+[m[32m+    );
+[m }
+
+ fn main() {
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logsumexp_ab.rs:55:
+     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+     let new = pn.install(|| {
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let v = s.tensor_variable(data.clone(), vec![rows, cols], false).unwrap();
+[m[32m+        let v = s
+[m[32m+            .tensor_variable(data.clone(), vec![rows, cols], false)
+[m[32m+            .unwrap();
+[m         let r = s.tensor_logsumexp(v, 1).unwrap();
+         let got = s.tensor_values(r).unwrap();
+         assert_eq!(got.len(), want.len());
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logsumexp_ab.rs:64:
+         }
+         let mut best = f64::INFINITY;
+         for _ in 0..15 {
+[31m-            let v = s.tensor_variable(data.clone(), vec![rows, cols], false).unwrap();
+[m[32m+            let v = s
+[m[32m+                .tensor_variable(data.clone(), vec![rows, cols], false)
+[m[32m+                .unwrap();
+[m             let t = Instant::now();
+             let r = s.tensor_logsumexp(v, 1).unwrap();
+             std::hint::black_box(r);
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logsumexp_bwd_ab.rs:19:
+     }
+ }
+
+[31m-fn run_best(threads: usize, x: &[f64], y: &[f64], gy: &[f64], outer: usize, dim: usize, inner: usize) -> (f64, Vec<f64>) {
+[m[32m+fn run_best(
+[m[32m+    threads: usize,
+[m[32m+    x: &[f64],
+[m[32m+    y: &[f64],
+[m[32m+    gy: &[f64],
+[m[32m+    outer: usize,
+[m[32m+    dim: usize,
+[m[32m+    inner: usize,
+[m[32m+) -> (f64, Vec<f64>) {
+[m     let ln = dim * inner;
+[31m-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+[m[32m+    let pool = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(threads)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m     pool.install(|| {
+         let run = || {
+             let mut g = vec![0.0; x.len()];
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logsumexp_bwd_ab.rs:28:
+             if threads > 1 {
+[31m-                g.par_chunks_mut(ln).enumerate().for_each(|(o, c)| lane(o, c, x, y, gy, dim, inner));
+[m[32m+                g.par_chunks_mut(ln)
+[m[32m+                    .enumerate()
+[m[32m+                    .for_each(|(o, c)| lane(o, c, x, y, gy, dim, inner));
+[m             } else {
+[31m-                for o in 0..outer { let b = o * ln; lane(o, &mut g[b..b + ln], x, y, gy, dim, inner); }
+[m[32m+                for o in 0..outer {
+[m[32m+                    let b = o * ln;
+[m[32m+                    lane(o, &mut g[b..b + ln], x, y, gy, dim, inner);
+[m[32m+                }
+[m             }
+             g
+         };
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logsumexp_bwd_ab.rs:35:
+         let out = run();
+         let mut best = f64::INFINITY;
+[31m-        for _ in 0..15 { let t = Instant::now(); std::hint::black_box(run()); best = best.min(t.elapsed().as_secs_f64() * 1e3); }
+[m[32m+        for _ in 0..15 {
+[m[32m+            let t = Instant::now();
+[m[32m+            std::hint::black_box(run());
+[m[32m+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+[m[32m+        }
+[m         (best, out)
+     })
+ }
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logsumexp_bwd_ab.rs:47:
+     let mut y = vec![0.0; rows];
+     for o in 0..rows {
+         let mut m = f64::NEG_INFINITY;
+[31m-        for d in 0..cols { m = m.max(x[o * cols + d]); }
+[m[32m+        for d in 0..cols {
+[m[32m+            m = m.max(x[o * cols + d]);
+[m[32m+        }
+[m         let mut s = 0.0;
+[31m-        for d in 0..cols { s += (x[o * cols + d] - m).exp(); }
+[m[32m+        for d in 0..cols {
+[m[32m+            s += (x[o * cols + d] - m).exp();
+[m[32m+        }
+[m         y[o] = m + s.ln();
+     }
+     let gy: Vec<f64> = (0..rows).map(|i| 1.0 + ((i % 13) as f64) * 1e-3).collect();
+Diff in /data/projects/frankentorch/crates/ft-api/examples/logsumexp_bwd_ab.rs:60:
+     for (a, b) in gs.iter().zip(gp.iter()) {
+         assert_eq!(a.to_bits(), b.to_bits(), "parallel != serial bit-exact");
+     }
+[31m-    println!("logsumexp_backward [{rows},{cols}] dim=1 (bit-exact OK): serial(1t) {ser:.2}ms  parallel({nthreads}t) {par:.2}ms  =>  {:.2}x", ser / par);
+[m[32m+    println!(
+[m[32m+        "logsumexp_backward [{rows},{cols}] dim=1 (bit-exact OK): serial(1t) {ser:.2}ms  parallel({nthreads}t) {par:.2}ms  =>  {:.2}x",
+[m[32m+        ser / par
+[m[32m+    );
+[m }
+
+Diff in /data/projects/frankentorch/crates/ft-api/examples/lp_pool2d_ab.rs:7:
+ use std::time::Instant;
+
+ #[allow(clippy::too_many_arguments)]
+[31m-fn serial(inp: &[f64], n: usize, c: usize, h: usize, w: usize, kh: usize, kw: usize, sh: usize, sw: usize, p: f64) -> Vec<f64> {
+[m[32m+fn serial(
+[m[32m+    inp: &[f64],
+[m[32m+    n: usize,
+[m[32m+    c: usize,
+[m[32m+    h: usize,
+[m[32m+    w: usize,
+[m[32m+    kh: usize,
+[m[32m+    kw: usize,
+[m[32m+    sh: usize,
+[m[32m+    sw: usize,
+[m[32m+    p: f64,
+[m[32m+) -> Vec<f64> {
+[m     let h_out = (h - kh) / sh + 1;
+     let w_out = (w - kw) / sw + 1;
+     let mut out = vec![0.0; n * c * h_out * w_out];
+Diff in /data/projects/frankentorch/crates/ft-api/examples/lp_pool2d_ab.rs:21:
+                             s += inp[b * c * h * w + ch * h * w + ih * w + iw].abs().powf(p);
+                         }
+                     }
+[31m-                    out[b * c * h_out * w_out + ch * h_out * w_out + oh * w_out + ow] = s.powf(1.0 / p);
+[m[32m+                    out[b * c * h_out * w_out + ch * h_out * w_out + oh * w_out + ow] =
+[m[32m+                        s.powf(1.0 / p);
+[m                 }
+             }
+         }
+Diff in /data/projects/frankentorch/crates/ft-api/examples/lp_pool2d_ab.rs:33:
+     let nthreads = rayon::current_num_threads();
+     let (n, c, h, w) = (16usize, 64, 64, 64);
+     let (kh, kw, sh, sw, p) = (2usize, 2, 2, 2, 3.0);
+[31m-    let data: Vec<f64> = (0..n * c * h * w).map(|i| ((i % 197) as f64) * 0.01 - 1.0).collect();
+[m[32m+    let data: Vec<f64> = (0..n * c * h * w)
+[m[32m+        .map(|i| ((i % 197) as f64) * 0.01 - 1.0)
+[m[32m+        .collect();
+[m     let want = serial(&data, n, c, h, w, kh, kw, sh, sw, p);
+
+     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/examples/lp_pool2d_ab.rs:40:
+     let new = pn.install(|| {
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let v = s.tensor_variable(data.clone(), vec![n, c, h, w], false).unwrap();
+[m[31m-        let o = s.functional_lp_pool2d(v, p, (kh, kw), Some((sh, sw)), false).unwrap();
+[m[32m+        let v = s
+[m[32m+            .tensor_variable(data.clone(), vec![n, c, h, w], false)
+[m[32m+            .unwrap();
+[m[32m+        let o = s
+[m[32m+            .functional_lp_pool2d(v, p, (kh, kw), Some((sh, sw)), false)
+[m[32m+            .unwrap();
+[m         let got = s.tensor_values(o).unwrap();
+         assert_eq!(got.len(), want.len());
+         for (g, wv) in got.iter().zip(want.iter()) {
+Diff in /data/projects/frankentorch/crates/ft-api/examples/lp_pool2d_ab.rs:48:
+         }
+         let mut best = f64::INFINITY;
+         for _ in 0..15 {
+[31m-            let v = s.tensor_variable(data.clone(), vec![n, c, h, w], false).unwrap();
+[m[32m+            let v = s
+[m[32m+                .tensor_variable(data.clone(), vec![n, c, h, w], false)
+[m[32m+                .unwrap();
+[m             let t = Instant::now();
+[31m-            std::hint::black_box(s.functional_lp_pool2d(v, p, (kh, kw), Some((sh, sw)), false).unwrap());
+[m[32m+            std::hint::black_box(
+[m[32m+                s.functional_lp_pool2d(v, p, (kh, kw), Some((sh, sw)), false)
+[m[32m+                    .unwrap(),
+[m[32m+            );
+[m             best = best.min(t.elapsed().as_secs_f64() * 1e3);
+         }
+         best
+Diff in /data/projects/frankentorch/crates/ft-api/examples/lp_pool2d_ab.rs:61:
+         std::hint::black_box(serial(&data, n, c, h, w, kh, kw, sh, sw, p));
+         old = old.min(t.elapsed().as_secs_f64() * 1e3);
+     }
+[31m-    println!("lp_pool2d [{n},{c},{h},{w}] k{kh} p{p} (bit-exact OK): OLD serial {old:.2}ms  NEW({nthreads}t) {new:.2}ms  =>  {:.2}x", old / new);
+[m[32m+    println!(
+[m[32m+        "lp_pool2d [{n},{c},{h},{w}] k{kh} p{p} (bit-exact OK): OLD serial {old:.2}ms  NEW({nthreads}t) {new:.2}ms  =>  {:.2}x",
+[m[32m+        old / new
+[m[32m+    );
+[m }
+
+Diff in /data/projects/frankentorch/crates/ft-api/examples/lp_pool_grad_fwd_ab.rs:7:
+ use std::time::Instant;
+
+ fn run_best(threads: usize, xv: &[f64], windows: &[Vec<usize>], p: f64) -> (f64, Vec<f64>) {
+[31m-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+[m[32m+    let pool = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(threads)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m     let lp = |win: &[usize]| -> f64 {
+         let mut s = 0.0;
+         for &i in win {
+Diff in /data/projects/frankentorch/crates/ft-api/examples/lp_pool_grad_fwd_ab.rs:19:
+         let run = || {
+             let mut out = vec![0.0; windows.len()];
+             if threads > 1 {
+[31m-                out.par_iter_mut().zip(windows.par_iter()).for_each(|(o, w)| *o = lp(w));
+[m[32m+                out.par_iter_mut()
+[m[32m+                    .zip(windows.par_iter())
+[m[32m+                    .for_each(|(o, w)| *o = lp(w));
+[m             } else {
+[31m-                for (o, w) in out.iter_mut().zip(windows.iter()) { *o = lp(w); }
+[m[32m+                for (o, w) in out.iter_mut().zip(windows.iter()) {
+[m[32m+                    *o = lp(w);
+[m[32m+                }
+[m             }
+             out
+         };
+Diff in /data/projects/frankentorch/crates/ft-api/examples/lp_pool_grad_fwd_ab.rs:28:
+         let res = run();
+         let mut best = f64::INFINITY;
+[31m-        for _ in 0..15 { let t = Instant::now(); std::hint::black_box(run()); best = best.min(t.elapsed().as_secs_f64() * 1e3); }
+[m[32m+        for _ in 0..15 {
+[m[32m+            let t = Instant::now();
+[m[32m+            std::hint::black_box(run());
+[m[32m+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+[m[32m+        }
+[m         (best, res)
+     })
+ }
+Diff in /data/projects/frankentorch/crates/ft-api/examples/lp_pool_grad_fwd_ab.rs:35:
+ fn main() {
+     let (n, c, h, w) = (16usize, 64, 64, 64);
+     let (kh, kw, sh, sw, p) = (2usize, 2, 2, 2, 3.0);
+[31m-    let xv: Vec<f64> = (0..n * c * h * w).map(|i| ((i % 197) as f64) * 0.01 - 1.0).collect();
+[m[32m+    let xv: Vec<f64> = (0..n * c * h * w)
+[m[32m+        .map(|i| ((i % 197) as f64) * 0.01 - 1.0)
+[m[32m+        .collect();
+[m     let (h_out, w_out) = ((h - kh) / sh + 1, (w - kw) / sw + 1);
+     let mut windows: Vec<Vec<usize>> = Vec::with_capacity(n * c * h_out * w_out);
+     for b in 0..n {
+Diff in /data/projects/frankentorch/crates/ft-api/examples/lp_pool_grad_fwd_ab.rs:60:
+     for (x, y) in a.iter().zip(b.iter()) {
+         assert_eq!(x.to_bits(), y.to_bits(), "parallel != serial bit-exact");
+     }
+[31m-    println!("lp_pool_grad_fwd {} windows p{p} (bit-exact OK): serial(1t) {ser:.2}ms  parallel({nthreads}t) {par:.2}ms  =>  {:.2}x", windows.len(), ser / par);
+[m[32m+    println!(
+[m[32m+        "lp_pool_grad_fwd {} windows p{p} (bit-exact OK): serial(1t) {ser:.2}ms  parallel({nthreads}t) {par:.2}ms  =>  {:.2}x",
+[m[32m+        windows.len(),
+[m[32m+        ser / par
+[m[32m+    );
+[m }
+
+Diff in /data/projects/frankentorch/crates/ft-api/examples/ndtr_family_ab.rs:23:
+ }
+ fn old_log_ndtr(x: &[f64]) -> Vec<f64> {
+     let s = sqrt2_inv();
+[31m-    let v: Vec<f64> = x.iter().map(|&xi| (0.5 * libm::erfc(-xi * s)).ln()).collect();
+[m[32m+    let v: Vec<f64> = x
+[m[32m+        .iter()
+[m[32m+        .map(|&xi| (0.5 * libm::erfc(-xi * s)).ln())
+[m[32m+        .collect();
+[m     let _saved = std::hint::black_box(x.to_vec());
+     v
+ }
+Diff in /data/projects/frankentorch/crates/ft-api/examples/repeat_ab.rs:45:
+     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+     let new = pn.install(|| {
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let v = s.tensor_variable(data.clone(), in_shape.to_vec(), false).unwrap();
+[m[32m+        let v = s
+[m[32m+            .tensor_variable(data.clone(), in_shape.to_vec(), false)
+[m[32m+            .unwrap();
+[m         let r = s.tensor_repeat(v, &repeats).unwrap();
+         let got = s.tensor_values(r).unwrap();
+         assert_eq!(got.len(), want.len());
+Diff in /data/projects/frankentorch/crates/ft-api/examples/repeat_ab.rs:54:
+         }
+         let mut best = f64::INFINITY;
+         for _ in 0..15 {
+[31m-            let v = s.tensor_variable(data.clone(), in_shape.to_vec(), false).unwrap();
+[m[32m+            let v = s
+[m[32m+                .tensor_variable(data.clone(), in_shape.to_vec(), false)
+[m[32m+                .unwrap();
+[m             let t = Instant::now();
+             std::hint::black_box(s.tensor_repeat(v, &repeats).unwrap());
+             best = best.min(t.elapsed().as_secs_f64() * 1e3);
+Diff in /data/projects/frankentorch/crates/ft-api/examples/repeat_ab.rs:67:
+         std::hint::black_box(serial(&data, &in_shape, &repeats));
+         old = old.min(t.elapsed().as_secs_f64() * 1e3);
+     }
+[31m-    println!("repeat [256,256]x[8,8] -> 4.2M (bit-exact OK): OLD serial {old:.2}ms  NEW({nthreads}t) {new:.2}ms  =>  {:.2}x", old / new);
+[m[32m+    println!(
+[m[32m+        "repeat [256,256]x[8,8] -> 4.2M (bit-exact OK): OLD serial {old:.2}ms  NEW({nthreads}t) {new:.2}ms  =>  {:.2}x",
+[m[32m+        old / new
+[m[32m+    );
+[m }
+
+Diff in /data/projects/frankentorch/crates/ft-api/examples/scan_f32_vs_f64.rs:14:
+     let d32: Vec<f32> = d64.iter().map(|&x| x as f32).collect();
+
+     let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-    let v64 = s.tensor_variable(d64.clone(), vec![rows, cols], false).unwrap();
+[m[31m-    let v32 = s.tensor_variable_f32(d32.clone(), vec![rows, cols], false).unwrap();
+[m[32m+    let v64 = s
+[m[32m+        .tensor_variable(d64.clone(), vec![rows, cols], false)
+[m[32m+        .unwrap();
+[m[32m+    let v32 = s
+[m[32m+        .tensor_variable_f32(d32.clone(), vec![rows, cols], false)
+[m[32m+        .unwrap();
+[m
+     macro_rules! bench {
+         ($name:expr, $call:expr) => {{
+Diff in /data/projects/frankentorch/crates/ft-api/examples/scan_f32_vs_f64.rs:36:
+     let cs32 = bench!("cumsum f32", s.tensor_cumsum(v32, 1).unwrap());
+     let cp64 = bench!("cumprod f64", s.tensor_cumprod(v64, 1).unwrap());
+     let cp32 = bench!("cumprod f32", s.tensor_cumprod(v32, 1).unwrap());
+[31m-    println!("cumsum  f32/f64 = {:.2}x   cumprod f32/f64 = {:.2}x", cs32 / cs64, cp32 / cp64);
+[m[32m+    println!(
+[m[32m+        "cumsum  f32/f64 = {:.2}x   cumprod f32/f64 = {:.2}x",
+[m[32m+        cs32 / cs64,
+[m[32m+        cp32 / cp64
+[m[32m+    );
+[m }
+
+Diff in /data/projects/frankentorch/crates/ft-api/examples/searchsorted_ab.rs:28:
+ fn main() {
+     let nthreads = rayon::current_num_threads();
+     let (seq_len, n_queries) = (4096usize, 262_144usize);
+[31m-    let p1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+[m[32m+    let p1 = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(1)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m     let old = p1.install(|| run_once(seq_len, n_queries, 30));
+     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+     let new = pn.install(|| run_once(seq_len, n_queries, 30));
+Diff in /data/projects/frankentorch/crates/ft-api/examples/trig_bwd_contrib_ab.rs:9:
+ use std::time::Instant;
+
+ fn serial(incoming: &[f64], x: &[f64]) -> Vec<f64> {
+[31m-    incoming.iter().zip(x.iter()).map(|(&g, &xi)| g * xi.cos()).collect()
+[m[32m+    incoming
+[m[32m+        .iter()
+[m[32m+        .zip(x.iter())
+[m[32m+        .map(|(&g, &xi)| g * xi.cos())
+[m[32m+        .collect()
+[m }
+ fn par(incoming: &[f64], x: &[f64]) -> Vec<f64> {
+[31m-    incoming.par_iter().zip(x.par_iter()).map(|(&g, &xi)| g * xi.cos()).collect()
+[m[32m+    incoming
+[m[32m+        .par_iter()
+[m[32m+        .zip(x.par_iter())
+[m[32m+        .map(|(&g, &xi)| g * xi.cos())
+[m[32m+        .collect()
+[m }
+
+ fn bench(label: &str, n: usize) {
+Diff in /data/projects/frankentorch/crates/ft-api/examples/trig_bwd_contrib_ab.rs:36:
+         std::hint::black_box(par(&incoming, &x));
+         new = new.min(t.elapsed().as_secs_f64() * 1e3);
+     }
+[31m-    println!("{label} n={n} ({nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x", old / new);
+[m[32m+    println!(
+[m[32m+        "{label} n={n} ({nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x",
+[m[32m+        old / new
+[m[32m+    );
+[m }
+
+ fn main() {
+Diff in /data/projects/frankentorch/crates/ft-api/examples/vander_ab.rs:5:
+     let nthreads = rayon::current_num_threads();
+     let (rows, cols) = (16384usize, 64usize);
+     let x: Vec<f64> = (0..rows).map(|i| 0.5 + (i % 100) as f64 * 0.01).collect();
+[31m-    let run = |s: &mut FrankenTorchSession| { let v=s.tensor_variable(x.clone(),vec![rows],false).unwrap(); std::hint::black_box(s.tensor_vander(v, Some(cols), true).unwrap()); };
+[m[31m-    let bench = |reps: usize| { let mut s=FrankenTorchSession::new(ExecutionMode::Strict); run(&mut s); let mut best=f64::INFINITY; for _ in 0..reps { let t=Instant::now(); run(&mut s); best=best.min(t.elapsed().as_secs_f64()*1e3);} best };
+[m[31m-    let p1=rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+[m[31m-    let old=p1.install(|| bench(20));
+[m[31m-    let pn=rayon::ThreadPoolBuilder::new().build().unwrap();
+[m[31m-    let new=pn.install(|| bench(20));
+[m[31m-    println!("vander [{rows},{cols}]: OLD(1t) {old:.2}ms NEW({nthreads}t) {new:.2}ms => {:.2}x", old/new);
+[m[32m+    let run = |s: &mut FrankenTorchSession| {
+[m[32m+        let v = s.tensor_variable(x.clone(), vec![rows], false).unwrap();
+[m[32m+        std::hint::black_box(s.tensor_vander(v, Some(cols), true).unwrap());
+[m[32m+    };
+[m[32m+    let bench = |reps: usize| {
+[m[32m+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[m[32m+        run(&mut s);
+[m[32m+        let mut best = f64::INFINITY;
+[m[32m+        for _ in 0..reps {
+[m[32m+            let t = Instant::now();
+[m[32m+            run(&mut s);
+[m[32m+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+[m[32m+        }
+[m[32m+        best
+[m[32m+    };
+[m[32m+    let p1 = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(1)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m[32m+    let old = p1.install(|| bench(20));
+[m[32m+    let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+[m[32m+    let new = pn.install(|| bench(20));
+[m[32m+    println!(
+[m[32m+        "vander [{rows},{cols}]: OLD(1t) {old:.2}ms NEW({nthreads}t) {new:.2}ms => {:.2}x",
+[m[32m+        old / new
+[m[32m+    );
+[m }
+
+Diff in /data/projects/frankentorch/crates/ft-api/examples/vander_bwd_ab.rs:13:
+         let rep = s.tensor_backward(ssum).unwrap();
+         std::hint::black_box(s.tensor_gradient(&rep, v).unwrap());
+     };
+[31m-    let bench = |reps: usize| { run(); let mut best=f64::INFINITY; for _ in 0..reps { let t=Instant::now(); run(); best=best.min(t.elapsed().as_secs_f64()*1e3);} best };
+[m[31m-    let p1=rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+[m[31m-    let old=p1.install(|| bench(20));
+[m[31m-    let pn=rayon::ThreadPoolBuilder::new().build().unwrap();
+[m[31m-    let new=pn.install(|| bench(20));
+[m[31m-    println!("vander fwd+bwd [{rows},{cols}]: OLD(1t) {old:.2}ms NEW({nthreads}t) {new:.2}ms => {:.2}x", old/new);
+[m[32m+    let bench = |reps: usize| {
+[m[32m+        run();
+[m[32m+        let mut best = f64::INFINITY;
+[m[32m+        for _ in 0..reps {
+[m[32m+            let t = Instant::now();
+[m[32m+            run();
+[m[32m+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+[m[32m+        }
+[m[32m+        best
+[m[32m+    };
+[m[32m+    let p1 = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(1)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m[32m+    let old = p1.install(|| bench(20));
+[m[32m+    let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+[m[32m+    let new = pn.install(|| bench(20));
+[m[32m+    println!(
+[m[32m+        "vander fwd+bwd [{rows},{cols}]: OLD(1t) {old:.2}ms NEW({nthreads}t) {new:.2}ms => {:.2}x",
+[m[32m+        old / new
+[m[32m+    );
+[m }
+
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:4585:
+     /// silently wrong, so the op is composed from real/imag arithmetic instead.
+     /// frankentorch-hyi5x.
+     fn complex_grad_pair(&self, a: TensorNodeId, b: TensorNodeId) -> Result<bool, AutogradError> {
+[31m-        let both_complex = matches!(
+[m[31m-            self.tensor_dtype(a)?,
+[m[31m-            DType::Complex64 | DType::Complex128
+[m[31m-        ) && matches!(self.tensor_dtype(b)?, DType::Complex64 | DType::Complex128);
+[m[32m+        let both_complex = matches!(self.tensor_dtype(a)?, DType::Complex64 | DType::Complex128)
+[m[32m+            && matches!(self.tensor_dtype(b)?, DType::Complex64 | DType::Complex128);
+[m         Ok(both_complex
+             && self.tensor_tape.is_grad_enabled()
+             && (self.tensor_tape.tensor_requires_grad(a)?
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:11888:
+                 let requires_grad = self.tensor_tape.tensor_requires_grad(input)?
+                     && self.tensor_tape.is_grad_enabled();
+                 // Capture re/im (f64) for the Wirtinger backward.
+[31m-                let (re_im, output_meta, output_storage): (Vec<(f64, f64)>, _, _) =
+[m[31m-                    match tensor.typed_storage() {
+[m[31m-                        TensorStorage::Complex64(values) => (
+[m[31m-                            values
+[m[31m-                                .iter()
+[m[31m-                                .map(|z| (f64::from(z.re), f64::from(z.im)))
+[m[31m-                                .collect(),
+[m[31m-                            TensorMeta::from_shape(meta.shape().to_vec(), DType::F32, meta.device()),
+[m[31m-                            TensorStorage::F32(Arc::new(
+[m[31m-                                values.iter().map(|z| z.re.hypot(z.im)).collect(),
+[m[31m-                            )),
+[m[31m-                        ),
+[m[31m-                        TensorStorage::Complex128(values) => (
+[m[31m-                            values.iter().map(|z| (z.re, z.im)).collect(),
+[m[31m-                            TensorMeta::from_shape(meta.shape().to_vec(), DType::F64, meta.device()),
+[m[31m-                            TensorStorage::F64(Arc::new(
+[m[31m-                                values.iter().map(|z| z.re.hypot(z.im)).collect(),
+[m[31m-                            )),
+[m[31m-                        ),
+[m[31m-                        _ => unreachable!("dtype is complex"),
+[m[31m-                    };
+[m[32m+                let (re_im, output_meta, output_storage): (Vec<(f64, f64)>, _, _) = match tensor
+[m[32m+                    .typed_storage()
+[m[32m+                {
+[m[32m+                    TensorStorage::Complex64(values) => (
+[m[32m+                        values
+[m[32m+                            .iter()
+[m[32m+                            .map(|z| (f64::from(z.re), f64::from(z.im)))
+[m[32m+                            .collect(),
+[m[32m+                        TensorMeta::from_shape(meta.shape().to_vec(), DType::F32, meta.device()),
+[m[32m+                        TensorStorage::F32(Arc::new(
+[m[32m+                            values.iter().map(|z| z.re.hypot(z.im)).collect(),
+[m[32m+                        )),
+[m[32m+                    ),
+[m[32m+                    TensorStorage::Complex128(values) => (
+[m[32m+                        values.iter().map(|z| (z.re, z.im)).collect(),
+[m[32m+                        TensorMeta::from_shape(meta.shape().to_vec(), DType::F64, meta.device()),
+[m[32m+                        TensorStorage::F64(Arc::new(
+[m[32m+                            values.iter().map(|z| z.re.hypot(z.im)).collect(),
+[m[32m+                        )),
+[m[32m+                    ),
+[m[32m+                    _ => unreachable!("dtype is complex"),
+[m[32m+                };
+[m                 let output = DenseTensor::from_typed_storage(output_meta, output_storage)?;
+                 let out = if requires_grad {
+                     self.tensor_tape.apply_complex_bridge(
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:11950:
+             let dtype = tensor.meta().dtype();
+             if matches!(dtype, DType::Complex64 | DType::Complex128) {
+                 let meta = tensor.meta().clone();
+[31m-                if self.tensor_tape.tensor_requires_grad(input)? && self.tensor_tape.is_grad_enabled()
+[m[32m+                if self.tensor_tape.tensor_requires_grad(input)?
+[m[32m+                    && self.tensor_tape.is_grad_enabled()
+[m                 {
+                     // Differentiable via composition: exp(z) = complex(e^re·cos(im),
+                     // e^re·sin(im)) over the complex<->real bridge (hyi5x).
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:29913:
+                 let out_values =
+                     ft_kernel_cpu::extremum_dim_values_contiguous_f64(values, &meta, dim, is_max)
+                         .map_err(|err| {
+[31m-                            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(err))
+[m[31m-                        })?;
+[m[32m+                        AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(err))
+[m[32m+                    })?;
+[m                 let mut out_shape = meta.shape().to_vec();
+                 out_shape.remove(dim);
+                 (
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:46855:
+                     .map(|i| input_vals[build(i) as usize])
+                     .collect()
+             } else {
+[31m-                (0..out_numel).map(|i| input_vals[build(i) as usize]).collect()
+[m[32m+                (0..out_numel)
+[m[32m+                    .map(|i| input_vals[build(i) as usize])
+[m[32m+                    .collect()
+[m             };
+             return self.tensor_variable(output, out_shape, false);
+         }
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:48141:
+     /// triangular substitutions, row-major `[n, nrhs]`. Bit-identical arithmetic
+     /// to the old `triangular_solve` composition (same per-column j-order), so the
+     /// `cholesky_solve` VALUE is unchanged. frankentorch-crvxw.
+[31m-    fn chol_solve_substitute(a: &[f64], n: usize, rhs: &[f64], nrhs: usize, upper: bool) -> Vec<f64> {
+[m[32m+    fn chol_solve_substitute(
+[m[32m+        a: &[f64],
+[m[32m+        n: usize,
+[m[32m+        rhs: &[f64],
+[m[32m+        nrhs: usize,
+[m[32m+        upper: bool,
+[m[32m+    ) -> Vec<f64> {
+[m         let mut x = rhs.to_vec();
+         for col in 0..nrhs {
+             if upper {
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:50147:
+
+     /// Complex matrix inverse via Gauss-Jordan elimination with partial pivoting
+     /// (row-major n×n). Returns `None` if the matrix is singular.
+[31m-    fn complex_mat_inverse(a: &[ft_core::Complex128], n: usize) -> Option<Vec<ft_core::Complex128>> {
+[m[32m+    fn complex_mat_inverse(
+[m[32m+        a: &[ft_core::Complex128],
+[m[32m+        n: usize,
+[m[32m+    ) -> Option<Vec<ft_core::Complex128>> {
+[m         let zero = ft_core::Complex128::new(0.0, 0.0);
+         let one = ft_core::Complex128::new(1.0, 0.0);
+         let mut m = a.to_vec();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:53772:
+                             }))])
+                         },
+                     )?;
+[31m-                    let grad_in = tape.mul(grad_outs[0], dig, ft_core::ExecutionMode::Strict)?.0;
+[m[32m+                    let grad_in = tape
+[m[32m+                        .mul(grad_outs[0], dig, ft_core::ExecutionMode::Strict)?
+[m[32m+                        .0;
+[m                     Ok(vec![Some(grad_in)])
+                 },
+             )?
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:53845:
+                     |ctx, inp| {
+                         let (vals, shape) = inp[0];
+                         ctx.save_for_backward(vals.to_vec(), shape.to_vec());
+[31m-                        Ok((par_map_f64(vals, |x| polygamma_approx(1, x)), shape.to_vec()))
+[m[32m+                        Ok((
+[m[32m+                            par_map_f64(vals, |x| polygamma_approx(1, x)),
+[m[32m+                            shape.to_vec(),
+[m[32m+                        ))
+[m                     },
+                     |ctx, gouts| {
+                         let g = gouts[0];
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:53855:
+                         }))])
+                     },
+                 )?;
+[31m-                let grad_in = tape.mul(grad_outs[0], tri, ft_core::ExecutionMode::Strict)?.0;
+[m[32m+                let grad_in = tape
+[m[32m+                    .mul(grad_outs[0], tri, ft_core::ExecutionMode::Strict)?
+[m[32m+                    .0;
+[m                 Ok(vec![Some(grad_in)])
+             },
+         )?;
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:54672:
+                         },
+                     )));
+                 }
+[31m-                let grad_in =
+[m[31m-                    par_zip_map_f64(y_vals, grad_out, |y, go| go * sqrt_2pi * (0.5 * y * y).exp());
+[m[32m+                let grad_in = par_zip_map_f64(y_vals, grad_out, |y, go| {
+[m[32m+                    go * sqrt_2pi * (0.5 * y * y).exp()
+[m[32m+                });
+[m                 Ok(vec![Some(grad_in)])
+             },
+             // create_graph: ndtri'(p) = √(2π)·exp(y²/2), y=ndtri(p). Rebuild y as a
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:57329:
+         // conj(ifft(conj(grad_y))). For a real input the grad is the real part. This
+         // makes fftn/ifftn differentiable by composition. Verified vs torch.
+         if requires_grad {
+[31m-            self.tensor_tape.apply_complex_bridge(
+[m[31m-                &[input],
+[m[31m-                output,
+[m[31m-                move |_ctx, grad_outputs| {
+[m[32m+            self.tensor_tape
+[m[32m+                .apply_complex_bridge(&[input], output, move |_ctx, grad_outputs| {
+[m                     let g = grad_outputs[0]; // 2*total_elements interleaved
+                     let mut gre = vec![0.0_f64; total_elements];
+                     let mut gim = vec![0.0_f64; total_elements];
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:57386:
+                         // Real input: gradient is the real part.
+                         Ok(vec![Some(gre)])
+                     }
+[31m-                },
+[m[31m-            )
+[m[32m+                })
+[m         } else {
+             Ok(self.tensor_tape.leaf_tensor(output, false))
+         }
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:57555:
+         // output bin's cotangent back: grad_in[j] = grad_out[j] + (mirror exists ?
+         // conj-flip(grad_out[full-j]) : 0). Used by irfftn -> makes it differentiable.
+         if requires_grad {
+[31m-            self.tensor_tape.apply_complex_bridge(
+[m[31m-                &[input],
+[m[31m-                output,
+[m[31m-                move |_ctx, grad_outputs| {
+[m[32m+            self.tensor_tape
+[m[32m+                .apply_complex_bridge(&[input], output, move |_ctx, grad_outputs| {
+[m                     let g = grad_outputs[0]; // 2*out_total interleaved
+                     let mut grad_in = vec![0.0_f64; half_len * stride_outer * stride_inner * 2];
+                     for outer in 0..stride_outer {
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:57566:
+                             for j in 0..half_len {
+                                 let in_idx =
+                                     outer * half_len * stride_inner + j * stride_inner + inner;
+[31m-                                let out_idx =
+[m[31m-                                    outer * full_len * out_stride_inner + j * out_stride_inner
+[m[31m-                                        + inner;
+[m[32m+                                let out_idx = outer * full_len * out_stride_inner
+[m[32m+                                    + j * out_stride_inner
+[m[32m+                                    + inner;
+[m                                 let mut gr = g[2 * out_idx];
+                                 let mut gi = g[2 * out_idx + 1];
+                                 let k = full_len - j;
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:57585:
+                         }
+                     }
+                     Ok(vec![Some(grad_in)])
+[31m-                },
+[m[31m-            )
+[m[32m+                })
+[m         } else {
+             Ok(self.tensor_tape.leaf_tensor(output, false))
+         }
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:57952:
+         // the now-differentiable tensor_view_as_real, which would record a stray
+         // node). The custom adjoint is attached to `input` itself. frankentorch-ng1hw.
+         let vals: Vec<f64> = match self.tensor_tape.tensor(input)?.typed_storage() {
+[31m-            TensorStorage::Complex128(values) => {
+[m[31m-                values.iter().flat_map(|z| [z.re, z.im]).collect()
+[m[31m-            }
+[m[32m+            TensorStorage::Complex128(values) => values.iter().flat_map(|z| [z.re, z.im]).collect(),
+[m             TensorStorage::Complex64(values) => values
+                 .iter()
+                 .flat_map(|z| [f64::from(z.re), f64::from(z.im)])
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:58238:
+                         // Inverse DFT along the last dim (each row).
+                         for r in 0..rows {
+                             let s = r * cols;
+[31m-                            Self::dft_inplace_1d(
+[m[31m-                                &mut re[s..s + cols],
+[m[31m-                                &mut im[s..s + cols],
+[m[31m-                                true,
+[m[31m-                            );
+[m[32m+                            Self::dft_inplace_1d(&mut re[s..s + cols], &mut im[s..s + cols], true);
+[m                         }
+                         // Inverse DFT along the second-to-last dim (each column).
+                         let mut re_col = vec![0.0_f64; rows];
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:58483:
+                         // ifft2(conj(grad_y)): inverse DFT along last dim then 2nd-last.
+                         for r in 0..rows {
+                             let s = r * cols;
+[31m-                            Self::dft_inplace_1d(
+[m[31m-                                &mut re[s..s + cols],
+[m[31m-                                &mut im[s..s + cols],
+[m[31m-                                true,
+[m[31m-                            );
+[m[32m+                            Self::dft_inplace_1d(&mut re[s..s + cols], &mut im[s..s + cols], true);
+[m                         }
+                         let mut re_col = vec![0.0_f64; rows];
+                         let mut im_col = vec![0.0_f64; rows];
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:74991:
+
+     result
+         + match n {
+[31m-            1 => {
+[m[31m-                1.0 / x + 0.5 / x2 + (1.0 / 6.0) / x3 - (1.0 / 30.0) / x5
+[m[31m-                    + (1.0 / 42.0) / x7
+[m[31m-            }
+[m[31m-            2 => -(1.0 / x2 + 1.0 / x3 + 0.5 / x4 - (1.0 / 6.0) / x6
+[m[31m-                + (1.0 / 6.0) / x8),
+[m[32m+            1 => 1.0 / x + 0.5 / x2 + (1.0 / 6.0) / x3 - (1.0 / 30.0) / x5 + (1.0 / 42.0) / x7,
+[m[32m+            2 => -(1.0 / x2 + 1.0 / x3 + 0.5 / x4 - (1.0 / 6.0) / x6 + (1.0 / 6.0) / x8),
+[m             3 => 2.0 / x3 + 3.0 / x4 + 2.0 / x5 - 1.0 / x7 + (4.0 / 3.0) / x9,
+             _ => unreachable!("polygamma_small_order_approx only accepts n=1..=3"),
+         }
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:92658:
+             let vals = s.tensor_values(*edge).unwrap();
+             assert_eq!(vals.len(), bins[dim] + 1);
+             for (i, &value) in vals.iter().enumerate() {
+[31m-                let expected = ranges[dim].0
+[m[31m-                    + ((ranges[dim].1 - ranges[dim].0) / bins[dim] as f64) * i as f64;
+[m[31m-                assert_eq!(
+[m[31m-                    value.to_bits(),
+[m[31m-                    expected.to_bits(),
+[m[31m-                    "edge dim={dim} i={i}"
+[m[31m-                );
+[m[32m+                let expected =
+[m[32m+                    ranges[dim].0 + ((ranges[dim].1 - ranges[dim].0) / bins[dim] as f64) * i as f64;
+[m[32m+                assert_eq!(value.to_bits(), expected.to_bits(), "edge dim={dim} i={i}");
+[m             }
+         }
+         let got_counts = s.tensor_values(counts).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:92672:
+             assert_eq!(got.to_bits(), expected.to_bits(), "count bin {i}");
+         }
+
+[31m-        let input_density = s
+[m[31m-            .tensor_variable(data, vec![samples, dims], false)
+[m[31m-            .unwrap();
+[m[32m+        let input_density = s.tensor_variable(data, vec![samples, dims], false).unwrap();
+[m         let (density, _) = s
+             .tensor_histogramdd(input_density, &bins, Some(&ranges), true)
+             .unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:96723:
+         for i in 0..2 {
+             for j in 0..2 {
+                 let want = if i == j { 1.0 } else { 0.0 };
+[31m-                assert!((g[i * 2 + j] - want).abs() < 1e-6, "eigvals trace grad {g:?}");
+[m[32m+                assert!(
+[m[32m+                    (g[i * 2 + j] - want).abs() < 1e-6,
+[m[32m+                    "eigvals trace grad {g:?}"
+[m[32m+                );
+[m             }
+         }
+     }
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:102640:
+         };
+         for mode in ["sum", "mean", "max"] {
+             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-            let inp = s.tensor_variable(input.clone(), vec![input_len], false).unwrap();
+[m[31m-            let w = s.tensor_variable(weight.clone(), vec![num_emb, dim], false).unwrap();
+[m[31m-            let off = s.tensor_variable(offsets.clone(), vec![num_bags], false).unwrap();
+[m[32m+            let inp = s
+[m[32m+                .tensor_variable(input.clone(), vec![input_len], false)
+[m[32m+                .unwrap();
+[m[32m+            let w = s
+[m[32m+                .tensor_variable(weight.clone(), vec![num_emb, dim], false)
+[m[32m+                .unwrap();
+[m[32m+            let off = s
+[m[32m+                .tensor_variable(offsets.clone(), vec![num_bags], false)
+[m[32m+                .unwrap();
+[m             let got = {
+                 let node = s.tensor_embedding_bag(inp, w, off, mode).unwrap();
+                 s.tensor_values(node).unwrap()
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:108236:
+             );
+         }
+         // The off-triangle entry (L[0,1]) is genuinely nonzero (dense, not masked).
+[31m-        assert!(grad_l[1].abs() > 1e-6, "off-triangle grad_L[0,1] must be dense");
+[m[32m+        assert!(
+[m[32m+            grad_l[1].abs() > 1e-6,
+[m[32m+            "off-triangle grad_L[0,1] must be dense"
+[m[32m+        );
+[m         for (i, (&g, &e)) in grad_b.iter().zip(expect_b.iter()).enumerate() {
+             assert!((g - e).abs() < 1e-9, "grad_B[{i}] = {g}, expected {e}");
+         }
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:108250:
+         ];
+         let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+         let u = s2.tensor_variable(u_vals, vec![2, 2], true).unwrap();
+[31m-        let b2 = s2.tensor_variable(vec![1.0, 2.0], vec![2, 1], true).unwrap();
+[m[32m+        let b2 = s2
+[m[32m+            .tensor_variable(vec![1.0, 2.0], vec![2, 1], true)
+[m[32m+            .unwrap();
+[m         let x2 = s2.tensor_cholesky_solve(b2, u, true).unwrap();
+         let loss2 = s2.tensor_sum(x2).unwrap();
+         let report2 = s2.tensor_backward(loss2).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:111405:
+         // is a compiler artifact, not a parallel-vs-serial corruption — which would
+         // be gross — so compare to a tight ULP tolerance. Same-input values share a
+         // sign, so the i64 bit-distance is the ULP distance. frankentorch-build-fix.
+[31m-        let ulp_close = |g: f64, r: f64| {
+[m[31m-            (g.to_bits() as i64).wrapping_sub(r.to_bits() as i64).abs() <= 4
+[m[31m-        };
+[m[32m+        let ulp_close =
+[m[32m+            |g: f64, r: f64| (g.to_bits() as i64).wrapping_sub(r.to_bits() as i64).abs() <= 4;
+[m         let pg_got = s.tensor_values(pg).unwrap();
+         for (idx, (g, &x)) in pg_got.iter().zip(pdata.iter()).enumerate() {
+             let r = super::polygamma_approx(2, x);
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:111437:
+             .expect("polygamma grad present");
+         for (idx, (g, &x)) in grad.iter().zip(pdata.iter()).enumerate() {
+             let want = 1.0_f64 * super::polygamma_approx(3, x);
+[31m-            assert!(ulp_close(*g, want), "polygamma bwd @{idx}: {g:e} vs {want:e}");
+[m[32m+            assert!(
+[m[32m+                ulp_close(*g, want),
+[m[32m+                "polygamma bwd @{idx}: {g:e} vs {want:e}"
+[m[32m+            );
+[m         }
+     }
+
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:120709:
+         let nan_a = f64::from_bits(0x7ff8_0000_0000_1234);
+         let nan_b = f64::from_bits(0x7ff8_0000_0000_5678);
+         let data = vec![
+[31m-            -0.0, 0.0, -1.0, -2.0, 0.0, -0.0, 1.0, 2.0, -5.0, nan_a, nan_b, 9.0,
+[m[31m-            4.0, 3.0, 2.0, 1.0,
+[m[32m+            -0.0, 0.0, -1.0, -2.0, 0.0, -0.0, 1.0, 2.0, -5.0, nan_a, nan_b, 9.0, 4.0, 3.0, 2.0, 1.0,
+[m         ];
+         let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+         let expected_max = vec![
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:122830:
+         // frankentorch-kgs4.60: the quickselect nan-reduction paths must equal the
+         // previous full-sort-of-non-NaN-pairs bit-for-bit, including ties and NaN.
+         let data: Vec<f64> = vec![
+[31m-            3.0, f64::NAN, 1.0, 3.0, 2.0, 1.0, f64::NAN, 3.0, 5.0, 2.0, 1.0, 4.0, 0.0, 5.0, 2.0,
+[m[32m+            3.0,
+[m[32m+            f64::NAN,
+[m[32m+            1.0,
+[m[32m+            3.0,
+[m[32m+            2.0,
+[m[32m+            1.0,
+[m[32m+            f64::NAN,
+[m[32m+            3.0,
+[m[32m+            5.0,
+[m[32m+            2.0,
+[m[32m+            1.0,
+[m[32m+            4.0,
+[m[32m+            0.0,
+[m[32m+            5.0,
+[m[32m+            2.0,
+[m         ];
+         // Reference = filter NaN, stable sort by value, index by rank.
+         let reference = |q: f64, mode: &str| -> f64 {
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:122852:
+         for &q in &[0.0, 0.25, 0.5, 0.7, 1.0] {
+             for mode in ["linear", "lower", "higher", "nearest", "midpoint"] {
+                 let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-                let x = s.tensor_variable(data.clone(), vec![data.len()], false).unwrap();
+[m[32m+                let x = s
+[m[32m+                    .tensor_variable(data.clone(), vec![data.len()], false)
+[m[32m+                    .unwrap();
+[m                 let out = s.tensor_nanquantile_interpolation(x, q, mode).unwrap();
+                 let got = s.tensor_values(out).unwrap()[0];
+[31m-                assert_eq!(got.to_bits(), reference(q, mode).to_bits(), "q={q} mode={mode}");
+[m[32m+                assert_eq!(
+[m[32m+                    got.to_bits(),
+[m[32m+                    reference(q, mode).to_bits(),
+[m[32m+                    "q={q} mode={mode}"
+[m[32m+                );
+[m             }
+         }
+         // nanmedian == nanquantile(0.5, "lower").
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:122862:
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let x = s.tensor_variable(data.clone(), vec![data.len()], false).unwrap();
+[m[32m+        let x = s
+[m[32m+            .tensor_variable(data.clone(), vec![data.len()], false)
+[m[32m+            .unwrap();
+[m         let med = s.tensor_nanmedian(x).unwrap();
+         assert_eq!(
+             s.tensor_values(med).unwrap()[0].to_bits(),
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:126840:
+         // fft: real x -> sum(real(y)*a + imag(y)*b). torch x.grad = [1.0,0,-0.2,-0.4].
+         {
+             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-            let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+[m[32m+            let x = s
+[m[32m+                .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+[m[32m+                .unwrap();
+[m             let y = s.tensor_fft(x, None).unwrap();
+             let re = s.tensor_real(y).unwrap();
+             let im = s.tensor_imag(y).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:126858:
+         // xr.grad=[0.25,-0.1,-0.05,0], xi.grad=[0.65,0,-0.05,-0.1].
+         {
+             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-            let xr = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+[m[31m-            let xi = s.tensor_variable(vec![0.5, 1.0, 1.5, 2.0], vec![4], true).unwrap();
+[m[32m+            let xr = s
+[m[32m+                .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+[m[32m+                .unwrap();
+[m[32m+            let xi = s
+[m[32m+                .tensor_variable(vec![0.5, 1.0, 1.5, 2.0], vec![4], true)
+[m[32m+                .unwrap();
+[m             let z = s.tensor_complex(xr, xi).unwrap();
+             let y = s.tensor_ifft(z, None).unwrap();
+             let re = s.tensor_real(y).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:126871:
+             let sum = s.tensor_add(ra, ib).unwrap();
+             let out = s.tensor_sum(sum).unwrap();
+             let rep = s.tensor_backward(out).unwrap();
+[31m-            approx(s.tensor_gradient(&rep, xr).unwrap(), &[0.25, -0.1, -0.05, 0.0]);
+[m[31m-            approx(s.tensor_gradient(&rep, xi).unwrap(), &[0.65, 0.0, -0.05, -0.1]);
+[m[32m+            approx(
+[m[32m+                s.tensor_gradient(&rep, xr).unwrap(),
+[m[32m+                &[0.25, -0.1, -0.05, 0.0],
+[m[32m+            );
+[m[32m+            approx(
+[m[32m+                s.tensor_gradient(&rep, xi).unwrap(),
+[m[32m+                &[0.65, 0.0, -0.05, -0.1],
+[m[32m+            );
+[m         }
+
+         // rfft: real x -> M=3 bins -> sum(real(y)*a3 + imag(y)*b3).
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:126881:
+             let a3 = [0.1, 0.2, 0.3];
+             let b3 = [0.5, 0.6, 0.7];
+             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-            let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+[m[32m+            let x = s
+[m[32m+                .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+[m[32m+                .unwrap();
+[m             let y = s.tensor_rfft(x, None).unwrap();
+             let re = s.tensor_real(y).unwrap();
+             let im = s.tensor_imag(y).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:126899:
+         // torch grad: xr=[0.25,-0.1,-0.05], xi=[0,0.1,0] (DC+Nyquist imag zeroed).
+         {
+             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-            let xr = s.tensor_variable(vec![0.5, 1.0, 1.5], vec![3], true).unwrap();
+[m[31m-            let xi = s.tensor_variable(vec![0.2, 0.4, 0.6], vec![3], true).unwrap();
+[m[32m+            let xr = s
+[m[32m+                .tensor_variable(vec![0.5, 1.0, 1.5], vec![3], true)
+[m[32m+                .unwrap();
+[m[32m+            let xi = s
+[m[32m+                .tensor_variable(vec![0.2, 0.4, 0.6], vec![3], true)
+[m[32m+                .unwrap();
+[m             let z = s.tensor_complex(xr, xi).unwrap();
+             let y = s.tensor_irfft(z, Some(4)).unwrap();
+             assert_eq!(s.tensor_shape(y).unwrap(), vec![4]);
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:126907:
+[31m-            let w = s.tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![4], false).unwrap();
+[m[32m+            let w = s
+[m[32m+                .tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![4], false)
+[m[32m+                .unwrap();
+[m             let prod = s.tensor_mul(y, w).unwrap();
+             let out = s.tensor_sum(prod).unwrap();
+             let rep = s.tensor_backward(out).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127063:
+         let y = s.tensor_irfftn(z, None, None).unwrap();
+         assert_eq!(s.tensor_shape(y).unwrap(), vec![2, 4]);
+         let w = s
+[31m-            .tensor_variable(
+[m[31m-                (1..=8).map(|k| k as f64 * 0.1).collect(),
+[m[31m-                vec![2, 4],
+[m[31m-                false,
+[m[31m-            )
+[m[32m+            .tensor_variable((1..=8).map(|k| k as f64 * 0.1).collect(), vec![2, 4], false)
+[m             .unwrap();
+         let prod = s.tensor_mul(y, w).unwrap();
+         let out = s.tensor_sum(prod).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127098:
+         let a = s.tensor_variable(a0.clone(), vec![n, n], true).unwrap();
+         let ev = s.tensor_linalg_eigvals(a).unwrap();
+         assert_eq!(s.tensor_shape(ev).unwrap(), vec![n, 2]);
+[31m-        let w = s.tensor_variable(weight.clone(), vec![n, 2], false).unwrap();
+[m[32m+        let w = s
+[m[32m+            .tensor_variable(weight.clone(), vec![n, 2], false)
+[m[32m+            .unwrap();
+[m         let prod = s.tensor_mul(ev, w).unwrap();
+         let loss = s.tensor_sum(prod).unwrap();
+         let rep = s.tensor_backward(loss).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127110:
+             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+             let a = s.tensor_variable(av.to_vec(), vec![n, n], true).unwrap();
+             let ev = s.tensor_linalg_eigvals(a).unwrap();
+[31m-            let w = s.tensor_variable(weight.clone(), vec![n, 2], false).unwrap();
+[m[32m+            let w = s
+[m[32m+                .tensor_variable(weight.clone(), vec![n, 2], false)
+[m[32m+                .unwrap();
+[m             let prod = s.tensor_mul(ev, w).unwrap();
+             let loss = s.tensor_sum(prod).unwrap();
+             s.tensor_values(loss).unwrap()[0]
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127200:
+         let re = s.tensor_real(y).unwrap();
+         let im = s.tensor_imag(y).unwrap();
+         // a = arange*0.1, b = arange*0.5 over the [2,2] complex output (4 elems).
+[31m-        let a = s.tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![2, 2], false).unwrap();
+[m[31m-        let b = s.tensor_variable(vec![0.5, 1.0, 1.5, 2.0], vec![2, 2], false).unwrap();
+[m[32m+        let a = s
+[m[32m+            .tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![2, 2], false)
+[m[32m+            .unwrap();
+[m[32m+        let b = s
+[m[32m+            .tensor_variable(vec![0.5, 1.0, 1.5, 2.0], vec![2, 2], false)
+[m[32m+            .unwrap();
+[m         let ra = s.tensor_mul(re, a).unwrap();
+         let ib = s.tensor_mul(im, b).unwrap();
+         let sum = s.tensor_add(ra, ib).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127229:
+         let im = s.tensor_imag(y).unwrap();
+         let nout = 2 * 2 * 3;
+         let a = s
+[31m-            .tensor_variable((1..=nout).map(|k| k as f64 * 0.1).collect(), vec![2, 2, 3], false)
+[m[32m+            .tensor_variable(
+[m[32m+                (1..=nout).map(|k| k as f64 * 0.1).collect(),
+[m[32m+                vec![2, 2, 3],
+[m[32m+                false,
+[m[32m+            )
+[m             .unwrap();
+         let b = s
+[31m-            .tensor_variable((1..=nout).map(|k| k as f64 * 0.5).collect(), vec![2, 2, 3], false)
+[m[32m+            .tensor_variable(
+[m[32m+                (1..=nout).map(|k| k as f64 * 0.5).collect(),
+[m[32m+                vec![2, 2, 3],
+[m[32m+                false,
+[m[32m+            )
+[m             .unwrap();
+         let ra = s.tensor_mul(re, a).unwrap();
+         let ib = s.tensor_mul(im, b).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127260:
+         };
+         let run = |op: &str| -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-            let ar = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).unwrap();
+[m[31m-            let ai = s.tensor_variable(vec![0.5, -1.0, 2.0], vec![3], true).unwrap();
+[m[31m-            let br = s.tensor_variable(vec![2.0, 1.0, -1.0], vec![3], true).unwrap();
+[m[31m-            let bi = s.tensor_variable(vec![1.0, 0.5, 3.0], vec![3], true).unwrap();
+[m[32m+            let ar = s
+[m[32m+                .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+[m[32m+                .unwrap();
+[m[32m+            let ai = s
+[m[32m+                .tensor_variable(vec![0.5, -1.0, 2.0], vec![3], true)
+[m[32m+                .unwrap();
+[m[32m+            let br = s
+[m[32m+                .tensor_variable(vec![2.0, 1.0, -1.0], vec![3], true)
+[m[32m+                .unwrap();
+[m[32m+            let bi = s
+[m[32m+                .tensor_variable(vec![1.0, 0.5, 3.0], vec![3], true)
+[m[32m+                .unwrap();
+[m             let a = s.tensor_complex(ar, ai).unwrap();
+             let b = s.tensor_complex(br, bi).unwrap();
+             let z = match op {
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127275:
+             assert_eq!(s.tensor_dtype(z).unwrap(), DType::Complex128);
+             let re = s.tensor_real(z).unwrap();
+             let im = s.tensor_imag(z).unwrap();
+[31m-            let wr = s.tensor_variable(vec![0.1, 0.2, 0.3], vec![3], false).unwrap();
+[m[31m-            let wi = s.tensor_variable(vec![0.5, 0.6, 0.7], vec![3], false).unwrap();
+[m[32m+            let wr = s
+[m[32m+                .tensor_variable(vec![0.1, 0.2, 0.3], vec![3], false)
+[m[32m+                .unwrap();
+[m[32m+            let wi = s
+[m[32m+                .tensor_variable(vec![0.5, 0.6, 0.7], vec![3], false)
+[m[32m+                .unwrap();
+[m             let t1 = s.tensor_mul(re, wr).unwrap();
+             let t2 = s.tensor_mul(im, wi).unwrap();
+             let sum = s.tensor_add(t1, t2).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127316:
+         // frankentorch-4kome: complex tanh activation, composed over the bridge.
+         use super::FrankenTorchSession;
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let ar = s.tensor_variable(vec![0.5, 1.0, -0.5], vec![3], true).unwrap();
+[m[31m-        let ai = s.tensor_variable(vec![0.3, -0.7, 1.2], vec![3], true).unwrap();
+[m[32m+        let ar = s
+[m[32m+            .tensor_variable(vec![0.5, 1.0, -0.5], vec![3], true)
+[m[32m+            .unwrap();
+[m[32m+        let ai = s
+[m[32m+            .tensor_variable(vec![0.3, -0.7, 1.2], vec![3], true)
+[m[32m+            .unwrap();
+[m         let a = s.tensor_complex(ar, ai).unwrap();
+         let z = s.tensor_tanh(a).unwrap();
+         assert_eq!(s.tensor_dtype(z).unwrap(), DType::Complex128);
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127324:
+         let re = s.tensor_real(z).unwrap();
+         let im = s.tensor_imag(z).unwrap();
+[31m-        let wr = s.tensor_variable(vec![0.1, 0.2, 0.3], vec![3], false).unwrap();
+[m[31m-        let wi = s.tensor_variable(vec![0.5, 0.6, 0.7], vec![3], false).unwrap();
+[m[32m+        let wr = s
+[m[32m+            .tensor_variable(vec![0.1, 0.2, 0.3], vec![3], false)
+[m[32m+            .unwrap();
+[m[32m+        let wi = s
+[m[32m+            .tensor_variable(vec![0.5, 0.6, 0.7], vec![3], false)
+[m[32m+            .unwrap();
+[m         let t1 = s.tensor_mul(re, wr).unwrap();
+         let t2 = s.tensor_mul(im, wi).unwrap();
+         let sum = s.tensor_add(t1, t2).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127353:
+             }
+         };
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let ar = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true).unwrap();
+[m[31m-        let ai = s.tensor_variable(vec![0.5, -1.0, 2.0, 0.0], vec![2, 2], true).unwrap();
+[m[31m-        let br = s.tensor_variable(vec![2.0, 0.0, 1.0, -1.0], vec![2, 2], true).unwrap();
+[m[31m-        let bi = s.tensor_variable(vec![1.0, 1.0, 0.0, 2.0], vec![2, 2], true).unwrap();
+[m[32m+        let ar = s
+[m[32m+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true)
+[m[32m+            .unwrap();
+[m[32m+        let ai = s
+[m[32m+            .tensor_variable(vec![0.5, -1.0, 2.0, 0.0], vec![2, 2], true)
+[m[32m+            .unwrap();
+[m[32m+        let br = s
+[m[32m+            .tensor_variable(vec![2.0, 0.0, 1.0, -1.0], vec![2, 2], true)
+[m[32m+            .unwrap();
+[m[32m+        let bi = s
+[m[32m+            .tensor_variable(vec![1.0, 1.0, 0.0, 2.0], vec![2, 2], true)
+[m[32m+            .unwrap();
+[m         let a = s.tensor_complex(ar, ai).unwrap();
+         let b = s.tensor_complex(br, bi).unwrap();
+         let c = s.tensor_matmul(a, b).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127364:
+         assert_eq!(s.tensor_shape(c).unwrap(), vec![2, 2]);
+         let re = s.tensor_real(c).unwrap();
+         let im = s.tensor_imag(c).unwrap();
+[31m-        let wr = s.tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![2, 2], false).unwrap();
+[m[31m-        let wi = s.tensor_variable(vec![0.5, 0.6, 0.7, 0.8], vec![2, 2], false).unwrap();
+[m[32m+        let wr = s
+[m[32m+            .tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![2, 2], false)
+[m[32m+            .unwrap();
+[m[32m+        let wi = s
+[m[32m+            .tensor_variable(vec![0.5, 0.6, 0.7, 0.8], vec![2, 2], false)
+[m[32m+            .unwrap();
+[m         let t1 = s.tensor_mul(re, wr).unwrap();
+         let t2 = s.tensor_mul(im, wi).unwrap();
+         let sum = s.tensor_add(t1, t2).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127372:
+         let out = s.tensor_sum(sum).unwrap();
+         let rep = s.tensor_backward(out).unwrap();
+[31m-        approx(s.tensor_gradient(&rep, ar).unwrap(), &[1.3, 1.1, 2.1, 1.5], "Ar");
+[m[31m-        approx(s.tensor_gradient(&rep, ai).unwrap(), &[0.7, -0.5, 0.7, -0.9], "Ai");
+[m[31m-        approx(s.tensor_gradient(&rep, br).unwrap(), &[2.65, 3.3, 0.9, 1.4], "Br");
+[m[31m-        approx(s.tensor_gradient(&rep, bi).unwrap(), &[1.95, 2.1, 3.9, 4.6], "Bi");
+[m[32m+        approx(
+[m[32m+            s.tensor_gradient(&rep, ar).unwrap(),
+[m[32m+            &[1.3, 1.1, 2.1, 1.5],
+[m[32m+            "Ar",
+[m[32m+        );
+[m[32m+        approx(
+[m[32m+            s.tensor_gradient(&rep, ai).unwrap(),
+[m[32m+            &[0.7, -0.5, 0.7, -0.9],
+[m[32m+            "Ai",
+[m[32m+        );
+[m[32m+        approx(
+[m[32m+            s.tensor_gradient(&rep, br).unwrap(),
+[m[32m+            &[2.65, 3.3, 0.9, 1.4],
+[m[32m+            "Br",
+[m[32m+        );
+[m[32m+        approx(
+[m[32m+            s.tensor_gradient(&rep, bi).unwrap(),
+[m[32m+            &[1.95, 2.1, 3.9, 4.6],
+[m[32m+            "Bi",
+[m[32m+        );
+[m     }
+
+     #[test]
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127388:
+         };
+         let run = |op: &str| -> (Vec<f64>, Vec<f64>) {
+             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-            let ar = s.tensor_variable(vec![1.0, 0.5, -0.5], vec![3], true).unwrap();
+[m[31m-            let ai = s.tensor_variable(vec![0.5, 1.0, 2.0], vec![3], true).unwrap();
+[m[32m+            let ar = s
+[m[32m+                .tensor_variable(vec![1.0, 0.5, -0.5], vec![3], true)
+[m[32m+                .unwrap();
+[m[32m+            let ai = s
+[m[32m+                .tensor_variable(vec![0.5, 1.0, 2.0], vec![3], true)
+[m[32m+                .unwrap();
+[m             let a = s.tensor_complex(ar, ai).unwrap();
+             let z = if op == "exp" {
+                 s.tensor_exp(a).unwrap()
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127399:
+             assert_eq!(s.tensor_dtype(z).unwrap(), DType::Complex128);
+             let re = s.tensor_real(z).unwrap();
+             let im = s.tensor_imag(z).unwrap();
+[31m-            let wr = s.tensor_variable(vec![0.1, 0.2, 0.3], vec![3], false).unwrap();
+[m[31m-            let wi = s.tensor_variable(vec![0.5, 0.6, 0.7], vec![3], false).unwrap();
+[m[32m+            let wr = s
+[m[32m+                .tensor_variable(vec![0.1, 0.2, 0.3], vec![3], false)
+[m[32m+                .unwrap();
+[m[32m+            let wi = s
+[m[32m+                .tensor_variable(vec![0.5, 0.6, 0.7], vec![3], false)
+[m[32m+                .unwrap();
+[m             let t1 = s.tensor_mul(re, wr).unwrap();
+             let t2 = s.tensor_mul(im, wi).unwrap();
+             let sum = s.tensor_add(t1, t2).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127424:
+         // frankentorch-ng1hw: conj backward negates the imaginary cotangent lane.
+         use super::FrankenTorchSession;
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let xr = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).unwrap();
+[m[31m-        let xi = s.tensor_variable(vec![0.5, -1.0, 2.0], vec![3], true).unwrap();
+[m[32m+        let xr = s
+[m[32m+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+[m[32m+            .unwrap();
+[m[32m+        let xi = s
+[m[32m+            .tensor_variable(vec![0.5, -1.0, 2.0], vec![3], true)
+[m[32m+            .unwrap();
+[m         let z = s.tensor_complex(xr, xi).unwrap();
+         let c = s.tensor_conj(z).unwrap();
+         assert_eq!(s.tensor_dtype(c).unwrap(), DType::Complex128);
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127432:
+         let re = s.tensor_real(c).unwrap();
+         let im = s.tensor_imag(c).unwrap();
+[31m-        let a = s.tensor_variable(vec![0.1, 0.2, 0.3], vec![3], false).unwrap();
+[m[31m-        let b = s.tensor_variable(vec![0.5, 0.6, 0.7], vec![3], false).unwrap();
+[m[32m+        let a = s
+[m[32m+            .tensor_variable(vec![0.1, 0.2, 0.3], vec![3], false)
+[m[32m+            .unwrap();
+[m[32m+        let b = s
+[m[32m+            .tensor_variable(vec![0.5, 0.6, 0.7], vec![3], false)
+[m[32m+            .unwrap();
+[m         let ra = s.tensor_mul(re, a).unwrap();
+         let ib = s.tensor_mul(im, b).unwrap();
+         let sum = s.tensor_add(ra, ib).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127451:
+         // hfft: complex [3] -> real [4]. torch xr.grad=[1,-0.4,-0.2], xi.grad=[0,-0.4,0].
+         {
+             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-            let xr = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).unwrap();
+[m[31m-            let xi = s.tensor_variable(vec![0.5, -1.0, 0.0], vec![3], true).unwrap();
+[m[32m+            let xr = s
+[m[32m+                .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+[m[32m+                .unwrap();
+[m[32m+            let xi = s
+[m[32m+                .tensor_variable(vec![0.5, -1.0, 0.0], vec![3], true)
+[m[32m+                .unwrap();
+[m             let z = s.tensor_complex(xr, xi).unwrap();
+             let y = s.tensor_hfft(z, Some(4)).unwrap();
+             assert_eq!(s.tensor_shape(y).unwrap(), vec![4]);
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127459:
+[31m-            let w = s.tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![4], false).unwrap();
+[m[32m+            let w = s
+[m[32m+                .tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![4], false)
+[m[32m+                .unwrap();
+[m             let prod = s.tensor_mul(y, w).unwrap();
+             let out = s.tensor_sum(prod).unwrap();
+             let rep = s.tensor_backward(out).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127472:
+         // ihfft: real [4] -> complex [3]. torch r.grad = [0.15,0.1,0.05,-0.2].
+         {
+             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-            let r = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+[m[32m+            let r = s
+[m[32m+                .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+[m[32m+                .unwrap();
+[m             let y = s.tensor_ihfft(r).unwrap();
+             assert_eq!(s.tensor_shape(y).unwrap(), vec![3]);
+             let re = s.tensor_real(y).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127479:
+             let im = s.tensor_imag(y).unwrap();
+[31m-            let a = s.tensor_variable(vec![0.1, 0.2, 0.3], vec![3], false).unwrap();
+[m[31m-            let b = s.tensor_variable(vec![0.5, 0.6, 0.7], vec![3], false).unwrap();
+[m[32m+            let a = s
+[m[32m+                .tensor_variable(vec![0.1, 0.2, 0.3], vec![3], false)
+[m[32m+                .unwrap();
+[m[32m+            let b = s
+[m[32m+                .tensor_variable(vec![0.5, 0.6, 0.7], vec![3], false)
+[m[32m+                .unwrap();
+[m             let ra = s.tensor_mul(re, a).unwrap();
+             let ib = s.tensor_mul(im, b).unwrap();
+             let sum = s.tensor_add(ra, ib).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127507:
+         // loss = sum(real(z)*2 + imag(z)*3): grad re=2, im=3.
+         {
+             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-            let re = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+[m[31m-            let im = s.tensor_variable(vec![0.5, 1.5, 2.5, 3.5], vec![4], true).unwrap();
+[m[32m+            let re = s
+[m[32m+                .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+[m[32m+                .unwrap();
+[m[32m+            let im = s
+[m[32m+                .tensor_variable(vec![0.5, 1.5, 2.5, 3.5], vec![4], true)
+[m[32m+                .unwrap();
+[m             let z = s.tensor_complex(re, im).unwrap();
+             let rp = s.tensor_real(z).unwrap();
+             let ip = s.tensor_imag(z).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/src/lib.rs:127524:
+         // loss = sum(|z|): grad re = re/|z|, im = im/|z|.
+         {
+             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-            let re = s.tensor_variable(vec![3.0, 1.0, -2.0, 0.5], vec![4], true).unwrap();
+[m[31m-            let im = s.tensor_variable(vec![4.0, 1.0, 2.0, -0.5], vec![4], true).unwrap();
+[m[32m+            let re = s
+[m[32m+                .tensor_variable(vec![3.0, 1.0, -2.0, 0.5], vec![4], true)
+[m[32m+                .unwrap();
+[m[32m+            let im = s
+[m[32m+                .tensor_variable(vec![4.0, 1.0, 2.0, -0.5], vec![4], true)
+[m[32m+                .unwrap();
+[m             let z = s.tensor_complex(re, im).unwrap();
+             let mag = s.tensor_abs(z).unwrap();
+             let out = s.tensor_sum(mag).unwrap();

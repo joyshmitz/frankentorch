@@ -1,0 +1,23 @@
+Command:
+git commit -m "perf(ft-api): parallelize histogramdd local counts" ...
+
+Result:
+The repository pre-commit hook invoked UBS on the staged files and detected
+`crates/ft-api/src/lib.rs` as a large staged file. It ran with the hook's
+extended timeout, then exited nonzero with:
+
+ubs: timeout on large file scan
+ubs: run manually: ubs --only=rust crates/ft-api/src/lib.rs
+ubs: or commit with: UBS_SKIP=1 git commit ...
+
+Follow-up:
+Manual two-file UBS for `crates/ft-api/src/lib.rs` and
+`crates/ft-api/benches/ops_bench.rs` had already remained silent in the Rust
+module for about five minutes and was terminated; see
+`pass6_ubs_ft_api_changed_files.log`.
+
+Commit decision:
+Use `UBS_SKIP=1` for this commit because the scanner timed out twice on the
+large `ft-api/src/lib.rs` surface, while RCH focused behavior proof, same-worker
+benchmark, `cargo check -p ft-api --all-targets`, and cached whitespace checks
+completed and are recorded in pass1-pass7.
