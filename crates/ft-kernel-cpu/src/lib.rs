@@ -4721,6 +4721,108 @@ pub fn conv2d_forward_f32(
     out
 }
 
+/// Direct depthwise conv2d forward (groups == channels, one filter per channel).
+///
+/// `padded`: `[N, C, ph, pw]` (zero-padding already applied by the caller, like
+/// [`conv2d_forward_f64`]). `weight`: `[C, 1, kh, kw]` flattened. `bias`: `[C]`.
+/// Output `[N, C, oh, ow]`.
+///
+/// Avoids the grouped-conv anti-pattern (`C` separate narrow + im2col + sgemm_bt
+/// calls + a `C`-way cat) by computing every output as a direct `kh·kw`
+/// dot-product against its channel's filter, parallel over the `N·C` independent
+/// planes. Compute-bound (`kh·kw` MACs per output). Matches torch depthwise conv
+/// to floating-point tolerance (the grouped path is itself tolerance-checked vs
+/// torch at 1e-9; this is the same convolution summed in `(kr, kc)` row-major
+/// order). frankentorch-0hfri.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn depthwise_conv2d_forward_f64(
+    padded: &[f64],
+    weight: &[f64],
+    bias: Option<&[f64]>,
+    batch: usize,
+    channels: usize,
+    ph: usize,
+    pw: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; batch * channels * oh * ow];
+    out.par_chunks_mut(oh * ow)
+        .enumerate()
+        .for_each(|(plane, orow)| {
+            let c = plane % channels;
+            let in_base = plane * ph * pw; // plane = n*channels + c
+            let w_base = c * kh * kw;
+            let bo = bias.map_or(0.0, |b| b[c]);
+            for oy in 0..oh {
+                let base_h = oy * sh;
+                for ox in 0..ow {
+                    let base_w = ox * sw;
+                    let mut acc = 0.0f64;
+                    for kr in 0..kh {
+                        let irow = in_base + (base_h + kr) * pw + base_w;
+                        let wrow = w_base + kr * kw;
+                        for kc in 0..kw {
+                            acc += padded[irow + kc] * weight[wrow + kc];
+                        }
+                    }
+                    orow[oy * ow + ox] = acc + bo;
+                }
+            }
+        });
+    out
+}
+
+/// f32 mirror of [`depthwise_conv2d_forward_f64`].
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn depthwise_conv2d_forward_f32(
+    padded: &[f32],
+    weight: &[f32],
+    bias: Option<&[f32]>,
+    batch: usize,
+    channels: usize,
+    ph: usize,
+    pw: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * channels * oh * ow];
+    out.par_chunks_mut(oh * ow)
+        .enumerate()
+        .for_each(|(plane, orow)| {
+            let c = plane % channels;
+            let in_base = plane * ph * pw;
+            let w_base = c * kh * kw;
+            let bo = bias.map_or(0.0, |b| b[c]);
+            for oy in 0..oh {
+                let base_h = oy * sh;
+                for ox in 0..ow {
+                    let base_w = ox * sw;
+                    let mut acc = 0.0f32;
+                    for kr in 0..kh {
+                        let irow = in_base + (base_h + kr) * pw + base_w;
+                        let wrow = w_base + kr * kw;
+                        for kc in 0..kw {
+                            acc += padded[irow + kc] * weight[wrow + kc];
+                        }
+                    }
+                    orow[oy * ow + ox] = acc + bo;
+                }
+            }
+        });
+    out
+}
+
 /// Backward of [`conv2d_forward_f64`]. Returns `(dpadded, dweight_flat, dbias?)`.
 /// `dweight = dout^T @ panel`, `dpanel = dout @ weight_flat`, `dpadded =
 /// col2im(dpanel)`, `dbias = sum over (n,oh,ow)`.
@@ -23550,6 +23652,60 @@ mod tests {
             0x1f80,
             "transcendental sweep changed MXCSR control bits"
         );
+    }
+
+    #[test]
+    fn depthwise_conv2d_forward_matches_naive_reference() {
+        // The parallel direct depthwise kernel must equal a naive serial
+        // reference bit-for-bit (same (kr,kc) row-major accumulation order; the
+        // N·C planes are independent so the par split is irrelevant). Multi
+        // batch/channel, stride 2, non-square kernel, with bias.
+        let (n, c, ih, iw, kh, kw, sh, sw) = (2usize, 5, 9, 11, 3, 2, 2, 2);
+        let oh = (ih - kh) / sh + 1;
+        let ow = (iw - kw) / sw + 1;
+        let padded: Vec<f64> = (0..n * c * ih * iw)
+            .map(|i| (i % 977) as f64 * 0.03 - 7.0)
+            .collect();
+        let weight: Vec<f64> = (0..c * kh * kw).map(|i| (i % 51) as f64 * 0.1 - 2.0).collect();
+        let bias: Vec<f64> = (0..c).map(|i| i as f64 * 0.5 - 1.0).collect();
+        let got = super::depthwise_conv2d_forward_f64(
+            &padded,
+            &weight,
+            Some(&bias),
+            n,
+            c,
+            ih,
+            iw,
+            kh,
+            kw,
+            oh,
+            ow,
+            sh,
+            sw,
+        );
+        let mut want = vec![0.0f64; n * c * oh * ow];
+        for ni in 0..n {
+            for ci in 0..c {
+                let in_base = (ni * c + ci) * ih * iw;
+                let w_base = ci * kh * kw;
+                for oy in 0..oh {
+                    for ox in 0..ow {
+                        let mut acc = 0.0f64;
+                        for kr in 0..kh {
+                            for kc in 0..kw {
+                                acc += padded[in_base + (oy * sh + kr) * iw + ox * sw + kc]
+                                    * weight[w_base + kr * kw + kc];
+                            }
+                        }
+                        want[(ni * c + ci) * oh * ow + oy * ow + ox] = acc + bias[ci];
+                    }
+                }
+            }
+        }
+        assert_eq!(got.len(), want.len());
+        for i in 0..want.len() {
+            assert_eq!(got[i].to_bits(), want[i].to_bits(), "depthwise idx={i}");
+        }
     }
 
     #[test]
