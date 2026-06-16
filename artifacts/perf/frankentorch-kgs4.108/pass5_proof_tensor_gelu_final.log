@@ -1,0 +1,11 @@
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.73s
+     Running unittests src/lib.rs (/data/tmp/frankentorch-a7xya-local-target/debug/deps/ft_autograd-439033e7d0dccc63)
+
+running 4 tests
+test tests::tensor_gelu_forward ... ok
+test tests::tensor_gelu_backward ... ok
+test tests::tensor_gelu_large_backward_matches_serial_formula_bit_exact ... ok
+test tests::tensor_gelu_branch_accumulates_existing_gradient_bit_exact ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 469 filtered out; finished in 0.02s

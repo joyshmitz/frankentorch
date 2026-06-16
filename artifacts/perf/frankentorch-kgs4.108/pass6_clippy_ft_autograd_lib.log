@@ -1,0 +1,38 @@
+   Compiling num-traits v0.2.19
+    Checking num-complex v0.4.6
+    Checking either v1.15.0
+    Checking rayon v1.12.0
+    Checking ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+    Checking ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+    Checking ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+    Checking ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+error: manual checked division
+     --> crates/ft-autograd/src/lib.rs:10034:16
+      |
+10034 |             if plane > 0 {
+      |                ^^^^^^^^^ check performed here
+10035 |                 use rayon::prelude::*;
+10036 |                 let batch = numel / plane;
+      |                             ------------- division performed here
+      |
+      = help: consider using `checked_div`
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_checked_ops
+      = note: `-D clippy::manual-checked-ops` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::manual_checked_ops)]`
+
+error: the loop variable `d` is used to index `strides`
+     --> crates/ft-autograd/src/lib.rs:18839:34
+      |
+18839 |                         for d in 0..ndim {
+      |                                  ^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+      = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator and enumerate()
+      |
+18839 -                         for d in 0..ndim {
+18839 +                         for (d, <item>) in strides.iter().enumerate().take(ndim) {
+      |
+
+error: could not compile `ft-autograd` (lib) due to 2 previous errors

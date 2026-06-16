@@ -1,0 +1,49 @@
+Diff in /data/projects/frankentorch/crates/ft-autograd/src/lib.rs:10280:
+     {
+         let fetch = |flat: usize| -> Result<T, AutogradError> {
+             let src = src_index_for_output(flat)?;
+[31m-            values
+[m[31m-                .get(src)
+[m[31m-                .cloned()
+[m[31m-                .ok_or(AutogradError::DenseTensor(
+[m[31m-                    DenseTensorError::InsufficientStorage {
+[m[31m-                        needed: src + 1,
+[m[31m-                        actual: values.len(),
+[m[31m-                    },
+[m[31m-                ))
+[m[32m+            values.get(src).cloned().ok_or(AutogradError::DenseTensor(
+[m[32m+                DenseTensorError::InsufficientStorage {
+[m[32m+                    needed: src + 1,
+[m[32m+                    actual: values.len(),
+[m[32m+                },
+[m[32m+            ))
+[m         };
+         // Output-driven gather (each output index maps to one source index): every
+         // output is computed independently, so fanning over rayon is bit-for-bit
+Diff in /data/projects/frankentorch/crates/ft-autograd/src/lib.rs:21443:
+             .expect("f32 custom op");
+         // Output must be an F32 leaf with values x².
+         assert_eq!(tape.node(y).unwrap().tensor.meta().dtype(), DType::F32);
+[31m-        let yvals = tape.node(y).unwrap().tensor.contiguous_values_f32().unwrap();
+[m[32m+        let yvals = tape
+[m[32m+            .node(y)
+[m[32m+            .unwrap()
+[m[32m+            .tensor
+[m[32m+            .contiguous_values_f32()
+[m[32m+            .unwrap();
+[m         assert_eq!(yvals, &[4.0f32, 9.0, 16.0]);
+         // backward of sum(x²): d/dx = 2x = [4,6,8].
+         let (s, _) = tape.sum(y, ExecutionMode::Strict).expect("sum");
+Diff in /data/projects/frankentorch/crates/ft-autograd/src/lib.rs:21554:
+             let want = generic(&data, &shape, &perm);
+             assert_eq!(got.len(), want.len());
+             for k in 0..want.len() {
+[31m-                assert_eq!(got[k].to_bits(), want[k].to_bits(), "conv perm {perm:?} idx={k}");
+[m[32m+                assert_eq!(
+[m[32m+                    got[k].to_bits(),
+[m[32m+                    want[k].to_bits(),
+[m[32m+                    "conv perm {perm:?} idx={k}"
+[m[32m+                );
+[m             }
+         }
+     }
