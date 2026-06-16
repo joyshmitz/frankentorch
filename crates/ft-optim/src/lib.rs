@@ -4890,97 +4890,80 @@ impl Optimizer for NAdam {
         self.validate_hyperparams()?;
 
         for (i, &param) in self.params.iter().enumerate() {
-            let grad = match load_param_gradient(session, param)? {
-                Some(g) => g,
+            let grad_len = match session.tensor_accumulated_gradient_len(param)? {
+                Some(len) => len,
                 None => continue,
             };
             let t =
                 advance_param_step_count(&mut self.step_counts, i, "nadam step counter overflow")?;
+            let param_len = session.tensor_values_len(param)?;
+            ensure_grad_len_matches_param(param, param_len, grad_len)?;
 
+            // Per-param SCALARS (computed once, not per element).
             // Momentum schedule: mu_t = beta1 * (1 - 0.5 * 0.96^(t * momentum_decay))
             let mu_t = self.beta1 * (1.0 - 0.5 * 0.96f64.powf(t as f64 * self.momentum_decay));
             let mu_t1 =
                 self.beta1 * (1.0 - 0.5 * 0.96f64.powf((t as f64 + 1.0) * self.momentum_decay));
-
-            // Cumulative product of mu values: mu_product = prod_{i=1}^{t} mu_i.
-            // PyTorch carries this as state; the bias-correction denominators
-            // need the full running product, not just the current mu_t.
+            // Cumulative product of mu values (state); the bias-correction
+            // denominators need the full running product, not just mu_t.
             self.mu_products[i] *= mu_t;
             let mu_product = self.mu_products[i];
-
-            let param_values = session.tensor_values(param)?;
-            ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
-            let mut effective_grad = grad;
-
-            // maximize: negate the gradient first (before weight decay), torch parity.
-            if self.maximize {
-                for g in effective_grad.iter_mut() {
-                    *g = -*g;
-                }
-            }
-
-            // torch NAdam: when decoupled, scale the param directly
-            // (param *= 1 - lr*wd, AdamW-style) and leave the gradient raw;
-            // otherwise fold weight decay into the gradient as L2. The NAdam
-            // update depends only on the moments and raw gradient (not the param
-            // value), so the decoupled scaling composes as
-            // `param*(1-lr*wd) - update`.
-            if self.weight_decay != 0.0 {
-                if self.decoupled_weight_decay {
-                    let decay = self.lr * self.weight_decay;
-                    let decay_update: Vec<f64> =
-                        param_values.iter().map(|p| decay * p).collect();
-                    apply_param_update(session, param, &decay_update)?;
-                } else {
-                    for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
-                        *g += self.weight_decay * p;
-                    }
-                }
-            }
-
-            // Update biased first moment: m = beta1 * m + (1 - beta1) * g
-            let m = self.m[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
-            ensure_state_len(
-                effective_grad.len(),
-                m.len(),
-                "nadam first-moment state length mismatch",
-            )?;
-            for (m_val, g) in m.iter_mut().zip(effective_grad.iter()) {
-                *m_val = self.beta1 * *m_val + (1.0 - self.beta1) * g;
-            }
-
-            // Update biased second moment: v = beta2 * v + (1 - beta2) * g^2
-            let v = self.v[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
-            ensure_state_len(
-                effective_grad.len(),
-                v.len(),
-                "nadam second-moment state length mismatch",
-            )?;
-            for (v_val, g) in v.iter_mut().zip(effective_grad.iter()) {
-                *v_val = self.beta2 * *v_val + (1.0 - self.beta2) * g * g;
-            }
-
-            // Bias corrections
             let bias_correction2 = adam_bias_correction(self.beta2, t);
 
-            // NAdam update: uses Nesterov-like combination of m and g
-            let update: Vec<f64> = m
-                .iter()
-                .zip(v.iter())
-                .zip(effective_grad.iter())
-                .map(|((m_val, v_val), g)| {
-                    // PyTorch _single_tensor_nadam: the lookahead term is
-                    // divided by (1 - mu_product*mu_next) and the raw-gradient
-                    // term by (1 - mu_product), where mu_product is the running
-                    // cumulative product of all mu values up to step t.
-                    let m_hat = mu_t1 * m_val / (1.0 - mu_product * mu_t1)
-                        + (1.0 - mu_t) * g / (1.0 - mu_product);
-                    let v_hat = v_val / bias_correction2;
-                    self.lr * m_hat / (v_hat.sqrt() + self.eps)
-                })
-                .collect();
+            let m = self.m[i].get_or_insert_with(|| vec![0.0; grad_len]);
+            ensure_state_len(grad_len, m.len(), "nadam first-moment state length mismatch")?;
+            let v_state = self.v[i].get_or_insert_with(|| vec![0.0; grad_len]);
+            ensure_state_len(grad_len, v_state.len(), "nadam second-moment state length mismatch")?;
 
-            apply_param_update(session, param, &update)?;
+            let (beta1, beta2, lr, eps) = (self.beta1, self.beta2, self.lr, self.eps);
+            let weight_decay = self.weight_decay;
+            let decoupled = self.decoupled_weight_decay;
+            let maximize = self.maximize;
+            // Single fused in-place pass (Adam optpar pattern): no grad/param clones
+            // + write-back. Bit-for-bit identical per element (same ops + order);
+            // decoupled wd p*=(1-lr*wd) composes with p-=update (update is
+            // param-independent). frankentorch-optpar.
+            session.tensor_update_param_values_f64_with_accumulated_gradient(
+                param,
+                |grad, param_values| {
+                    let body = |p: &mut f64, g: f64, m_val: &mut f64, v_val: &mut f64| {
+                        let g = if maximize { -g } else { g };
+                        let g_eff = if weight_decay != 0.0 && !decoupled {
+                            g + weight_decay * *p
+                        } else {
+                            g
+                        };
+                        *m_val = beta1 * *m_val + (1.0 - beta1) * g_eff;
+                        *v_val = beta2 * *v_val + (1.0 - beta2) * g_eff * g_eff;
+                        let m_hat = mu_t1 * *m_val / (1.0 - mu_product * mu_t1)
+                            + (1.0 - mu_t) * g_eff / (1.0 - mu_product);
+                        let v_hat = *v_val / bias_correction2;
+                        let update = lr * m_hat / (v_hat.sqrt() + eps);
+                        if decoupled && weight_decay != 0.0 {
+                            *p -= lr * weight_decay * *p;
+                        }
+                        *p -= update;
+                    };
+                    if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
+                        use rayon::prelude::*;
+                        param_values
+                            .par_iter_mut()
+                            .zip(grad.par_iter())
+                            .zip(m.par_iter_mut())
+                            .zip(v_state.par_iter_mut())
+                            .for_each(|(((p, g), m_val), v_val)| body(p, *g, m_val, v_val));
+                    } else {
+                        for (((p, g), m_val), v_val) in param_values
+                            .iter_mut()
+                            .zip(grad.iter())
+                            .zip(m.iter_mut())
+                            .zip(v_state.iter_mut())
+                        {
+                            body(p, *g, m_val, v_val);
+                        }
+                    }
+                },
+            )?;
         }
         Ok(())
     }
