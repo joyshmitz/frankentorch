@@ -1117,6 +1117,65 @@ impl Optimizer for RMSprop {
         self.step_count =
             checked_next_step_count(self.step_count, "rmsprop step counter overflow")?;
 
+        // Fused parallel fast path for the DEFAULT config (centered=false,
+        // momentum=0 — torch defaults, the dominant case): one in-place traversal
+        // folds maximize → +wd*p → square_avg EMA → p -= lr*g/(sqrt(sq)+eps) over the
+        // param buffer + accumulated gradient (no grad/param clones + write-back),
+        // fanned over rayon above OPTIM_PARALLEL_THRESHOLD. Bit-for-bit identical per
+        // element to the serial path below. centered/momentum keep the serial path.
+        // frankentorch-optpar.
+        if !self.centered && self.momentum == 0.0 {
+            let (alpha, lr, eps) = (self.alpha, self.lr, self.eps);
+            let weight_decay = self.weight_decay;
+            let maximize = self.maximize;
+            for (i, &param) in self.params.iter().enumerate() {
+                let grad_len = match session.tensor_accumulated_gradient_len(param)? {
+                    Some(len) => len,
+                    None => continue,
+                };
+                let param_len = session.tensor_values_len(param)?;
+                ensure_grad_len_matches_param(param, param_len, grad_len)?;
+                let sq = self.square_avg[i].get_or_insert_with(|| vec![0.0; grad_len]);
+                ensure_state_len(
+                    grad_len,
+                    sq.len(),
+                    "rmsprop square_avg state length mismatch with gradient length",
+                )?;
+                session.tensor_update_param_values_f64_with_accumulated_gradient(
+                    param,
+                    |grad, param_values| {
+                        let body = |p: &mut f64, g: f64, s: &mut f64| {
+                            let g = if maximize { -g } else { g };
+                            let g_eff = if weight_decay != 0.0 {
+                                g + weight_decay * *p
+                            } else {
+                                g
+                            };
+                            *s = alpha * *s + (1.0 - alpha) * g_eff * g_eff;
+                            *p -= lr * g_eff / (s.sqrt() + eps);
+                        };
+                        if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
+                            use rayon::prelude::*;
+                            param_values
+                                .par_iter_mut()
+                                .zip(grad.par_iter())
+                                .zip(sq.par_iter_mut())
+                                .for_each(|((p, g), s)| body(p, *g, s));
+                        } else {
+                            for ((p, g), s) in param_values
+                                .iter_mut()
+                                .zip(grad.iter())
+                                .zip(sq.iter_mut())
+                            {
+                                body(p, *g, s);
+                            }
+                        }
+                    },
+                )?;
+            }
+            return Ok(());
+        }
+
         for (i, &param) in self.params.iter().enumerate() {
             let grad = match load_param_gradient(session, param)? {
                 Some(g) => g,
