@@ -4030,6 +4030,75 @@ pub fn layer_norm_backward_f64(
     (dx, dweight, dbias)
 }
 
+/// f32 mirror of [`layer_norm_backward_f64`] (recomputes per-row mean/rstd from
+/// `x`, so no saved stats needed). Used by the f32 LayerNorm grad fast path
+/// (frankentorch-48w0b recipe).
+#[must_use]
+pub fn layer_norm_backward_f32(
+    dy: &[f32],
+    x: &[f32],
+    weight: &[f32],
+    batch: usize,
+    norm_size: usize,
+    eps: f32,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let inv_n = 1.0f32 / norm_size as f32;
+    let mut dx = vec![0.0f32; batch * norm_size];
+    dx.par_chunks_mut(norm_size)
+        .enumerate()
+        .for_each(|(r, dxrow)| {
+            let xrow = &x[r * norm_size..r * norm_size + norm_size];
+            let dyrow = &dy[r * norm_size..r * norm_size + norm_size];
+            let mut sum = 0.0f32;
+            for &v in xrow {
+                sum += v;
+            }
+            let mean = sum * inv_n;
+            let mut vsum = 0.0f32;
+            for &v in xrow {
+                let d = v - mean;
+                vsum += d * d;
+            }
+            let rstd = 1.0f32 / (vsum * inv_n + eps).sqrt();
+            let mut c1 = 0.0f32;
+            let mut c2 = 0.0f32;
+            for j in 0..norm_size {
+                let xhat = (xrow[j] - mean) * rstd;
+                let dxhat = dyrow[j] * weight[j];
+                c1 += dxhat;
+                c2 += dxhat * xhat;
+            }
+            for j in 0..norm_size {
+                let xhat = (xrow[j] - mean) * rstd;
+                let dxhat = dyrow[j] * weight[j];
+                dxrow[j] = rstd * (dxhat - (c1 + xhat * c2) * inv_n);
+            }
+        });
+    let mut dweight = vec![0.0f32; norm_size];
+    let mut dbias = vec![0.0f32; norm_size];
+    for r in 0..batch {
+        let xrow = &x[r * norm_size..r * norm_size + norm_size];
+        let dyrow = &dy[r * norm_size..r * norm_size + norm_size];
+        let mut sum = 0.0f32;
+        for &v in xrow {
+            sum += v;
+        }
+        let mean = sum * inv_n;
+        let mut vsum = 0.0f32;
+        for &v in xrow {
+            let d = v - mean;
+            vsum += d * d;
+        }
+        let rstd = 1.0f32 / (vsum * inv_n + eps).sqrt();
+        for j in 0..norm_size {
+            let xhat = (xrow[j] - mean) * rstd;
+            dweight[j] += dyrow[j] * xhat;
+            dbias[j] += dyrow[j];
+        }
+    }
+    (dx, dweight, dbias)
+}
+
 /// Backward of [`layer_norm_forward_with_stats_f64`] with affine weight (and
 /// bias), reusing the forward row statistics. The affine gradient row reduction
 /// stays serial and row-major so floating-point accumulation order is unchanged.
