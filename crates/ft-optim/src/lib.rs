@@ -5260,62 +5260,73 @@ impl Optimizer for Rprop {
         self.validate_hyperparams()?;
 
         for (i, &param) in self.params.iter().enumerate() {
-            let mut grad = match load_param_gradient(session, param)? {
-                Some(g) => g,
+            let grad_len = match session.tensor_accumulated_gradient_len(param)? {
+                Some(len) => len,
                 None => continue,
             };
+            let param_len = session.tensor_values_len(param)?;
+            ensure_grad_len_matches_param(param, param_len, grad_len)?;
 
-            // maximize: negate the gradient so the sign-based step ascends.
-            if self.maximize {
-                for g in grad.iter_mut() {
-                    *g = -*g;
-                }
-            }
+            let steps = self.step_sizes[i].get_or_insert_with(|| vec![self.lr; grad_len]);
+            ensure_state_len(grad_len, steps.len(), "rprop step_sizes state length mismatch")?;
+            let prev = self.prev_grad[i].get_or_insert_with(|| vec![0.0; grad_len]);
+            ensure_state_len(grad_len, prev.len(), "rprop prev_grad state length mismatch")?;
 
-            let param_values = session.tensor_values(param)?;
-            ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
-
-            let steps = self.step_sizes[i].get_or_insert_with(|| vec![self.lr; grad.len()]);
-            ensure_state_len(
-                grad.len(),
-                steps.len(),
-                "rprop step_sizes state length mismatch",
-            )?;
-
-            let prev = self.prev_grad[i].get_or_insert_with(|| vec![0.0; grad.len()]);
-            ensure_state_len(
-                grad.len(),
-                prev.len(),
-                "rprop prev_grad state length mismatch",
-            )?;
-
-            let mut update = vec![0.0; grad.len()];
-            for j in 0..grad.len() {
-                let sign_product = grad[j] * prev[j];
-                if sign_product > 0.0 {
-                    // Same sign — increase step size
-                    steps[j] = (steps[j] * self.eta_plus).min(self.step_max);
-                    update[j] = if grad[j] > 0.0 { steps[j] } else { -steps[j] };
-                } else if sign_product < 0.0 {
-                    // Sign changed — decrease step size, skip update
-                    steps[j] = (steps[j] * self.eta_minus).max(self.step_min);
-                    // Revert gradient to prevent double penalization next step
-                    prev[j] = 0.0;
-                    continue;
-                } else {
-                    // Zero product — just apply current step
-                    update[j] = if grad[j] > 0.0 {
-                        steps[j]
-                    } else if grad[j] < 0.0 {
-                        -steps[j]
-                    } else {
-                        0.0
+            let (eta_plus, eta_minus, step_max, step_min) =
+                (self.eta_plus, self.eta_minus, self.step_max, self.step_min);
+            let maximize = self.maximize;
+            // Single fused in-place pass (Adam optpar pattern): the param update is
+            // sign/step-size based (does not read the param value), so the old path's
+            // grad clone + tensor_values clone (used only for a length check!) + update
+            // Vec + apply_param_update write-back were pure overhead. Apply the step
+            // directly to the param buffer. Each element independent → fans over rayon
+            // above OPTIM_PARALLEL_THRESHOLD. Bit-for-bit identical per element (same
+            // branch logic + order; sign-change branch zeroes prev and skips the param
+            // update, same as the old `continue`). frankentorch-optpar.
+            session.tensor_update_param_values_f64_with_accumulated_gradient(
+                param,
+                |grad, param_values| {
+                    let body = |p: &mut f64, g_in: f64, step: &mut f64, prv: &mut f64| {
+                        let g = if maximize { -g_in } else { g_in };
+                        let sign_product = g * *prv;
+                        if sign_product > 0.0 {
+                            *step = (*step * eta_plus).min(step_max);
+                            *p -= if g > 0.0 { *step } else { -*step };
+                            *prv = g;
+                        } else if sign_product < 0.0 {
+                            *step = (*step * eta_minus).max(step_min);
+                            *prv = 0.0; // skip update; do NOT set prev = g
+                        } else {
+                            *p -= if g > 0.0 {
+                                *step
+                            } else if g < 0.0 {
+                                -*step
+                            } else {
+                                0.0
+                            };
+                            *prv = g;
+                        }
                     };
-                }
-                prev[j] = grad[j];
-            }
-
-            apply_param_update(session, param, &update)?;
+                    if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
+                        use rayon::prelude::*;
+                        param_values
+                            .par_iter_mut()
+                            .zip(grad.par_iter())
+                            .zip(steps.par_iter_mut())
+                            .zip(prev.par_iter_mut())
+                            .for_each(|(((p, g), step), prv)| body(p, *g, step, prv));
+                    } else {
+                        for (((p, g), step), prv) in param_values
+                            .iter_mut()
+                            .zip(grad.iter())
+                            .zip(steps.iter_mut())
+                            .zip(prev.iter_mut())
+                        {
+                            body(p, *g, step, prv);
+                        }
+                    }
+                },
+            )?;
         }
         Ok(())
     }
