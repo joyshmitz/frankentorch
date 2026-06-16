@@ -5838,26 +5838,41 @@ fn newton_schulz_ortho(m: &[f64], ns_steps: usize) -> Vec<f64> {
     let scale = 1.0 / norm.max(1.0);
     let mut x: Vec<f64> = m.iter().map(|&v| v * scale).collect();
 
-    // Newton-Schulz iterations
+    // Newton-Schulz iterations. The two matmuls (X^T@X, then X@(1.5I-0.5X^T@X))
+    // are the cost — O(rows*cols^2) each, expensive for the large weight matrices
+    // Muon targets. Each output element is an INDEPENDENT dot product, so fan the
+    // output rows over rayon above the threshold; the inner k-accumulation order is
+    // unchanged → bit-for-bit identical to the serial loop. frankentorch-optpar.
+    const NS_PAR_MIN: usize = 1 << 12; // 4096 output elems (~64x64)
     for _ in 0..ns_steps {
         // Compute X^T @ X (cols x cols)
         let mut xtx = vec![0.0; cols * cols];
-        for i in 0..cols {
-            for j in 0..cols {
+        let xtx_body = |i: usize, row: &mut [f64]| {
+            for (j, slot) in row.iter_mut().enumerate() {
                 let mut sum = 0.0;
                 for k in 0..rows {
                     let xi = x.get(k * cols + i).copied().unwrap_or(0.0);
                     let xj = x.get(k * cols + j).copied().unwrap_or(0.0);
                     sum += xi * xj;
                 }
-                xtx[i * cols + j] = sum;
+                *slot = sum;
+            }
+        };
+        if cols * cols >= NS_PAR_MIN {
+            use rayon::prelude::*;
+            xtx.par_chunks_mut(cols)
+                .enumerate()
+                .for_each(|(i, row)| xtx_body(i, row));
+        } else {
+            for (i, row) in xtx.chunks_mut(cols).enumerate() {
+                xtx_body(i, row);
             }
         }
 
         // Compute X @ (1.5*I - 0.5*X^T @ X)
         let mut x_new = vec![0.0; numel];
-        for r in 0..rows {
-            for c in 0..cols {
+        let xnew_body = |r: usize, row: &mut [f64]| {
+            for (c, slot) in row.iter_mut().enumerate() {
                 let mut sum = 0.0;
                 for k in 0..cols {
                     let xrk = x.get(r * cols + k).copied().unwrap_or(0.0);
@@ -5866,9 +5881,18 @@ fn newton_schulz_ortho(m: &[f64], ns_steps: usize) -> Vec<f64> {
                     let xtx_kc = xtx[k * cols + c];
                     sum += xrk * (ident - 0.5 * xtx_kc);
                 }
-                if let Some(slot) = x_new.get_mut(r * cols + c) {
-                    *slot = sum;
-                }
+                *slot = sum;
+            }
+        };
+        if numel >= NS_PAR_MIN {
+            use rayon::prelude::*;
+            x_new
+                .par_chunks_mut(cols)
+                .enumerate()
+                .for_each(|(r, row)| xnew_body(r, row));
+        } else {
+            for (r, row) in x_new.chunks_mut(cols).enumerate() {
+                xnew_body(r, row);
             }
         }
         x = x_new;
