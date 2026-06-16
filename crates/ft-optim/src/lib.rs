@@ -1528,104 +1528,102 @@ impl Optimizer for RAdam {
         let rho_inf = 2.0 / (1.0 - self.beta2) - 1.0;
 
         for (i, &param) in self.params.iter().enumerate() {
-            let grad = match load_param_gradient(session, param)? {
-                Some(g) => g,
+            let grad_len = match session.tensor_accumulated_gradient_len(param)? {
+                Some(len) => len,
                 None => continue,
             };
             let t =
                 advance_param_step_count(&mut self.step_counts, i, "radam step counter overflow")?;
+            let param_len = session.tensor_values_len(param)?;
+            ensure_grad_len_matches_param(param, param_len, grad_len)?;
 
-            let param_values = session.tensor_values(param)?;
-            ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
-            let mut effective_grad = grad;
-
-            // maximize: negate the gradient first (before weight decay), torch parity.
-            if self.maximize {
-                for g in effective_grad.iter_mut() {
-                    *g = -*g;
-                }
-            }
-
-            // Apply weight decay. torch RAdam: when decoupled, scale the param
-            // directly (param *= 1 - lr*wd, AdamW-style) and leave the gradient
-            // raw; otherwise fold it into the gradient as L2. The rectified
-            // update depends only on the moments (not the param value), so the
-            // decoupled scaling composes as `param*(1-lr*wd) - update`.
-            if self.weight_decay != 0.0 {
-                if self.decoupled_weight_decay {
-                    let decay = self.lr * self.weight_decay;
-                    let decay_update: Vec<f64> =
-                        param_values.iter().map(|p| decay * p).collect();
-                    apply_param_update(session, param, &decay_update)?;
-                } else {
-                    for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
-                        *g += self.weight_decay * p;
-                    }
-                }
-            }
-
-            // Update biased first moment: m = beta1 * m + (1 - beta1) * grad
-            let m = self.m[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
-            ensure_state_len(
-                effective_grad.len(),
-                m.len(),
-                "radam first-moment state length mismatch with gradient length",
-            )?;
-            for (m_val, g) in m.iter_mut().zip(effective_grad.iter()) {
-                *m_val = self.beta1 * *m_val + (1.0 - self.beta1) * g;
-            }
-
-            // Update biased second moment: v = beta2 * v + (1 - beta2) * grad^2
-            let v = self.v[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
-            ensure_state_len(
-                effective_grad.len(),
-                v.len(),
-                "radam second-moment state length mismatch with gradient length",
-            )?;
-            for (v_val, g) in v.iter_mut().zip(effective_grad.iter()) {
-                *v_val = self.beta2 * *v_val + (1.0 - self.beta2) * g * g;
-            }
-
-            // Bias-corrected first moment
+            // Per-param SCALARS (computed once, not per element).
             let bias_correction1 = adam_bias_correction(self.beta1, t);
-            let m_hat: Vec<f64> = m.iter().map(|m_val| m_val / bias_correction1).collect();
-
-            // Compute SMA length: rho_t = rho_inf - 2 * t * beta2^t / (1 - beta2^t)
             let beta2_pow_t = self.beta2.powf(t as f64);
             let rho_t = rho_inf - 2.0 * (t as f64) * beta2_pow_t / (1.0 - beta2_pow_t);
-
-            let update: Vec<f64> = if rho_t > 5.0 {
-                // Variance is tractable — use rectified Adam update
+            let rho_gt5 = rho_t > 5.0;
+            // Rectified-branch scalars (torch.optim.RAdam: eps added to the
+            // *un*-bias-corrected sqrt(v); bias correction folded into the
+            // adaptive lr as sqrt(bias_correction2)/(sqrt(v)+eps)).
+            let (r_t, sqrt_bias_correction2) = if rho_gt5 {
                 let bias_correction2 = adam_bias_correction(self.beta2, t);
-
-                // Rectification term
                 let r_t = ((rho_t - 4.0) * (rho_t - 2.0) * rho_inf
                     / ((rho_inf - 4.0) * (rho_inf - 2.0) * rho_t))
                     .sqrt();
-
-                // `torch.optim.RAdam` adds `eps` to the *un*-bias-corrected
-                // `sqrt(v)` and folds the bias correction into the adaptive
-                // learning rate: `adaptive_lr = sqrt(bias_correction2)
-                // / (sqrt(v) + eps)` (see _single_tensor_radam in
-                // torch/optim/radam.py). Adding `eps` to `sqrt(v_hat)`
-                // instead would scale the `eps` term by
-                // `1 / sqrt(bias_correction2)` and drift from upstream on
-                // the early rectified steps where `bias_correction2 << 1`.
-                let sqrt_bias_correction2 = bias_correction2.sqrt();
-                m_hat
-                    .iter()
-                    .zip(v.iter())
-                    .map(|(mh, v_val)| {
-                        let adaptive_lr = sqrt_bias_correction2 / (v_val.sqrt() + self.eps);
-                        self.lr * r_t * mh * adaptive_lr
-                    })
-                    .collect()
+                (r_t, bias_correction2.sqrt())
             } else {
-                // Variance is intractable — use SGD-like update with first moment only
-                m_hat.iter().map(|mh| self.lr * mh).collect()
+                (0.0, 0.0)
             };
 
-            apply_param_update(session, param, &update)?;
+            let m = self.m[i].get_or_insert_with(|| vec![0.0; grad_len]);
+            ensure_state_len(
+                grad_len,
+                m.len(),
+                "radam first-moment state length mismatch with gradient length",
+            )?;
+            // v borrowed inside the callback below (separate field, disjoint borrow).
+            let v_state = self.v[i].get_or_insert_with(|| vec![0.0; grad_len]);
+            ensure_state_len(
+                grad_len,
+                v_state.len(),
+                "radam second-moment state length mismatch with gradient length",
+            )?;
+
+            let (beta1, beta2, lr, eps) = (self.beta1, self.beta2, self.lr, self.eps);
+            let weight_decay = self.weight_decay;
+            let decoupled = self.decoupled_weight_decay;
+            let maximize = self.maximize;
+            // Single fused in-place pass (Adam optpar pattern): fold maximize, L2/
+            // decoupled weight decay, the m/v moment updates, and the rectified (or
+            // SGD-like) step into ONE traversal over the param buffer + accumulated
+            // gradient — no grad clone / tensor_values clone / apply_param_update
+            // write-back. Bit-for-bit identical per element (same ops + order):
+            // decoupled scaling p*=(1-lr*wd) composes with `p -= update` since the
+            // update depends only on the moments, not p. frankentorch-optpar.
+            session.tensor_update_param_values_f64_with_accumulated_gradient(
+                param,
+                |grad, param_values| {
+                    let body = |p: &mut f64, g: f64, m_val: &mut f64, v_val: &mut f64| {
+                        let g = if maximize { -g } else { g };
+                        let g_eff = if weight_decay != 0.0 && !decoupled {
+                            g + weight_decay * *p
+                        } else {
+                            g
+                        };
+                        *m_val = beta1 * *m_val + (1.0 - beta1) * g_eff;
+                        *v_val = beta2 * *v_val + (1.0 - beta2) * g_eff * g_eff;
+                        let mh = *m_val / bias_correction1;
+                        let update = if rho_gt5 {
+                            let adaptive_lr = sqrt_bias_correction2 / (v_val.sqrt() + eps);
+                            lr * r_t * mh * adaptive_lr
+                        } else {
+                            lr * mh
+                        };
+                        if decoupled && weight_decay != 0.0 {
+                            *p -= lr * weight_decay * *p;
+                        }
+                        *p -= update;
+                    };
+                    if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
+                        use rayon::prelude::*;
+                        param_values
+                            .par_iter_mut()
+                            .zip(grad.par_iter())
+                            .zip(m.par_iter_mut())
+                            .zip(v_state.par_iter_mut())
+                            .for_each(|(((p, g), m_val), v_val)| body(p, *g, m_val, v_val));
+                    } else {
+                        for (((p, g), m_val), v_val) in param_values
+                            .iter_mut()
+                            .zip(grad.iter())
+                            .zip(m.iter_mut())
+                            .zip(v_state.iter_mut())
+                        {
+                            body(p, *g, m_val, v_val);
+                        }
+                    }
+                },
+            )?;
         }
         Ok(())
     }
