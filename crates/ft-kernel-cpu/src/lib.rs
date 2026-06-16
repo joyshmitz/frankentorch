@@ -7668,6 +7668,66 @@ pub fn batch_norm_backward_f64(
     (dx, dweight, dbias)
 }
 
+/// f32 mirror of [`batch_norm_backward_f64`]. Used by the f32 BatchNorm (training)
+/// grad fast path (frankentorch-48w0b recipe). `mean`/`var` are the batch stats
+/// captured at forward (same as the f64 path).
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn batch_norm_backward_f32(
+    dy: &[f32],
+    x: &[f32],
+    weight: &[f32],
+    mean: &[f32],
+    var: &[f32],
+    batch: usize,
+    channels: usize,
+    spatial: usize,
+    eps: f32,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let m = (batch * spatial) as f32;
+    let inv_m = 1.0f32 / m;
+    let cs = channels * spatial;
+    let mut dweight = vec![0.0f32; channels];
+    let mut dbias = vec![0.0f32; channels];
+    dweight
+        .par_iter_mut()
+        .zip(dbias.par_iter_mut())
+        .enumerate()
+        .for_each(|(c, (dwc, dbc))| {
+            let rstd = 1.0f32 / (var[c] + eps).sqrt();
+            let mut sw = 0.0f32;
+            let mut sb = 0.0f32;
+            for n in 0..batch {
+                let base = n * cs + c * spatial;
+                for s in 0..spatial {
+                    let dyi = dy[base + s];
+                    let xhat = (x[base + s] - mean[c]) * rstd;
+                    sw += dyi * xhat;
+                    sb += dyi;
+                }
+            }
+            *dwc = sw;
+            *dbc = sb;
+        });
+    let mut dx = vec![0.0f32; x.len()];
+    dx.par_chunks_mut(spatial)
+        .enumerate()
+        .for_each(|(idx, dxrow)| {
+            let c = idx % channels;
+            let base = idx * spatial;
+            let rstd = 1.0f32 / (var[c] + eps).sqrt();
+            let w = weight[c];
+            let c1 = w * dbias[c];
+            let c2 = w * dweight[c];
+            for s in 0..spatial {
+                let xhat = (x[base + s] - mean[c]) * rstd;
+                let dxhat = dy[base + s] * w;
+                dxrow[s] = rstd * inv_m * (m * dxhat - c1 - xhat * c2);
+            }
+        });
+    (dx, dweight, dbias)
+}
+
 pub fn linear_tensor_f64(
     x: &[f64],
     weight: &[f64],
