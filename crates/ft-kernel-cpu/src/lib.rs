@@ -3720,6 +3720,103 @@ pub fn sdpa_backward_f64(
     (dq, dk, dv)
 }
 
+/// f32 mirror of [`sdpa_backward_f64`] (sgemm). Used by the f32 SDPA grad fast
+/// path (frankentorch-48w0b) — f32 attention training, which otherwise composes
+/// through matmul+softmax+matmul with materialized intermediates.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn sdpa_backward_f32(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    dout: &[f32],
+    num_bh: usize,
+    seq_q: usize,
+    seq_k: usize,
+    d_k: usize,
+    d_v: usize,
+    scale: f32,
+    causal: bool,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mut dq = vec![0.0f32; num_bh * seq_q * d_k];
+    let mut dk = vec![0.0f32; num_bh * seq_k * d_k];
+    let mut dv = vec![0.0f32; num_bh * seq_k * d_v];
+    let qs = seq_q * d_k;
+    let ks = seq_k * d_k;
+    let vs = seq_k * d_v;
+    let os = seq_q * d_v;
+    dq.par_chunks_mut(qs)
+        .zip(dk.par_chunks_mut(ks))
+        .zip(dv.par_chunks_mut(vs))
+        .enumerate()
+        .for_each(|(bh, ((dq_bh, dk_bh), dv_bh))| {
+            let qh = &q[bh * qs..bh * qs + qs];
+            let kh = &k[bh * ks..bh * ks + ks];
+            let vh = &v[bh * vs..bh * vs + vs];
+            let doh = &dout[bh * os..bh * os + os];
+            let mut p = vec![0.0f32; seq_q * seq_k];
+            gemm::sgemm_bt(seq_q, d_k, seq_k, qh, kh, &mut p);
+            for i in 0..seq_q {
+                let limit = if causal { (i + 1).min(seq_k) } else { seq_k };
+                let row = &mut p[i * seq_k..(i + 1) * seq_k];
+                let mut m = f32::NEG_INFINITY;
+                for s in row.iter_mut().take(limit) {
+                    *s *= scale;
+                    if *s > m {
+                        m = *s;
+                    }
+                }
+                let mut sum = 0.0f32;
+                for s in row.iter_mut().take(limit) {
+                    let e = (*s - m).exp();
+                    *s = e;
+                    sum += e;
+                }
+                for s in row.iter_mut().take(limit) {
+                    *s /= sum;
+                }
+                for s in row.iter_mut().skip(limit) {
+                    *s = 0.0;
+                }
+            }
+            let mut du = vec![0.0f32; seq_q * seq_k];
+            gemm::sgemm_bt(seq_q, d_v, seq_k, doh, vh, &mut du);
+            for i in 0..seq_q {
+                let pr = &p[i * seq_k..(i + 1) * seq_k];
+                let dr = &mut du[i * seq_k..(i + 1) * seq_k];
+                let mut dot = 0.0f32;
+                for j in 0..seq_k {
+                    dot += pr[j] * dr[j];
+                }
+                for j in 0..seq_k {
+                    dr[j] = pr[j] * (dr[j] - dot);
+                }
+            }
+            let mut pt = vec![0.0f32; seq_k * seq_q];
+            for i in 0..seq_q {
+                for j in 0..seq_k {
+                    pt[j * seq_q + i] = p[i * seq_k + j];
+                }
+            }
+            gemm::sgemm(seq_k, seq_q, d_v, &pt, doh, dv_bh);
+            gemm::sgemm(seq_q, seq_k, d_k, &du, kh, dq_bh);
+            for x in dq_bh.iter_mut() {
+                *x *= scale;
+            }
+            let mut dut = vec![0.0f32; seq_k * seq_q];
+            for i in 0..seq_q {
+                for j in 0..seq_k {
+                    dut[j * seq_q + i] = du[i * seq_k + j];
+                }
+            }
+            gemm::sgemm(seq_k, seq_q, d_k, &dut, qh, dk_bh);
+            for x in dk_bh.iter_mut() {
+                *x *= scale;
+            }
+        });
+    (dq, dk, dv)
+}
+
 /// Fused LayerNorm forward (f64): per row of `[batch, norm_size]`, computes
 /// `y = (x - mean) / sqrt(var + eps) * weight + bias` in two streaming passes,
 /// NEVER materialising the ~14 full-size intermediates (broadcast mean/var, the
