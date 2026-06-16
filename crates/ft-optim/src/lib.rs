@@ -4683,71 +4683,63 @@ impl Optimizer for Adadelta {
         self.validate_hyperparams()?;
 
         for (i, &param) in self.params.iter().enumerate() {
-            let grad = match load_param_gradient(session, param)? {
-                Some(g) => g,
+            let grad_len = match session.tensor_accumulated_gradient_len(param)? {
+                Some(len) => len,
                 None => continue,
             };
+            let param_len = session.tensor_values_len(param)?;
+            ensure_grad_len_matches_param(param, param_len, grad_len)?;
 
-            let param_values = session.tensor_values(param)?;
-            ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
-            let mut effective_grad = grad;
+            let sq_avg = self.square_avg[i].get_or_insert_with(|| vec![0.0; grad_len]);
+            ensure_state_len(grad_len, sq_avg.len(), "adadelta square_avg state length mismatch")?;
+            let acc_d = self.acc_delta[i].get_or_insert_with(|| vec![0.0; grad_len]);
+            ensure_state_len(grad_len, acc_d.len(), "adadelta acc_delta state length mismatch")?;
 
-            // maximize: negate the gradient first (before weight decay), torch parity.
-            if self.maximize {
-                for g in effective_grad.iter_mut() {
-                    *g = -*g;
-                }
-            }
-
-            if self.weight_decay != 0.0 {
-                for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
-                    *g += self.weight_decay * p;
-                }
-            }
-
-            // Update running average of squared gradients: E[g^2] = rho * E[g^2] + (1-rho) * g^2
-            let sq_avg = self.square_avg[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
-            ensure_state_len(
-                effective_grad.len(),
-                sq_avg.len(),
-                "adadelta square_avg state length mismatch",
+            let (rho, lr, eps) = (self.rho, self.lr, self.eps);
+            let weight_decay = self.weight_decay;
+            let maximize = self.maximize;
+            // Single fused in-place pass (Adam optpar pattern): no grad/param clones
+            // + write-back. Bit-for-bit identical per element (same ops + order):
+            // maximize -> +wd*p -> sq_avg EMA -> delta = sqrt(acc_d+eps)/sqrt(sq_avg+eps)*g
+            // -> acc_d EMA (uses OLD acc_d for the rho term + new delta) -> p -= lr*delta.
+            // delta carries NO lr (acc_d must not pick up lr^2). frankentorch-optpar.
+            session.tensor_update_param_values_f64_with_accumulated_gradient(
+                param,
+                |grad, param_values| {
+                    let body = |p: &mut f64, g: f64, s: &mut f64, d: &mut f64| {
+                        let g = if maximize { -g } else { g };
+                        let g_eff = if weight_decay != 0.0 {
+                            g + weight_decay * *p
+                        } else {
+                            g
+                        };
+                        *s = rho * *s + (1.0 - rho) * g_eff * g_eff;
+                        let std_delta = (*d + eps).sqrt();
+                        let std_grad = (*s + eps).sqrt();
+                        let delta = (std_delta / std_grad) * g_eff;
+                        *d = rho * *d + (1.0 - rho) * delta * delta;
+                        *p -= lr * delta;
+                    };
+                    if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
+                        use rayon::prelude::*;
+                        param_values
+                            .par_iter_mut()
+                            .zip(grad.par_iter())
+                            .zip(sq_avg.par_iter_mut())
+                            .zip(acc_d.par_iter_mut())
+                            .for_each(|(((p, g), s), d)| body(p, *g, s, d));
+                    } else {
+                        for (((p, g), s), d) in param_values
+                            .iter_mut()
+                            .zip(grad.iter())
+                            .zip(sq_avg.iter_mut())
+                            .zip(acc_d.iter_mut())
+                        {
+                            body(p, *g, s, d);
+                        }
+                    }
+                },
             )?;
-            for (s, g) in sq_avg.iter_mut().zip(effective_grad.iter()) {
-                *s = self.rho * *s + (1.0 - self.rho) * g * g;
-            }
-
-            // Compute update: delta = sqrt(E[delta^2] + eps) / sqrt(E[g^2] + eps) * g
-            let acc_d = self.acc_delta[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
-            ensure_state_len(
-                effective_grad.len(),
-                acc_d.len(),
-                "adadelta acc_delta state length mismatch",
-            )?;
-
-            // delta = sqrt(E[delta^2] + eps) / sqrt(E[g^2] + eps) * g.
-            // PyTorch computes delta WITHOUT the learning rate, accumulates
-            // delta^2 into acc_delta, and only then scales the parameter step
-            // by lr. Folding lr into delta before the accumulation would leave
-            // acc_delta carrying a spurious lr^2 factor (correct only at lr=1).
-            let delta: Vec<f64> = effective_grad
-                .iter()
-                .zip(sq_avg.iter())
-                .zip(acc_d.iter())
-                .map(|((g, s), d)| {
-                    let std_delta = (d + self.eps).sqrt();
-                    let std_grad = (s + self.eps).sqrt();
-                    (std_delta / std_grad) * g
-                })
-                .collect();
-
-            // Update running average of squared updates: E[delta^2] = rho * E[delta^2] + (1-rho) * delta^2
-            for (d, u) in acc_d.iter_mut().zip(delta.iter()) {
-                *d = self.rho * *d + (1.0 - self.rho) * u * u;
-            }
-
-            // Parameter step scales delta by the learning rate.
-            let update: Vec<f64> = delta.iter().map(|d| self.lr * d).collect();
-            apply_param_update(session, param, &update)?;
         }
         Ok(())
     }
