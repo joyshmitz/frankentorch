@@ -1,0 +1,9 @@
+
+running 5 tests
+test tests::eig_francis_shadow_profile_matches_full_eig_vectors_bit_exact ... ok
+test tests::eig_francis_profile_matches_eigvals_bit_exact ... ok
+test tests::eig_francis_window_record_proves_standalone_schur_window ... ok
+test tests::eig_francis_shadow_profile_matches_scalar_streams_bit_exact ... ok
+test tests::eig_francis_shadow_profile_matches_values_path_bit_exact ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 477 filtered out; finished in 0.13s

@@ -1,0 +1,43 @@
+   Compiling getrandom v0.3.4
+   Compiling rustix v1.1.4
+   Compiling linux-raw-sys v0.12.1
+   Compiling bitflags v2.11.1
+   Compiling rand_core v0.9.5
+   Compiling regex-syntax v0.8.10
+   Compiling fastrand v2.4.1
+   Compiling tempfile v3.27.0
+   Compiling regex-automata v0.4.14
+   Compiling ppv-lite86 v0.2.21
+   Compiling wait-timeout v0.2.1
+   Compiling fnv v1.0.7
+   Compiling quick-error v1.2.3
+   Compiling bit-vec v0.8.0
+   Compiling bit-set v0.8.0
+   Compiling rusty-fork v0.3.1
+   Compiling rand_chacha v0.9.0
+   Compiling regex v1.12.3
+   Compiling rand_xorshift v0.4.0
+   Compiling rand v0.9.4
+   Compiling console v0.16.3
+   Compiling similar v2.7.0
+   Compiling unarray v0.1.4
+   Compiling proptest v1.11.0
+   Compiling criterion v0.5.1
+   Compiling insta v1.47.2
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 1m 02s
+     Running benches/linalg_bench.rs (/data/tmp/frankentorch-a7xya-local-target/release/deps/linalg_bench-aa9fc2ba4861f31f)
+Gnuplot not found, using plotters backend
+Benchmarking eig_f64_256x256
+Benchmarking eig_f64_256x256: Warming up for 1.0000 s
+Benchmarking eig_f64_256x256: Collecting 10 samples in estimated 4.9028 s (110 iterations)
+Benchmarking eig_f64_256x256: Analyzing
+eig_f64_256x256         time:   [44.543 ms 45.415 ms 46.655 ms]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking eigvals_f64_256x256
+Benchmarking eigvals_f64_256x256: Warming up for 1.0000 s
+Benchmarking eigvals_f64_256x256: Collecting 10 samples in estimated 4.4910 s (165 iterations)
+Benchmarking eigvals_f64_256x256: Analyzing
+eigvals_f64_256x256     time:   [25.963 ms 26.795 ms 27.710 ms]
