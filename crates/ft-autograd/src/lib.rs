@@ -18339,7 +18339,7 @@ impl TensorTape {
         })
     }
 
-    fn flip_slice<T: Clone>(
+    fn flip_slice<T: Clone + Send + Sync>(
         values: &[T],
         shape: &[usize],
         dims: &[usize],
@@ -18359,6 +18359,34 @@ impl TensorTape {
 
         let strides = ft_core::contiguous_strides(shape);
         let ndim = shape.len();
+
+        // Output-driven parallel gather (flip is its own inverse): each output
+        // position reads the source element at the flipped coords — each output
+        // written once → bit-for-bit identical to the serial scatter. frankentorch-permpar.
+        const PAR_MIN: usize = 1 << 16;
+        if numel >= PAR_MIN {
+            use rayon::prelude::*;
+            let result = (0..numel)
+                .into_par_iter()
+                .map(|flat_out| {
+                    let mut rem = flat_out;
+                    let mut src_flat = 0usize;
+                    for d in 0..ndim {
+                        let oc = rem / strides[d];
+                        rem %= strides[d];
+                        let sc = if dims.contains(&d) {
+                            shape[d] - 1 - oc
+                        } else {
+                            oc
+                        };
+                        src_flat += sc * strides[d];
+                    }
+                    values[src_flat].clone()
+                })
+                .collect();
+            return Ok(result);
+        }
+
         let mut result = vec![values[0].clone(); numel];
 
         for (flat, value) in values.iter().enumerate().take(numel) {
@@ -18531,7 +18559,7 @@ impl TensorTape {
         })
     }
 
-    fn roll_slice<T: Clone>(
+    fn roll_slice<T: Clone + Send + Sync>(
         values: &[T],
         shape: &[usize],
         shift: isize,
@@ -18563,6 +18591,33 @@ impl TensorTape {
                 dim_size_i,
                 "roll shift normalization overflow",
             )?;
+            // Output-driven parallel gather: dst_coord[dim] = (src + shift) mod n,
+            // so src_coord[dim] = (dst + n - shift) mod n. Each output written once
+            // → bit-for-bit identical to the serial scatter. frankentorch-permpar.
+            const PAR_MIN: usize = 1 << 16;
+            if numel >= PAR_MIN {
+                use rayon::prelude::*;
+                let inv_shift = (dim_size - shift_mod) % dim_size;
+                let result = (0..numel)
+                    .into_par_iter()
+                    .map(|flat_out| {
+                        let mut rem = flat_out;
+                        let mut src_flat = 0usize;
+                        for d in 0..ndim {
+                            let oc = rem / strides[d];
+                            rem %= strides[d];
+                            let sc = if d == dim {
+                                Self::add_normalized_roll_shift(oc, inv_shift, dim_size)
+                            } else {
+                                oc
+                            };
+                            src_flat += sc * strides[d];
+                        }
+                        values[src_flat].clone()
+                    })
+                    .collect();
+                return Ok(result);
+            }
             for (flat, value) in values.iter().enumerate().take(numel) {
                 let mut remaining = flat;
                 let mut coords = vec![0usize; ndim];

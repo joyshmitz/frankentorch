@@ -89,5 +89,31 @@ fn main() {
     out.push_str(&line3);
     out.push('\n');
 
+    // (4) flip on a large 2-D tensor (dim 0).
+    let fn_ = 4096usize;
+    let fv: Vec<f64> = (0..fn_ * fn_).map(|i| (i % 1009) as f64 * 0.001).collect();
+    let flip_op = |pool: &ThreadPool| -> f64 {
+        let mut best = f64::INFINITY;
+        for _ in 0..25 {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(fv.clone(), vec![fn_, fn_], false).unwrap();
+            let t = Instant::now();
+            pool.install(|| {
+                s.tensor_flip(x, &[0]).unwrap();
+            });
+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+        }
+        best
+    };
+    let f1 = flip_op(&pool1);
+    let fp = flip_op(&pooln);
+    let line4 = format!(
+        "flip[4096,4096]dim0: serial {f1:.3} ms / parallel({nthreads}t) {fp:.3} ms / {:.2}x",
+        f1 / fp
+    );
+    eprintln!("{line4}");
+    out.push_str(&line4);
+    out.push('\n');
+
     let _ = std::fs::write("artifacts/perf/permute_parallel_ab_result.txt", &out);
 }
