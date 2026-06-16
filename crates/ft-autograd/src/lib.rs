@@ -9887,29 +9887,33 @@ impl TensorTape {
             return Ok(dst);
         }
 
+        // Generic (non-rotation) permute: output-driven parallel gather. dst dim d
+        // corresponds to src dim perm[d], so dst_coord[d] = src_coord[perm[d]] and
+        // flat_src = Σ_d dst_coord[d]·src_strides[perm[d]]. Each output written once
+        // → bit-for-bit identical to the serial scatter. frankentorch-permpar.
         let src_strides = ft_core::contiguous_strides(src_shape);
         let dst_shape: Vec<usize> = perm.iter().map(|&d| src_shape[d]).collect();
         let dst_strides = ft_core::contiguous_strides(&dst_shape);
+        let src_perm_strides: Vec<usize> = perm.iter().map(|&d| src_strides[d]).collect();
 
-        let mut dst = vec![src[0].clone(); numel];
-        let mut coords = vec![0usize; ndim];
-
-        for (flat_src, val) in src.iter().enumerate().take(numel) {
-            // Compute source multi-index from flat source index
-            let mut remaining = flat_src;
+        let gather = |flat_dst: usize| -> T {
+            let mut remaining = flat_dst;
+            let mut flat_src = 0usize;
             for d in 0..ndim {
-                coords[d] = remaining / src_strides[d];
-                remaining %= src_strides[d];
+                let coord = remaining / dst_strides[d];
+                remaining %= dst_strides[d];
+                flat_src += coord * src_perm_strides[d];
             }
+            src[flat_src].clone()
+        };
 
-            // Compute destination flat index using permuted coordinates
-            let mut flat_dst = 0;
-            for d in 0..ndim {
-                flat_dst += coords[perm[d]] * dst_strides[d];
-            }
-
-            dst[flat_dst] = val.clone();
-        }
+        const PAR_MIN: usize = 1 << 16;
+        let dst: Vec<T> = if numel >= PAR_MIN {
+            use rayon::prelude::*;
+            (0..numel).into_par_iter().map(gather).collect()
+        } else {
+            (0..numel).map(gather).collect()
+        };
 
         Ok(dst)
     }

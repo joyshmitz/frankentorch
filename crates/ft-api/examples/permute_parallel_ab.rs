@@ -142,5 +142,32 @@ fn main() {
     out.push_str(&line5);
     out.push('\n');
 
+    // (6) Non-rotation permute [3,1,2,0] (hits the generic gather fallback, not
+    // the block-rotation fast path).
+    let (g0, g1, g2, g3) = (64usize, 16usize, 16usize, 64usize);
+    let gv: Vec<f64> = (0..g0 * g1 * g2 * g3).map(|i| (i % 1009) as f64 * 0.001).collect();
+    let gen_op = |pool: &ThreadPool| -> f64 {
+        let mut best = f64::INFINITY;
+        for _ in 0..25 {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(gv.clone(), vec![g0, g1, g2, g3], false).unwrap();
+            let t = Instant::now();
+            pool.install(|| {
+                s.tensor_permute(x, vec![3, 1, 2, 0]).unwrap();
+            });
+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+        }
+        best
+    };
+    let gg1 = gen_op(&pool1);
+    let ggp = gen_op(&pooln);
+    let line6 = format!(
+        "permute[64,16,16,64]->[3,1,2,0]: serial {gg1:.3} ms / parallel({nthreads}t) {ggp:.3} ms / {:.2}x",
+        gg1 / ggp
+    );
+    eprintln!("{line6}");
+    out.push_str(&line6);
+    out.push('\n');
+
     let _ = std::fs::write("artifacts/perf/permute_parallel_ab_result.txt", &out);
 }
