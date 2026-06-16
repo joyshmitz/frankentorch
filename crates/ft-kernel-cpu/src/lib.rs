@@ -7579,16 +7579,27 @@ pub fn batch_norm_apply_f64(
         shift[c] = bias.map_or(0.0, |b| b[c]) - mean[c] * scale[c];
     }
     let mut out = vec![0.0f64; x.len()];
-    out.par_chunks_mut(spatial)
-        .enumerate()
-        .for_each(|(idx, orow)| {
-            let c = idx % channels;
-            let base = idx * spatial;
-            let (sc, sh) = (scale[c], shift[c]);
-            for s in 0..spatial {
-                orow[s] = x[base + s] * sc + sh;
-            }
-        });
+    if spatial == 1 {
+        out.par_chunks_mut(channels)
+            .enumerate()
+            .for_each(|(n, row)| {
+                let base = n * channels;
+                for c in 0..channels {
+                    row[c] = x[base + c] * scale[c] + shift[c];
+                }
+            });
+    } else {
+        out.par_chunks_mut(spatial)
+            .enumerate()
+            .for_each(|(idx, orow)| {
+                let c = idx % channels;
+                let base = idx * spatial;
+                let (sc, sh) = (scale[c], shift[c]);
+                for s in 0..spatial {
+                    orow[s] = x[base + s] * sc + sh;
+                }
+            });
+    }
     out
 }
 
@@ -7714,9 +7725,7 @@ pub fn batch_norm_backward_f64(
                 *dwc = sw;
                 *dbc = sb;
             });
-        let rstd: Vec<f64> = (0..channels)
-            .map(|c| 1.0 / (var[c] + eps).sqrt())
-            .collect();
+        let rstd: Vec<f64> = (0..channels).map(|c| 1.0 / (var[c] + eps).sqrt()).collect();
         let mut dx = vec![0.0f64; x.len()];
         dx.par_chunks_mut(channels)
             .enumerate()
@@ -7756,21 +7765,38 @@ pub fn batch_norm_backward_f64(
             *dbc = sb;
         });
     let mut dx = vec![0.0f64; x.len()];
-    dx.par_chunks_mut(spatial)
-        .enumerate()
-        .for_each(|(idx, dxrow)| {
-            let c = idx % channels;
-            let base = idx * spatial;
-            let rstd = 1.0 / (var[c] + eps).sqrt();
-            let w = weight[c];
-            let c1 = w * dbias[c];
-            let c2 = w * dweight[c];
-            for s in 0..spatial {
-                let xhat = (x[base + s] - mean[c]) * rstd;
-                let dxhat = dy[base + s] * w;
-                dxrow[s] = rstd * inv_m * (m * dxhat - c1 - xhat * c2);
-            }
-        });
+    if spatial == 1 {
+        dx.par_chunks_mut(channels)
+            .enumerate()
+            .for_each(|(n, dxrow)| {
+                let base = n * channels;
+                for c in 0..channels {
+                    let rstd = 1.0 / (var[c] + eps).sqrt();
+                    let w = weight[c];
+                    let c1 = w * dbias[c];
+                    let c2 = w * dweight[c];
+                    let xhat = (x[base + c] - mean[c]) * rstd;
+                    let dxhat = dy[base + c] * w;
+                    dxrow[c] = rstd * inv_m * (m * dxhat - c1 - xhat * c2);
+                }
+            });
+    } else {
+        dx.par_chunks_mut(spatial)
+            .enumerate()
+            .for_each(|(idx, dxrow)| {
+                let c = idx % channels;
+                let base = idx * spatial;
+                let rstd = 1.0 / (var[c] + eps).sqrt();
+                let w = weight[c];
+                let c1 = w * dbias[c];
+                let c2 = w * dweight[c];
+                for s in 0..spatial {
+                    let xhat = (x[base + s] - mean[c]) * rstd;
+                    let dxhat = dy[base + s] * w;
+                    dxrow[s] = rstd * inv_m * (m * dxhat - c1 - xhat * c2);
+                }
+            });
+    }
     (dx, dweight, dbias)
 }
 
@@ -34422,6 +34448,110 @@ mod tests {
         let result = mean_tensor_contiguous_f64(&vals, &meta).unwrap();
 
         assert!(result.is_nan(), "mean of empty tensor should be NaN (0/0)");
+    }
+
+    #[test]
+    fn batch_norm_f64_spatial1_row_parallel_matches_serial_reference_bits() {
+        let (batch, channels, spatial) = (17usize, 13usize, 1usize);
+        let eps = 1e-5;
+        let x: Vec<f64> = (0..batch * channels)
+            .map(|i| ((i % 23) as f64 - 11.0) * 0.03125)
+            .collect();
+        let dy: Vec<f64> = (0..batch * channels)
+            .map(|i| ((i % 19) as f64 - 9.0) * -0.015625)
+            .collect();
+        let weight: Vec<f64> = (0..channels)
+            .map(|c| 0.75 + (c % 7) as f64 * 0.0625)
+            .collect();
+        let bias: Vec<f64> = (0..channels)
+            .map(|c| -0.2 + (c % 5) as f64 * 0.04)
+            .collect();
+        let (mean, var) = crate::batch_norm_stats_f64(&x, batch, channels, spatial);
+
+        let mut scale = vec![0.0; channels];
+        let mut shift = vec![0.0; channels];
+        for c in 0..channels {
+            let rstd = 1.0 / (var[c] + eps).sqrt();
+            scale[c] = rstd * weight[c];
+            shift[c] = bias[c] - mean[c] * scale[c];
+        }
+        let mut out_ref = vec![0.0; x.len()];
+        for n in 0..batch {
+            let base = n * channels;
+            for c in 0..channels {
+                out_ref[base + c] = x[base + c] * scale[c] + shift[c];
+            }
+        }
+
+        let out = crate::batch_norm_apply_f64(
+            &x,
+            &mean,
+            &var,
+            Some(&weight),
+            Some(&bias),
+            batch,
+            channels,
+            spatial,
+            eps,
+        );
+        assert_eq!(out.len(), out_ref.len());
+        for (got, expected) in out.iter().zip(out_ref.iter()) {
+            assert_eq!(got.to_bits(), expected.to_bits());
+        }
+
+        let m = batch as f64;
+        let inv_m = 1.0 / m;
+        let mut dw_ref = vec![0.0; channels];
+        let mut db_ref = vec![0.0; channels];
+        for c in 0..channels {
+            let rstd = 1.0 / (var[c] + eps).sqrt();
+            let mut sw = 0.0;
+            let mut sb = 0.0;
+            for n in 0..batch {
+                let idx = n * channels + c;
+                let dyi = dy[idx];
+                let xhat = (x[idx] - mean[c]) * rstd;
+                sw += dyi * xhat;
+                sb += dyi;
+            }
+            dw_ref[c] = sw;
+            db_ref[c] = sb;
+        }
+        let mut dx_ref = vec![0.0; x.len()];
+        for n in 0..batch {
+            let base = n * channels;
+            for c in 0..channels {
+                let rstd = 1.0 / (var[c] + eps).sqrt();
+                let w = weight[c];
+                let c1 = w * db_ref[c];
+                let c2 = w * dw_ref[c];
+                let xhat = (x[base + c] - mean[c]) * rstd;
+                let dxhat = dy[base + c] * w;
+                dx_ref[base + c] = rstd * inv_m * (m * dxhat - c1 - xhat * c2);
+            }
+        }
+
+        let (dx, dw, db) = crate::batch_norm_backward_f64(
+            &dy, &x, &weight, &mean, &var, batch, channels, spatial, eps,
+        );
+        for (got, expected) in dx.iter().zip(dx_ref.iter()) {
+            assert_eq!(got.to_bits(), expected.to_bits(), "dx mismatch");
+        }
+        for (got, expected) in dw.iter().zip(dw_ref.iter()) {
+            assert_eq!(got.to_bits(), expected.to_bits(), "dweight mismatch");
+        }
+        for (got, expected) in db.iter().zip(db_ref.iter()) {
+            assert_eq!(got.to_bits(), expected.to_bits(), "dbias mismatch");
+        }
+
+        let mut digest = 0xcbf29ce484222325u64;
+        for values in [&out[..], &dx[..], &dw[..], &db[..]] {
+            for value in values {
+                digest ^= value.to_bits();
+                digest = digest.wrapping_mul(0x100000001b3);
+            }
+        }
+        assert_eq!(digest, 0x3cad78ffcd28e1f5);
     }
 
     #[test]
