@@ -4275,6 +4275,59 @@ pub fn rms_norm_backward_f64(
     (dx, dweight)
 }
 
+/// f32 mirror of [`rms_norm_backward_f64`] (recomputes per-row rms from `x`).
+/// Used by the f32 RMSNorm grad fast path (frankentorch-48w0b recipe).
+#[must_use]
+pub fn rms_norm_backward_f32(
+    dy: &[f32],
+    x: &[f32],
+    weight: Option<&[f32]>,
+    batch: usize,
+    norm_size: usize,
+    eps: f32,
+) -> (Vec<f32>, Option<Vec<f32>>) {
+    let inv_n = 1.0f32 / norm_size as f32;
+    let mut dx = vec![0.0f32; batch * norm_size];
+    dx.par_chunks_mut(norm_size)
+        .enumerate()
+        .for_each(|(r, dxrow)| {
+            let xrow = &x[r * norm_size..r * norm_size + norm_size];
+            let dyrow = &dy[r * norm_size..r * norm_size + norm_size];
+            let mut ss = 0.0f32;
+            for &v in xrow {
+                ss += v * v;
+            }
+            let rstd = 1.0f32 / (ss * inv_n + eps).sqrt();
+            let mut c = 0.0f32;
+            for j in 0..norm_size {
+                let g = dyrow[j] * weight.map_or(1.0, |w| w[j]);
+                c += g * xrow[j];
+            }
+            let coef = rstd * rstd * rstd * c * inv_n;
+            for j in 0..norm_size {
+                let g = dyrow[j] * weight.map_or(1.0, |w| w[j]);
+                dxrow[j] = rstd * g - coef * xrow[j];
+            }
+        });
+    let dweight = weight.map(|_| {
+        let mut dw = vec![0.0f32; norm_size];
+        for r in 0..batch {
+            let xrow = &x[r * norm_size..r * norm_size + norm_size];
+            let dyrow = &dy[r * norm_size..r * norm_size + norm_size];
+            let mut ss = 0.0f32;
+            for &v in xrow {
+                ss += v * v;
+            }
+            let rstd = 1.0f32 / (ss * inv_n + eps).sqrt();
+            for j in 0..norm_size {
+                dw[j] += dyrow[j] * xrow[j] * rstd;
+            }
+        }
+        dw
+    });
+    (dx, dweight)
+}
+
 /// Fused softmax-cross-entropy forward (f64): per row of `[batch, classes]`
 /// logits with a class-index `target`, returns the per-row loss
 /// `lse(logits) - logits[target]` (`= -log_softmax[target]`) in one streaming
