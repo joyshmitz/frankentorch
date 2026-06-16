@@ -1331,49 +1331,64 @@ impl Optimizer for Adagrad {
         let clr = self.lr / (1.0 + (self.step_count.saturating_sub(1) as f64) * self.lr_decay);
 
         for (i, &param) in self.params.iter().enumerate() {
-            let grad = match load_param_gradient(session, param)? {
-                Some(g) => g,
+            let grad_len = match session.tensor_accumulated_gradient_len(param)? {
+                Some(len) => len,
                 None => continue,
             };
+            let param_len = session.tensor_values_len(param)?;
+            ensure_grad_len_matches_param(param, param_len, grad_len)?;
 
-            let param_values = session.tensor_values(param)?;
-            ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
-            let mut effective_grad = grad;
-
-            // maximize: negate the gradient first (before weight decay), torch parity.
-            if self.maximize {
-                for g in effective_grad.iter_mut() {
-                    *g = -*g;
-                }
-            }
-
-            // Apply weight decay: grad += weight_decay * param
-            if self.weight_decay != 0.0 {
-                for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
-                    *g += self.weight_decay * p;
-                }
-            }
-
-            // Update sum of squared gradients: state_sum += grad^2
             let init_val = self.initial_accumulator_value;
-            let ss = self.sum_sq[i].get_or_insert_with(|| vec![init_val; effective_grad.len()]);
+            let ss = self.sum_sq[i].get_or_insert_with(|| vec![init_val; grad_len]);
             ensure_state_len(
-                effective_grad.len(),
+                grad_len,
                 ss.len(),
                 "adagrad sum_sq state length mismatch with gradient length",
             )?;
-            for (s, g) in ss.iter_mut().zip(effective_grad.iter()) {
-                *s += g * g;
-            }
 
-            // param -= clr * grad / (sqrt(state_sum) + eps)
-            let update: Vec<f64> = effective_grad
-                .iter()
-                .zip(ss.iter())
-                .map(|(g, s)| clr * g / (s.sqrt() + self.eps))
-                .collect();
-
-            apply_param_update(session, param, &update)?;
+            let weight_decay = self.weight_decay;
+            let maximize = self.maximize;
+            let eps = self.eps;
+            // Single fused in-place pass (matches the Adam optpar path): the callback
+            // hands the accumulated gradient + the param buffer directly, so we avoid
+            // the separate grad clone + tensor_values clone + apply_param_update
+            // write-back (those serial 1×numel copies were the wall — Amdahl-capped a
+            // map-only parallelization at ~1.45x). Each element is independent so it
+            // fans over rayon above the threshold; per-element ops + order are
+            // unchanged → bit-for-bit identical to the prior multi-pass form
+            // (negate(maximize) -> +wd*p -> ss += g^2 -> p -= clr*g/(sqrt(ss)+eps)).
+            // frankentorch-optpar.
+            session.tensor_update_param_values_f64_with_accumulated_gradient(
+                param,
+                |grad, param_values| {
+                    let body = |p: &mut f64, g: f64, s: &mut f64| {
+                        let g = if maximize { -g } else { g };
+                        let g_eff = if weight_decay != 0.0 {
+                            g + weight_decay * *p
+                        } else {
+                            g
+                        };
+                        *s += g_eff * g_eff;
+                        *p -= clr * g_eff / (s.sqrt() + eps);
+                    };
+                    if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
+                        use rayon::prelude::*;
+                        param_values
+                            .par_iter_mut()
+                            .zip(grad.par_iter())
+                            .zip(ss.par_iter_mut())
+                            .for_each(|((p, g), s)| body(p, *g, s));
+                    } else {
+                        for ((p, g), s) in param_values
+                            .iter_mut()
+                            .zip(grad.iter())
+                            .zip(ss.iter_mut())
+                        {
+                            body(p, *g, s);
+                        }
+                    }
+                },
+            )?;
         }
         Ok(())
     }
