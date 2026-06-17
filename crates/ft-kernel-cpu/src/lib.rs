@@ -6403,6 +6403,60 @@ pub fn avg_pool2d_backward_f64(
     dp
 }
 
+/// f32 mirror of [`avg_pool2d_backward_f64`]: distributes `dout/divisor` over each
+/// window at f32 precision (matches torch's f32 avg_pool2d backward).
+/// frankentorch-cqmed.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn avg_pool2d_backward_f32(
+    dout: &[f32],
+    batch: usize,
+    ch: usize,
+    ph: usize,
+    pw: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+    pad_h: usize,
+    pad_w: usize,
+    ih: usize,
+    iw: usize,
+    count_include_pad: bool,
+) -> Vec<f32> {
+    let mut dp = vec![0.0f32; batch * ch * ph * pw];
+    dp.par_chunks_mut(ph * pw)
+        .enumerate()
+        .for_each(|(plane, dprow)| {
+            let dbase = plane * oh * ow;
+            for oy in 0..oh {
+                let rs = oy * sh;
+                let re = (rs + kh).min(ph);
+                let vrlen = re.min(pad_h + ih).saturating_sub(rs.max(pad_h));
+                for ox in 0..ow {
+                    let cs = ox * sw;
+                    let ce = (cs + kw).min(pw);
+                    let vclen = ce.min(pad_w + iw).saturating_sub(cs.max(pad_w));
+                    let div = if count_include_pad {
+                        ((re - rs) * (ce - cs)) as f32
+                    } else {
+                        (vrlen * vclen) as f32
+                    };
+                    let g = dout[dbase + oy * ow + ox] / div;
+                    for r in rs..re {
+                        let irow = r * pw;
+                        for c in cs..ce {
+                            dprow[irow + c] += g;
+                        }
+                    }
+                }
+            }
+    });
+    dp
+}
+
 /// Fused avg-pool1d forward (f64) over `[batch, ch, len]`.
 /// Mirrors the `avg_pool2d` `kh=1, count_include_pad=true` arithmetic without
 /// routing through a rank-4 shape.
