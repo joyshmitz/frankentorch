@@ -1,0 +1,19 @@
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch-worktrees/ivorydeer-2rsa6/crates/ft-kernel-cpu)
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch-worktrees/ivorydeer-2rsa6/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch-worktrees/ivorydeer-2rsa6/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch-worktrees/ivorydeer-2rsa6/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 4m 02s
+     Running benches/ops_bench.rs (/data/tmp/frankentorch-g047y-target/release/deps/ops_bench-8824b9e24f0b8087)
+Gnuplot not found, using plotters backend
+Benchmarking avg_pool2d/grad
+Benchmarking avg_pool2d/grad: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 3.7s or enable flat sampling.
+Benchmarking avg_pool2d/grad: Collecting 10 samples in estimated 3.7058 s (55 iterations)
+Benchmarking avg_pool2d/grad: Analyzing
+avg_pool2d/grad         time:   [65.705 ms 67.269 ms 68.601 ms]
+                        change: [-4.6956% -0.1177% +5.3235%] (p = 0.96 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
