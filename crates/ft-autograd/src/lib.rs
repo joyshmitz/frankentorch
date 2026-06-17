@@ -10031,9 +10031,8 @@ impl TensorTape {
             // (2.2x vs 1.2x at 2048², and large tiles regress as the working set
             // spills L1).
             const TILE: usize = 16;
-            if plane > 0 {
+            if let Some(batch) = numel.checked_div(plane) {
                 use rayon::prelude::*;
-                let batch = numel / plane;
                 // One plane's cache-blocked [a_dim, b_dim] transpose of elem-runs.
                 let transpose_plane = |sgn: &[T], dgn: &mut [T]| {
                     let mut ii = 0;
@@ -18836,15 +18835,15 @@ impl TensorTape {
                     .map(|flat_out| {
                         let mut rem = flat_out;
                         let mut src_flat = 0usize;
-                        for d in 0..ndim {
-                            let oc = rem / strides[d];
-                            rem %= strides[d];
+                        for (d, &stride) in strides.iter().enumerate() {
+                            let oc = rem / stride;
+                            rem %= stride;
                             let sc = if d == dim {
                                 Self::add_normalized_roll_shift(oc, inv_shift, dim_size)
                             } else {
                                 oc
                             };
-                            src_flat += sc * strides[d];
+                            src_flat += sc * stride;
                         }
                         values[src_flat].clone()
                     })
