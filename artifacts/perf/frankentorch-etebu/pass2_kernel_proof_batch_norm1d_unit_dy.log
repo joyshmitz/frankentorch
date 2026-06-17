@@ -1,0 +1,11 @@
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch-worktrees/ivorydeer-2rsa6/crates/ft-kernel-cpu)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.62s
+     Running unittests src/lib.rs (/data/tmp/frankentorch-etebu-target/debug/deps/ft_kernel_cpu-d26c108ecd1e4673)
+
+running 3 tests
+test tests::batch_norm_f64_spatial1_unit_dy_matches_general_reference_bits ... ok
+test tests::batch_norm_f64_spatial_unit_dy_matches_general_reference_bits ... ok
+test tests::batch_norm_f64_spatial1_row_parallel_matches_serial_reference_bits ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 482 filtered out; finished in 0.01s
+

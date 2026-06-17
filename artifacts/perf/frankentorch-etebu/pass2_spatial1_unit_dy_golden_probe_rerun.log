@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (/data/tmp/frankentorch-etebu-target/debug/deps/ft_kernel_cpu-d26c108ecd1e4673)
+
+running 1 test
+
+thread 'tests::batch_norm_f64_spatial1_unit_dy_matches_general_reference_bits' (3070920) panicked at crates/ft-kernel-cpu/src/lib.rs:35025:9:
+assertion `left == right` failed
+  left: 6470504542786811690
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::batch_norm_f64_spatial1_unit_dy_matches_general_reference_bits ... FAILED
+
+failures:
+
+failures:
+    tests::batch_norm_f64_spatial1_unit_dy_matches_general_reference_bits
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 484 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p ft-kernel-cpu --lib`
