@@ -4587,6 +4587,70 @@ pub fn group_norm_backward_f64(
     let group_numel = cpg * spatial;
     let inv_m = 1.0 / group_numel as f64;
     let channels = num_groups * cpg;
+    if dy.par_iter().all(|&v| v.to_bits() == 1.0f64.to_bits()) {
+        let stats: Vec<(f64, f64)> = (0..batch * num_groups)
+            .into_par_iter()
+            .map(|grp| {
+                let base = grp * group_numel;
+                let xb = &x[base..base + group_numel];
+                let mut sum = 0.0f64;
+                for &v in xb {
+                    sum += v;
+                }
+                let mean = sum * inv_m;
+                let mut vsum = 0.0f64;
+                for &v in xb {
+                    let d = v - mean;
+                    vsum += d * d;
+                }
+                let rstd = 1.0 / (vsum * inv_m + eps).sqrt();
+                (mean, rstd)
+            })
+            .collect();
+        let mut dx = vec![0.0f64; batch * num_groups * group_numel];
+        dx.par_chunks_mut(group_numel)
+            .enumerate()
+            .for_each(|(grp, dxrow)| {
+                let g = grp % num_groups;
+                let base = grp * group_numel;
+                let xb = &x[base..base + group_numel];
+                let (mean, rstd) = stats[grp];
+                let mut c1 = 0.0f64;
+                let mut c2 = 0.0f64;
+                for (i, &xv) in xb.iter().enumerate() {
+                    let c = g * cpg + i / spatial;
+                    let xhat = (xv - mean) * rstd;
+                    let dxhat = 1.0f64 * weight.map_or(1.0, |w| w[c]);
+                    c1 += dxhat;
+                    c2 += dxhat * xhat;
+                }
+                for (i, dxv) in dxrow.iter_mut().enumerate() {
+                    let c = g * cpg + i / spatial;
+                    let xhat = (xb[i] - mean) * rstd;
+                    let dxhat = 1.0f64 * weight.map_or(1.0, |w| w[c]);
+                    *dxv = rstd * (dxhat - (c1 + xhat * c2) * inv_m);
+                }
+            });
+        let (dweight, dbias) = if weight.is_some() {
+            let mut dw = vec![0.0f64; channels];
+            let mut db = vec![0.0f64; channels];
+            for (grp, &(mean, rstd)) in stats.iter().enumerate() {
+                let g = grp % num_groups;
+                let base = grp * group_numel;
+                let xb = &x[base..base + group_numel];
+                for (i, &xv) in xb.iter().enumerate() {
+                    let c = g * cpg + i / spatial;
+                    let dyi = 1.0f64;
+                    dw[c] += dyi * (xv - mean) * rstd;
+                    db[c] += dyi;
+                }
+            }
+            (Some(dw), Some(db))
+        } else {
+            (None, None)
+        };
+        return (dx, dweight, dbias);
+    }
     let mut dx = vec![0.0f64; batch * num_groups * group_numel];
     dx.par_chunks_mut(group_numel)
         .enumerate()
@@ -34779,6 +34843,113 @@ mod tests {
         let result = mean_tensor_contiguous_f64(&vals, &meta).unwrap();
 
         assert!(result.is_nan(), "mean of empty tensor should be NaN (0/0)");
+    }
+
+    #[test]
+    fn group_norm_f64_unit_dy_matches_general_reference_bits() {
+        let (batch, num_groups, cpg, spatial) = (3usize, 2usize, 3usize, 5usize);
+        let eps = 1e-5;
+        let group_numel = cpg * spatial;
+        let channels = num_groups * cpg;
+        let x: Vec<f64> = (0..batch * channels * spatial)
+            .map(|i| ((i % 41) as f64 - 20.0) * 0.02734375 + (i as f64) * 0.00019)
+            .collect();
+        let dy = vec![1.0f64; x.len()];
+        let weight: Vec<f64> = (0..channels)
+            .map(|c| 0.65 + (c % 7) as f64 * 0.046875)
+            .collect();
+        let inv_m = 1.0 / group_numel as f64;
+
+        let mut ref_dx = vec![0.0f64; x.len()];
+        for grp in 0..batch * num_groups {
+            let g = grp % num_groups;
+            let base = grp * group_numel;
+            let xb = &x[base..base + group_numel];
+            let dyb = &dy[base..base + group_numel];
+            let dxrow = &mut ref_dx[base..base + group_numel];
+            let mut sum = 0.0f64;
+            for &v in xb {
+                sum += v;
+            }
+            let mean = sum * inv_m;
+            let mut vsum = 0.0f64;
+            for &v in xb {
+                let d = v - mean;
+                vsum += d * d;
+            }
+            let rstd = 1.0 / (vsum * inv_m + eps).sqrt();
+            let mut c1 = 0.0f64;
+            let mut c2 = 0.0f64;
+            for i in 0..group_numel {
+                let c = g * cpg + i / spatial;
+                let xhat = (xb[i] - mean) * rstd;
+                let dxhat = dyb[i] * weight[c];
+                c1 += dxhat;
+                c2 += dxhat * xhat;
+            }
+            for i in 0..group_numel {
+                let c = g * cpg + i / spatial;
+                let xhat = (xb[i] - mean) * rstd;
+                let dxhat = dyb[i] * weight[c];
+                dxrow[i] = rstd * (dxhat - (c1 + xhat * c2) * inv_m);
+            }
+        }
+
+        let mut ref_dw = vec![0.0f64; channels];
+        let mut ref_db = vec![0.0f64; channels];
+        for grp in 0..batch * num_groups {
+            let g = grp % num_groups;
+            let base = grp * group_numel;
+            let xb = &x[base..base + group_numel];
+            let dyb = &dy[base..base + group_numel];
+            let mut sum = 0.0f64;
+            for &v in xb {
+                sum += v;
+            }
+            let mean = sum * inv_m;
+            let mut vsum = 0.0f64;
+            for &v in xb {
+                let d = v - mean;
+                vsum += d * d;
+            }
+            let rstd = 1.0 / (vsum * inv_m + eps).sqrt();
+            for i in 0..group_numel {
+                let c = g * cpg + i / spatial;
+                ref_dw[c] += dyb[i] * (xb[i] - mean) * rstd;
+                ref_db[c] += dyb[i];
+            }
+        }
+
+        let (dx, dw, db) = crate::group_norm_backward_f64(
+            &dy,
+            &x,
+            Some(&weight),
+            batch,
+            num_groups,
+            cpg,
+            spatial,
+            eps,
+        );
+        let dw = dw.expect("weight gradient");
+        let db = db.expect("bias gradient");
+        for (got, expected) in dx.iter().zip(ref_dx.iter()) {
+            assert_eq!(got.to_bits(), expected.to_bits(), "dx mismatch");
+        }
+        for (got, expected) in dw.iter().zip(ref_dw.iter()) {
+            assert_eq!(got.to_bits(), expected.to_bits(), "dweight mismatch");
+        }
+        for (got, expected) in db.iter().zip(ref_db.iter()) {
+            assert_eq!(got.to_bits(), expected.to_bits(), "dbias mismatch");
+        }
+
+        let mut digest = 0xcbf29ce484222325u64;
+        for values in [&dx[..], &dw[..], &db[..]] {
+            for value in values {
+                digest ^= value.to_bits();
+                digest = digest.wrapping_mul(0x100000001b3);
+            }
+        }
+        assert_eq!(digest, 0x533d76b2bc4e86e3);
     }
 
     #[test]

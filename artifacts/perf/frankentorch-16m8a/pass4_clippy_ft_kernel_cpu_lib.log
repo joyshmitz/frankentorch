@@ -1,0 +1,35 @@
+   Compiling num-traits v0.2.19
+    Checking num-complex v0.4.6
+    Checking either v1.15.0
+    Checking rayon v1.12.0
+    Checking ft-core v0.1.0 (/data/projects/frankentorch-worktrees/ivorydeer-2rsa6/crates/ft-core)
+    Checking ft-kernel-cpu v0.1.0 (/data/projects/frankentorch-worktrees/ivorydeer-2rsa6/crates/ft-kernel-cpu)
+error: the loop variable `i` is used to index `xb`
+    --> crates/ft-kernel-cpu/src/lib.rs:4620:26
+     |
+4620 |                 for i in 0..group_numel {
+     |                          ^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+     = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator and enumerate()
+     |
+4620 -                 for i in 0..group_numel {
+4620 +                 for (i, <item>) in xb.iter().enumerate().take(group_numel) {
+     |
+
+error: the loop variable `i` is used to index `xb`
+    --> crates/ft-kernel-cpu/src/lib.rs:4641:26
+     |
+4641 |                 for i in 0..group_numel {
+     |                          ^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+     |
+4641 -                 for i in 0..group_numel {
+4641 +                 for (i, <item>) in xb.iter().enumerate().take(group_numel) {
+     |
+
+error: could not compile `ft-kernel-cpu` (lib) due to 2 previous errors
