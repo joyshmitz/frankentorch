@@ -4271,7 +4271,7 @@ pub fn rms_norm_backward_f64(
             }
         }
         dw
-    });
+        });
     (dx, dweight)
 }
 
@@ -6335,8 +6335,69 @@ pub fn avg_pool2d_backward_f64(
                     }
                 }
             }
-        });
+    });
     dp
+}
+
+/// Fused avg-pool1d forward (f64) over `[batch, ch, len]`.
+/// Mirrors the `avg_pool2d` `kh=1, count_include_pad=true` arithmetic without
+/// routing through a rank-4 shape.
+#[must_use]
+pub fn avg_pool1d_forward_f64(
+    input: &[f64],
+    batch: usize,
+    ch: usize,
+    len: usize,
+    kernel: usize,
+    output_len: usize,
+    stride: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; batch * ch * output_len];
+    out.par_chunks_mut(output_len)
+        .enumerate()
+        .for_each(|(plane, orow)| {
+            let ibase = plane * len;
+            let div = kernel as f64;
+            for (ox, slot) in orow.iter_mut().enumerate() {
+                let start = ox * stride;
+                let mut sum = 0.0f64;
+                for kx in 0..kernel {
+                    sum += input[ibase + start + kx];
+                }
+                *slot = sum / div;
+            }
+        });
+    out
+}
+
+/// Backward of [`avg_pool1d_forward_f64`]: distributes each output gradient
+/// equally (`dout/kernel`) to every input position in its window. The loop order
+/// matches the equivalent `avg_pool2d_backward_f64` route with `kh=1`.
+#[must_use]
+pub fn avg_pool1d_backward_f64(
+    dout: &[f64],
+    batch: usize,
+    ch: usize,
+    len: usize,
+    kernel: usize,
+    output_len: usize,
+    stride: usize,
+) -> Vec<f64> {
+    let mut din = vec![0.0f64; batch * ch * len];
+    din.par_chunks_mut(len)
+        .enumerate()
+        .for_each(|(plane, drow)| {
+            let dbase = plane * output_len;
+            let div = kernel as f64;
+            for ox in 0..output_len {
+                let g = dout[dbase + ox] / div;
+                let start = ox * stride;
+                for kx in 0..kernel {
+                    drow[start + kx] += g;
+                }
+            }
+        });
+    din
 }
 
 /// Fused max-pool2d forward (f64): per output `[n,c,oy,ox]`, the max over its
@@ -24436,6 +24497,78 @@ mod tests {
             digest = digest.wrapping_mul(0x100000001b3);
         }
         assert_eq!(digest, 0x7af37c5e805fbec5, "avg_pool2d 2x2s2 golden digest");
+    }
+
+    #[test]
+    fn avg_pool1d_direct_matches_2d_h1_forward_backward_bit_exact() {
+        let (batch, ch, len, kernel, stride) = (2usize, 3usize, 11usize, 3usize, 2usize);
+        let output_len = (len - kernel) / stride + 1;
+        let n = batch * ch * len;
+        let input: Vec<f64> = (0..n)
+            .map(|i| (((i * 41 + 17) % 193) as f64 - 91.0) * 0.015625)
+            .collect();
+
+        let direct = super::avg_pool1d_forward_f64(
+            &input, batch, ch, len, kernel, output_len, stride,
+        );
+        let via_2d = super::avg_pool2d_forward_f64(
+            &input,
+            batch,
+            ch,
+            1,
+            len,
+            1,
+            kernel,
+            1,
+            output_len,
+            1,
+            stride,
+            0,
+            0,
+            1,
+            len,
+            true,
+        );
+        assert_eq!(
+            direct.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            via_2d.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+
+        let dout: Vec<f64> = (0..batch * ch * output_len)
+            .map(|i| (((i * 29 + 5) % 127) as f64 - 63.0) * 0.03125)
+            .collect();
+        let direct_grad = super::avg_pool1d_backward_f64(
+            &dout, batch, ch, len, kernel, output_len, stride,
+        );
+        let via_2d_grad = super::avg_pool2d_backward_f64(
+            &dout,
+            batch,
+            ch,
+            1,
+            len,
+            1,
+            kernel,
+            1,
+            output_len,
+            1,
+            stride,
+            0,
+            0,
+            1,
+            len,
+            true,
+        );
+        assert_eq!(
+            direct_grad.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            via_2d_grad.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+
+        let mut digest = 0xcbf29ce484222325u64;
+        for bits in direct.iter().chain(direct_grad.iter()).map(|v| v.to_bits()) {
+            digest ^= bits;
+            digest = digest.wrapping_mul(0x100000001b3);
+        }
+        assert_eq!(digest, 0xfe6d6e661bd9cb67, "avg_pool1d direct golden digest");
     }
 
     #[test]
