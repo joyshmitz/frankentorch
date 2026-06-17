@@ -1,0 +1,438 @@
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:1199:
+ }
+ 
+ use ft_core::{
+[31m-    Complex128, DType, Device, ScalarTensor, SparseCOOTensor, SparseTensorError, TensorCompatError,
+[m[31m-    TensorMeta, ensure_compatible,
+[m[32m+    ensure_compatible, Complex128, DType, Device, ScalarTensor, SparseCOOTensor, SparseTensorError,
+[m[32m+    TensorCompatError, TensorMeta,
+[m };
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:1451:
+ }
+ 
+ fn leaky_relu_value(x: f64) -> f64 {
+[31m-    if x >= 0.0 { x } else { 0.01 * x }
+[m[32m+    if x >= 0.0 {
+[m[32m+        x
+[m[32m+    } else {
+[m[32m+        0.01 * x
+[m[32m+    }
+[m }
+ 
+ pub fn leaky_relu_scalar(input: &ScalarTensor) -> ScalarTensor {
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:1461:
+ fn elu_value(x: f64) -> f64 {
+     // Negative branch uses expm1 (not exp(x)-1.0) to avoid catastrophic
+     // cancellation near 0 and match torch's elu bit-for-bit. frankentorch-0f609.
+[31m-    if x > 0.0 { x } else { x.exp_m1() }
+[m[32m+    if x > 0.0 {
+[m[32m+        x
+[m[32m+    } else {
+[m[32m+        x.exp_m1()
+[m[32m+    }
+[m }
+ 
+ pub fn elu_scalar(input: &ScalarTensor) -> ScalarTensor {
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:1554:
+     // log1p(exp(x)) is the precise form: for negative x, exp(x) is
+     // small and `log(1 + small)` would lose a leading digit relative to
+     // log1p(small).
+[31m-    if x > 20.0 { x } else { x.exp().ln_1p() }
+[m[32m+    if x > 20.0 {
+[m[32m+        x
+[m[32m+    } else {
+[m[32m+        x.exp().ln_1p()
+[m[32m+    }
+[m }
+ 
+ pub fn softplus_scalar(input: &ScalarTensor) -> ScalarTensor {
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:2922:
+         lhs_meta,
+         rhs_meta,
+         |l, r| {
+[31m-            if l == r { 1.0 } else { 0.0 }
+[m[32m+            if l == r {
+[m[32m+                1.0
+[m[32m+            } else {
+[m[32m+                0.0
+[m[32m+            }
+[m         },
+     )
+ }
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:2939:
+         lhs_meta,
+         rhs_meta,
+         |l, r| {
+[31m-            if l != r { 1.0 } else { 0.0 }
+[m[32m+            if l != r {
+[m[32m+                1.0
+[m[32m+            } else {
+[m[32m+                0.0
+[m[32m+            }
+[m         },
+     )
+ }
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:2956:
+         lhs_meta,
+         rhs_meta,
+         |l, r| {
+[31m-            if l < r { 1.0 } else { 0.0 }
+[m[32m+            if l < r {
+[m[32m+                1.0
+[m[32m+            } else {
+[m[32m+                0.0
+[m[32m+            }
+[m         },
+     )
+ }
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:2973:
+         lhs_meta,
+         rhs_meta,
+         |l, r| {
+[31m-            if l > r { 1.0 } else { 0.0 }
+[m[32m+            if l > r {
+[m[32m+                1.0
+[m[32m+            } else {
+[m[32m+                0.0
+[m[32m+            }
+[m         },
+     )
+ }
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:2990:
+         lhs_meta,
+         rhs_meta,
+         |l, r| {
+[31m-            if l <= r { 1.0 } else { 0.0 }
+[m[32m+            if l <= r {
+[m[32m+                1.0
+[m[32m+            } else {
+[m[32m+                0.0
+[m[32m+            }
+[m         },
+     )
+ }
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:3007:
+         lhs_meta,
+         rhs_meta,
+         |l, r| {
+[31m-            if l >= r { 1.0 } else { 0.0 }
+[m[32m+            if l >= r {
+[m[32m+                1.0
+[m[32m+            } else {
+[m[32m+                0.0
+[m[32m+            }
+[m         },
+     )
+ }
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:3060:
+ 
+ /// `pairwise_sum_f64`, parallelised only for large FULL reductions.
+ const SUM_PARALLEL_THRESHOLD: usize = 1 << 19; // 524288
+[31m-// Measured crossover (64-core worker, release): the rayon::join parallel
+[m[31m-// pairwise sum is SLOWER than serial below ~512k (memory-bound; join overhead
+[m[31m-// dominates — 0.33-0.88x at 32k-262k) and only wins at >=524288 (2.37x) and
+[m[31m-// 1M (5.3x). So 1<<19 is the tuned crossover; do NOT lower it (regresses the
+[m[31m-// medium band). See sum_parallel_crossover_probe. frankentorch parallel-threshold-vein.
+[m[32m+                                               // Measured crossover (64-core worker, release): the rayon::join parallel
+[m[32m+                                               // pairwise sum is SLOWER than serial below ~512k (memory-bound; join overhead
+[m[32m+                                               // dominates — 0.33-0.88x at 32k-262k) and only wins at >=524288 (2.37x) and
+[m[32m+                                               // 1M (5.3x). So 1<<19 is the tuned crossover; do NOT lower it (regresses the
+[m[32m+                                               // medium band). See sum_parallel_crossover_probe. frankentorch parallel-threshold-vein.
+[m 
+ #[inline]
+ fn pairwise_sum_f64_maybe_par(values: &[f64]) -> f64 {
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:13539:
+                 col[r] = acc;
+             }
+             d[j] = col[j]; // diagonal is final (no later reflector touches row j)
+[31m-            // Householder reflector zeroing col[j+2..n].
+[m[32m+                           // Householder reflector zeroing col[j+2..n].
+[m             let mut cn2 = 0.0;
+             for r in (j + 1)..n {
+                 cn2 += col[r] * col[r];
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:14439:
+     gemm::dgemm(n, n, n, &linvt, &phi, &mut t);
+     let mut g_b = vec![0.0f64; n * n];
+     gemm::dgemm_bt(n, n, n, &t, &uinv, &mut g_b); // t · Uinvᵀ
+[31m-    // grad_A = Pᵀ·gB: B row i flows back to A row perm[i].
+[m[32m+                                                  // grad_A = Pᵀ·gB: B row i flows back to A row perm[i].
+[m     let mut grad_a = vec![0.0f64; n * n];
+     for i in 0..n {
+         let dst = perm[i] * n;
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:15563:
+         let eps = f64::EPSILON;
+         let mut t = 0.0f64; // accumulated shift
+         let mut en: isize = n as isize - 1; // bottom of the active block (0-based)
+[31m-        // Reusable buffer of one bulge-chase sweep's Givens rotations. The Schur
+[m[31m-        // vectors q_acc are updated ONCE per sweep (parallel over independent
+[m[31m-        // rows) by replaying these, instead of dispatching a tiny per-k
+[m[31m-        // par_chunks_mut — dropping the rayon dispatch count from O(n^2) to O(n).
+[m[31m-        // Bit-exact vs the serial per-k update: each row replays the identical
+[m[31m-        // rotation sequence in k-order, and rows never interact (l9xod).
+[m[31m-        // WHOLE-stream deferral: collect EVERY q_acc operation (bulge reflectors +
+[m[31m-        // 2x2-standardization Givens) across the entire Francis QR, then replay onto
+[m[31m-        // q_acc in ONE row-parallel pass below. One rayon dispatch instead of
+[m[31m-        // O(sweeps), so it wins even at n=256 where the old per-sweep replay
+[m[31m-        // regressed (hence was gated to n>=512). frankentorch-9y5bi.
+[m[32m+                                            // Reusable buffer of one bulge-chase sweep's Givens rotations. The Schur
+[m[32m+                                            // vectors q_acc are updated ONCE per sweep (parallel over independent
+[m[32m+                                            // rows) by replaying these, instead of dispatching a tiny per-k
+[m[32m+                                            // par_chunks_mut — dropping the rayon dispatch count from O(n^2) to O(n).
+[m[32m+                                            // Bit-exact vs the serial per-k update: each row replays the identical
+[m[32m+                                            // rotation sequence in k-order, and rows never interact (l9xod).
+[m[32m+                                            // WHOLE-stream deferral: collect EVERY q_acc operation (bulge reflectors +
+[m[32m+                                            // 2x2-standardization Givens) across the entire Francis QR, then replay onto
+[m[32m+                                            // q_acc in ONE row-parallel pass below. One rayon dispatch instead of
+[m[32m+                                            // O(sweeps), so it wins even at n=256 where the old per-sweep replay
+[m[32m+                                            // regressed (hence was gated to n>=512). frankentorch-9y5bi.
+[m         let mut sweep_rot: Vec<EigQaccOp> = Vec::new();
+         let mut total_iter = 0usize;
+         let max_total = 60 * n + 100;
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:15799:
+                     let row_end = if WANT_VECTORS { n } else { en_u + 1 };
+                     if T::ENABLED {
+                         let subdiag_col = if k == m {
+[31m-                            if l != m { Some(k - 1) } else { None }
+[m[32m+                            if l != m {
+[m[32m+                                Some(k - 1)
+[m[32m+                            } else {
+[m[32m+                                None
+[m[32m+                            }
+[m                         } else {
+                             Some(k - 1)
+                         };
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:16534:
+ 
+ /// `|a|` carrying the sign of `b` (Numerical-Recipes `SIGN`).
+ fn nr_sign(a: f64, b: f64) -> f64 {
+[31m-    if b >= 0.0 { a.abs() } else { -a.abs() }
+[m[32m+    if b >= 0.0 {
+[m[32m+        a.abs()
+[m[32m+    } else {
+[m[32m+        -a.abs()
+[m[32m+    }
+[m }
+ 
+ /// Golub-Reinsch SVD of a real `m x n` matrix with `m >= n`, row-major.
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:18045:
+         let mut msym = vec![0.0f64; sc * sc];
+         mat_at_b(&s, n, sc, &as_, sc, &mut msym);
+         let (theta_new, coeff) = select_ritz(&msym, sc)?; // coeff: sc x k
+[31m-        // X = S @ coeff ;  AX = AS @ coeff.
+[m[32m+                                                          // X = S @ coeff ;  AX = AS @ coeff.
+[m         let mut nx = vec![0.0f64; n * k];
+         gemm::dgemm(n, sc, k, &s, &coeff, &mut nx);
+         let mut nax = vec![0.0f64; n * k];
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:18150:
+     while ib < kmax {
+         let pe = (ib + NB).min(kmax);
+         let nb = pe - ib; // panel width (active reflectors)
+[31m-        // H0 = the current matrix, FIXED for the duration of this panel.
+[m[32m+                          // H0 = the current matrix, FIXED for the duration of this panel.
+[m         let h0 = h.to_vec();
+         let mut vmat = vec![0.0f64; n * nb]; // V[:, c] = reflector c (full length n)
+         let mut ymat = vec![0.0f64; n * nb]; // Y[:, c] = H0 · V[:, c]
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:19538:
+     };
+     let q = qr.q; // m×n (reduced)
+     let r = qr.r; // n×n upper triangular
+[31m-    // Full-rank guard on R's diagonal (defer near-rank-deficient to SVD).
+[m[32m+                  // Full-rank guard on R's diagonal (defer near-rank-deficient to SVD).
+[m     let mut max_diag = 0.0_f64;
+     for i in 0..n {
+         max_diag = max_diag.max(r[i * n + i].abs());
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:19589:
+     let qr = qr_contiguous_f64(a, &a_meta, true).ok()?;
+     let q = qr.q; // m×n (reduced)
+     let r = qr.r; // n×n upper triangular
+[31m-    // Near-rank-deficiency guard on R's diagonal (defer those to the SVD path).
+[m[32m+                  // Near-rank-deficiency guard on R's diagonal (defer those to the SVD path).
+[m     let mut max_diag = 0.0_f64;
+     for i in 0..n {
+         max_diag = max_diag.max(r[i * n + i].abs());
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:19774:
+ }
+ 
+ fn leaky_relu_value_f32(x: f32) -> f32 {
+[31m-    if x >= 0.0f32 { x } else { 0.01f32 * x }
+[m[32m+    if x >= 0.0f32 {
+[m[32m+        x
+[m[32m+    } else {
+[m[32m+        0.01f32 * x
+[m[32m+    }
+[m }
+ 
+ fn elu_value_f32(x: f32) -> f32 {
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:19781:
+     // expm1 (not exp(x)-1.0): avoids cancellation near 0, matches torch. frankentorch-0f609.
+[31m-    if x > 0.0f32 { x } else { x.exp_m1() }
+[m[32m+    if x > 0.0f32 {
+[m[32m+        x
+[m[32m+    } else {
+[m[32m+        x.exp_m1()
+[m[32m+    }
+[m }
+ 
+ fn erf_value_f32(x: f32) -> f32 {
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:19819:
+ fn softplus_value_f32(x: f32) -> f32 {
+     // Mirrors softplus_value (f64): only the upper threshold is needed;
+     // log1p(exp(x)) is precise for negative x and decays smoothly.
+[31m-    if x > 20.0f32 { x } else { x.exp().ln_1p() }
+[m[32m+    if x > 20.0f32 {
+[m[32m+        x
+[m[32m+    } else {
+[m[32m+        x.exp().ln_1p()
+[m[32m+    }
+[m }
+ 
+ fn mish_value_f32(x: f32) -> f32 {
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:23476:
+     };
+ 
+     use super::{
+[31m-        KernelError, abs_scalar, abs_tensor_contiguous_f64, acos_scalar,
+[m[31m-        acos_tensor_contiguous_f64, add_scalar, add_tensor_broadcast_f64,
+[m[31m-        add_tensor_contiguous_f64, argmax_dim_tensor_contiguous_f64,
+[m[32m+        abs_scalar, abs_tensor_contiguous_f64, acos_scalar, acos_tensor_contiguous_f64, add_scalar,
+[m[32m+        add_tensor_broadcast_f64, add_tensor_contiguous_f64, argmax_dim_tensor_contiguous_f64,
+[m         argmin_dim_tensor_contiguous_f64, asin_scalar, asin_tensor_contiguous_f64, atan_scalar,
+         atan_tensor_contiguous_f64, bmm_tensor_contiguous_f64, cat_tensor_contiguous_f32,
+         cat_tensor_contiguous_f64, ceil_scalar, ceil_tensor_contiguous_f64, clamp_scalar,
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:23490:
+         gather_tensor_contiguous_f64, ge_scalar, ge_tensor_contiguous_f64, gelu_scalar,
+         gelu_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64,
+         index_select_tensor_contiguous_f32, index_select_tensor_contiguous_f64, le_scalar,
+[31m-        le_tensor_contiguous_f64, leaky_relu_scalar, leaky_relu_tensor_contiguous_f64, log_scalar,
+[m[31m-        log_softmax_dim_tensor_contiguous_f64, log_tensor_contiguous_f64, log1p_scalar,
+[m[31m-        log1p_tensor_contiguous_f64, log2_scalar, log2_tensor_contiguous_f64, log10_scalar,
+[m[31m-        log10_tensor_contiguous_f64, lt_scalar, lt_tensor_contiguous_f64,
+[m[32m+        le_tensor_contiguous_f64, leaky_relu_scalar, leaky_relu_tensor_contiguous_f64,
+[m[32m+        log10_scalar, log10_tensor_contiguous_f64, log1p_scalar, log1p_tensor_contiguous_f64,
+[m[32m+        log2_scalar, log2_tensor_contiguous_f64, log_scalar, log_softmax_dim_tensor_contiguous_f64,
+[m[32m+        log_tensor_contiguous_f64, lt_scalar, lt_tensor_contiguous_f64,
+[m         masked_fill_tensor_contiguous_f64, matmul_tensor_contiguous_f64,
+         max_dim_tensor_contiguous_f64, max_scalar, max_tensor_contiguous_f64,
+         mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64, min_dim_tensor_contiguous_f64,
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:23513:
+         sub_scalar, sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f32,
+         sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, tanh_scalar,
+         tanh_tensor_contiguous_f64, trunc_scalar, trunc_tensor_contiguous_f64,
+[31m-        var_dim_tensor_contiguous_f64,
+[m[32m+        var_dim_tensor_contiguous_f64, KernelError,
+[m     };
+     use super::{pairwise_sum_f64, pairwise_sum_map_f64};
+ 
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:24644:
+         assert_eq!(shape, vec![3, 4]);
+         assert_eq!(
+             result,
+[31m-            vec![
+[m[31m-                10.0, 20.0, 30.0, 40.0, 20.0, 40.0, 60.0, 80.0, 30.0, 60.0, 90.0, 120.0,
+[m[31m-            ]
+[m[32m+            vec![10.0, 20.0, 30.0, 40.0, 20.0, 40.0, 60.0, 80.0, 30.0, 60.0, 90.0, 120.0,]
+[m         );
+     }
+ 
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:27459:
+             scatter_tensor_contiguous_f64(&input, &meta, 1, &[-1.0, -1.0], &idx_meta, &src)
+                 .is_err()
+         );
+[31m-        assert!(
+[m[31m-            scatter_add_tensor_contiguous_f64(&input, &meta, 1, &[-1.0, -1.0], &idx_meta, &src)
+[m[31m-                .is_err()
+[m[31m-        );
+[m[32m+        assert!(scatter_add_tensor_contiguous_f64(
+[m[32m+            &input,
+[m[32m+            &meta,
+[m[32m+            1,
+[m[32m+            &[-1.0, -1.0],
+[m[32m+            &idx_meta,
+[m[32m+            &src
+[m[32m+        )
+[m[32m+        .is_err());
+[m     }
+ 
+     #[test]
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:30072:
+             diagnostic.profile.selected_m.len(),
+             "each recorded shift packet must have the selected bulge start m"
+         );
+[32m+        assert!(diagnostic
+[m[32m+            .profile
+[m[32m+            .shift_samples
+[m[32m+            .iter()
+[m[32m+            .all(|packet| packet.active_first <= packet.active_last
+[m[32m+                && packet.active_last < n
+[m[32m+                && packet.accumulated_shift.is_finite()
+[m[32m+                && packet.x.is_finite()
+[m[32m+                && packet.y.is_finite()
+[m[32m+                && packet.w.is_finite()));
+[m         assert!(
+             diagnostic
+                 .profile
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:30078:
+                 .shift_samples
+                 .iter()
+[31m-                .all(|packet| packet.active_first <= packet.active_last
+[m[31m-                    && packet.active_last < n
+[m[31m-                    && packet.accumulated_shift.is_finite()
+[m[31m-                    && packet.x.is_finite()
+[m[31m-                    && packet.y.is_finite()
+[m[31m-                    && packet.w.is_finite())
+[m[31m-        );
+[m[31m-        assert!(
+[m[31m-            diagnostic
+[m[31m-                .profile
+[m[31m-                .shift_samples
+[m[31m-                .iter()
+[m                 .filter(|packet| packet.exceptional)
+                 .all(|packet| packet.iteration_in_window == 10 || packet.iteration_in_window == 20),
+             "exceptional shifts must preserve the existing its == 10 || its == 20 cadence"
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:30365:
+             poly = next;
+         }
+         let n = poly.len() - 1; // 6
+[31m-        // Companion: subdiagonal 1s, last column = -a_i where a_i = poly[n - i].
+[m[32m+                                // Companion: subdiagonal 1s, last column = -a_i where a_i = poly[n - i].
+[m         let mut c = vec![0.0f64; n * n];
+         for i in 1..n {
+             c[i * n + (i - 1)] = 1.0;
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:31872:
+         let meta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+         let r = super::qr_contiguous_f64(&a, &meta, true).expect("qr");
+         let k = n; // reduced: Q is m×k, R is k×n
+[31m-        // A = Q·R
+[m[32m+                   // A = Q·R
+[m         for &(i, j) in &[(0usize, 0usize), (5, 90), (255, 1), (130, 40), (200, 17)] {
+             let mut dot = 0.0;
+             for t in 0..k {
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:31952:
+         let m = 4;
+         let n = 2;
+         let k = 2; // min(4,2)
+[31m-        // Reduced: Q is 4x2, R is 2x2
+[m[32m+                   // Reduced: Q is 4x2, R is 2x2
+[m         assert_eq!(result.q.len(), m * k);
+         assert_eq!(result.r.len(), k * n);
+ 
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:32011:
+         let m = 2;
+         let n = 4;
+         let k = 2; // min(2,4)
+[31m-        // Reduced: Q is 2x2, R is 2x4
+[m[32m+                   // Reduced: Q is 2x2, R is 2x4
+[m         assert_eq!(result.q.len(), m * k);
+         assert_eq!(result.r.len(), k * n);
+ 
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/benches/softmax_bench.rs:3:
+ //!   baseline:  rch exec -- env RAYON_NUM_THREADS=1 cargo bench -p ft-kernel-cpu --bench softmax_bench
+ //!   optimized: rch exec -- cargo bench -p ft-kernel-cpu --bench softmax_bench
+ 
+[31m-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+[m[32m+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+[m use ft_core::{DType, Device, TensorMeta};
+ use ft_kernel_cpu::{
+     log_softmax_dim_tensor_contiguous_f32, log_softmax_dim_tensor_contiguous_f64,

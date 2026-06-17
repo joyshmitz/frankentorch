@@ -1,0 +1,29 @@
+   Compiling regex-syntax v0.8.10
+   Compiling regex-automata v0.4.14
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling regex v1.12.3
+   Compiling criterion v0.5.1
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-runtime v0.1.0 (/data/projects/frankentorch/crates/ft-runtime)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 36s
+     Running unittests src/lib.rs (/data/tmp/frankentorch-a7xya-local-target/debug/deps/ft_api-4d4dd39d7b1afbd1)
+
+running 1 test
+
+thread 'tests::polygamma2_unit_interval_fast_prefix_matches_original_bits' (2182082) panicked at crates/ft-api/src/lib.rs:113783:9:
+assertion `left == right` failed
+  left: 5115216690554511702
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::polygamma2_unit_interval_fast_prefix_matches_original_bits ... FAILED
+
+failures:
+
+failures:
+    tests::polygamma2_unit_interval_fast_prefix_matches_original_bits
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2130 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p ft-api --lib`

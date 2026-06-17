@@ -1,0 +1,11 @@
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.10s
+     Running benches/ops_bench.rs (/data/tmp/frankentorch-a7xya-local-target/release/deps/ops_bench-8824b9e24f0b8087)
+Gnuplot not found, using plotters backend
+Benchmarking conv1d_family/avg_pool1d_grad
+Benchmarking conv1d_family/avg_pool1d_grad: Warming up for 1.0000 s
+Benchmarking conv1d_family/avg_pool1d_grad: Collecting 10 samples in estimated 5.0339 s (20 iterations)
+Benchmarking conv1d_family/avg_pool1d_grad: Analyzing
+conv1d_family/avg_pool1d_grad
+                        time:   [251.51 ms 254.49 ms 257.22 ms]
+                        change: [-85.509% -67.925% +1.2090%] (p = 0.25 > 0.05)
+                        No change in performance detected.

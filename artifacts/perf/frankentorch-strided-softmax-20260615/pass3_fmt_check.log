@@ -1,0 +1,149 @@
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/examples/cumprod_backward_ab.rs:12:
+     out: &[f64],
+     meta: &TensorMeta,
+ ) -> (f64, Vec<f64>) {
+[31m-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+[m[32m+    let pool = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(threads)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m     pool.install(|| {
+         let r = cumprod_backward_tensor_contiguous_f64(go, inp, out, meta, 1).unwrap();
+         let mut best = f64::INFINITY;
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/examples/cumprod_backward_ab.rs:31:
+     let (rows, cols) = (8192usize, 1024);
+     let n = rows * cols;
+     // Non-zero inputs near 1.0 so cumprod stays finite (common, non-zero branch).
+[31m-    let inp: Vec<f64> = (0..n).map(|i| 1.0 + (((i % 17) as f64) - 8.0) * 1e-3).collect();
+[m[32m+    let inp: Vec<f64> = (0..n)
+[m[32m+        .map(|i| 1.0 + (((i % 17) as f64) - 8.0) * 1e-3)
+[m[32m+        .collect();
+[m     let meta = TensorMeta::from_shape(vec![rows, cols], DType::F64, Device::Cpu);
+     let out = cumprod_tensor_contiguous_f64(&inp, &meta, 1).unwrap();
+     let go: Vec<f64> = (0..n).map(|i| 1.0 + ((i % 13) as f64) * 1e-3).collect();
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/examples/cumsum_backward_ab.rs:7:
+ use ft_kernel_cpu::cumsum_backward_tensor_contiguous_f64;
+ 
+ fn run_best(threads: usize, g: &[f64], meta: &TensorMeta) -> (f64, Vec<f64>) {
+[31m-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+[m[32m+    let pool = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(threads)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m     pool.install(|| {
+         let out = cumsum_backward_tensor_contiguous_f64(g, meta, 1).unwrap();
+         let mut best = f64::INFINITY;
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/examples/lu_f32_vs_f64_ab.rs:3:
+ use ft_kernel_cpu::{lu_factor_contiguous_f32, lu_factor_contiguous_f64};
+ fn main() {
+     for n in [256usize, 512, 1024] {
+[31m-        let a64: Vec<f64> = (0..n * n).map(|i| ((i * 1103515245 + 12345) % 1000) as f64 * 0.001 + if i % (n + 1) == 0 { n as f64 } else { 0.0 }).collect();
+[m[32m+        let a64: Vec<f64> = (0..n * n)
+[m[32m+            .map(|i| {
+[m[32m+                ((i * 1103515245 + 12345) % 1000) as f64 * 0.001
+[m[32m+                    + if i % (n + 1) == 0 { n as f64 } else { 0.0 }
+[m[32m+            })
+[m[32m+            .collect();
+[m         let a32: Vec<f32> = a64.iter().map(|&x| x as f32).collect();
+         let m64 = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+         let m32 = TensorMeta::from_shape(vec![n, n], DType::F32, Device::Cpu);
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/examples/lu_f32_vs_f64_ab.rs:10:
+         let mut b64 = f64::INFINITY;
+[31m-        for _ in 0..10 { let t = std::time::Instant::now(); std::hint::black_box(lu_factor_contiguous_f64(&a64, &m64).unwrap()); b64 = b64.min(t.elapsed().as_secs_f64() * 1e3); }
+[m[32m+        for _ in 0..10 {
+[m[32m+            let t = std::time::Instant::now();
+[m[32m+            std::hint::black_box(lu_factor_contiguous_f64(&a64, &m64).unwrap());
+[m[32m+            b64 = b64.min(t.elapsed().as_secs_f64() * 1e3);
+[m[32m+        }
+[m         let mut b32 = f64::INFINITY;
+[31m-        for _ in 0..10 { let t = std::time::Instant::now(); std::hint::black_box(lu_factor_contiguous_f32(&a32, &m32).unwrap()); b32 = b32.min(t.elapsed().as_secs_f64() * 1e3); }
+[m[31m-        println!("LU n={n}: f64 {b64:.3}ms  f32 {b32:.3}ms  =>  {:.2}x", b64 / b32);
+[m[32m+        for _ in 0..10 {
+[m[32m+            let t = std::time::Instant::now();
+[m[32m+            std::hint::black_box(lu_factor_contiguous_f32(&a32, &m32).unwrap());
+[m[32m+            b32 = b32.min(t.elapsed().as_secs_f64() * 1e3);
+[m[32m+        }
+[m[32m+        println!(
+[m[32m+            "LU n={n}: f64 {b64:.3}ms  f32 {b32:.3}ms  =>  {:.2}x",
+[m[32m+            b64 / b32
+[m[32m+        );
+[m     }
+ }
+ 
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/examples/outer_ab.rs:8:
+     let b: Vec<f64> = (0..n).map(|i| (i % 97) as f64 * 0.01).collect();
+     let am = TensorMeta::from_shape(vec![m], DType::F64, Device::Cpu);
+     let bm = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+[31m-    let run = || { std::hint::black_box(outer_tensor_contiguous_f64(&a, &b, &am, &bm).unwrap()); };
+[m[31m-    let bench = |reps: usize| { run(); let mut best=f64::INFINITY; for _ in 0..reps { let t=Instant::now(); run(); best=best.min(t.elapsed().as_secs_f64()*1e3);} best };
+[m[31m-    let p1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+[m[32m+    let run = || {
+[m[32m+        std::hint::black_box(outer_tensor_contiguous_f64(&a, &b, &am, &bm).unwrap());
+[m[32m+    };
+[m[32m+    let bench = |reps: usize| {
+[m[32m+        run();
+[m[32m+        let mut best = f64::INFINITY;
+[m[32m+        for _ in 0..reps {
+[m[32m+            let t = Instant::now();
+[m[32m+            run();
+[m[32m+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+[m[32m+        }
+[m[32m+        best
+[m[32m+    };
+[m[32m+    let p1 = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(1)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m     let old = p1.install(|| bench(30));
+     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+     let new = pn.install(|| bench(30));
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/examples/outer_ab.rs:17:
+[31m-    println!("outer [{m}]x[{n}] -> {}M: OLD(1t) {old:.2}ms NEW({nthreads}t) {new:.2}ms => {:.2}x", m*n/1_000_000, old/new);
+[m[32m+    println!(
+[m[32m+        "outer [{m}]x[{n}] -> {}M: OLD(1t) {old:.2}ms NEW({nthreads}t) {new:.2}ms => {:.2}x",
+[m[32m+        m * n / 1_000_000,
+[m[32m+        old / new
+[m[32m+    );
+[m }
+ 
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/examples/strided_binary_ab.rs:13:
+ fn transposed_meta(rows: usize, cols: usize) -> TensorMeta {
+     // Logical [cols, rows] transposed view of a row-major [rows, cols] buffer:
+     // shape [cols, rows], strides [1, cols] => non-contiguous, hits the strided path.
+[31m-    TensorMeta::from_shape_and_strides(
+[m[31m-        vec![cols, rows],
+[m[31m-        vec![1, cols],
+[m[31m-        0,
+[m[31m-        DType::F64,
+[m[31m-        Device::Cpu,
+[m[31m-    )
+[m[31m-    .unwrap()
+[m[32m+    TensorMeta::from_shape_and_strides(vec![cols, rows], vec![1, cols], 0, DType::F64, Device::Cpu)
+[m[32m+        .unwrap()
+[m }
+ 
+ fn bench(label: &str, rows: usize, cols: usize) {
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/examples/strided_binary_ab.rs:31:
+ 
+     let run = || atan2_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).unwrap();
+ 
+[31m-    let pool1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+[m[32m+    let pool1 = rayon::ThreadPoolBuilder::new()
+[m[32m+        .num_threads(1)
+[m[32m+        .build()
+[m[32m+        .unwrap();
+[m     let pooln = rayon::ThreadPoolBuilder::new().build().unwrap();
+     let nthreads = pooln.current_num_threads();
+ 
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/examples/strided_binary_ab.rs:54:
+         std::hint::black_box(pooln.install(&run));
+         new = new.min(t.elapsed().as_secs_f64() * 1e3);
+     }
+[31m-    println!("{label} [{cols}x{rows}={n}] (1t vs {nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x", old / new);
+[m[32m+    println!(
+[m[32m+        "{label} [{cols}x{rows}={n}] (1t vs {nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x",
+[m[32m+        old / new
+[m[32m+    );
+[m }
+ 
+ fn main() {

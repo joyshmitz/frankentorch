@@ -1,0 +1,80 @@
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 40.66s
+     Running benches/backward_bench.rs (/data/tmp/frankentorch-a7xya-local-target/release/deps/backward_bench-7cfc73f77a6e4eda)
+Gnuplot not found, using plotters backend
+Benchmarking autograd_backward/add_chain_256x2048_anchor
+Benchmarking autograd_backward/add_chain_256x2048_anchor: Warming up for 1.0000 s
+Benchmarking autograd_backward/add_chain_256x2048_anchor: Collecting 10 samples in estimated 3.1524 s (385 iterations)
+Benchmarking autograd_backward/add_chain_256x2048_anchor: Analyzing
+autograd_backward/add_chain_256x2048_anchor
+                        time:   [4.7519 ms 5.5934 ms 7.1335 ms]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking autograd_backward/mul_chain_256x2048
+Benchmarking autograd_backward/mul_chain_256x2048: Warming up for 1.0000 s
+Benchmarking autograd_backward/mul_chain_256x2048: Collecting 10 samples in estimated 3.1935 s (605 iterations)
+Benchmarking autograd_backward/mul_chain_256x2048: Analyzing
+autograd_backward/mul_chain_256x2048
+                        time:   [3.0192 ms 3.5439 ms 3.7910 ms]
+Benchmarking autograd_backward/div_chain_256x2048
+Benchmarking autograd_backward/div_chain_256x2048: Warming up for 1.0000 s
+Benchmarking autograd_backward/div_chain_256x2048: Collecting 10 samples in estimated 3.1072 s (660 iterations)
+Benchmarking autograd_backward/div_chain_256x2048: Analyzing
+autograd_backward/div_chain_256x2048
+                        time:   [3.8380 ms 4.4341 ms 4.7006 ms]
+
+Benchmarking activation_backward/gelu_chain_16x65536
+Benchmarking activation_backward/gelu_chain_16x65536: Warming up for 1.0000 s
+Benchmarking activation_backward/gelu_chain_16x65536: Collecting 10 samples in estimated 3.5575 s (110 iterations)
+Benchmarking activation_backward/gelu_chain_16x65536: Analyzing
+activation_backward/gelu_chain_16x65536
+                        time:   [24.325 ms 61.922 ms 150.00 ms]
+                        change: [-39.870% +38.388% +184.57%] (p = 0.74 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high severe
+Benchmarking activation_backward/silu_chain_16x65536
+Benchmarking activation_backward/silu_chain_16x65536: Warming up for 1.0000 s
+Benchmarking activation_backward/silu_chain_16x65536: Collecting 10 samples in estimated 4.0503 s (110 iterations)
+Benchmarking activation_backward/silu_chain_16x65536: Analyzing
+activation_backward/silu_chain_16x65536
+                        time:   [25.879 ms 26.653 ms 27.826 ms]
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high mild
+Benchmarking activation_backward/elu_chain_16x65536
+Benchmarking activation_backward/elu_chain_16x65536: Warming up for 1.0000 s
+Benchmarking activation_backward/elu_chain_16x65536: Collecting 10 samples in estimated 3.8224 s (110 iterations)
+Benchmarking activation_backward/elu_chain_16x65536: Analyzing
+activation_backward/elu_chain_16x65536
+                        time:   [24.864 ms 25.339 ms 25.760 ms]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low severe
+  1 (10.00%) high mild
+Benchmarking activation_backward/erf_chain_16x65536
+Benchmarking activation_backward/erf_chain_16x65536: Warming up for 1.0000 s
+Benchmarking activation_backward/erf_chain_16x65536: Collecting 10 samples in estimated 4.0341 s (110 iterations)
+Benchmarking activation_backward/erf_chain_16x65536: Analyzing
+activation_backward/erf_chain_16x65536
+                        time:   [25.905 ms 26.444 ms 27.043 ms]
+Benchmarking activation_backward/erfc_chain_16x65536
+Benchmarking activation_backward/erfc_chain_16x65536: Warming up for 1.0000 s
+Benchmarking activation_backward/erfc_chain_16x65536: Collecting 10 samples in estimated 4.1716 s (110 iterations)
+Benchmarking activation_backward/erfc_chain_16x65536: Analyzing
+activation_backward/erfc_chain_16x65536
+                        time:   [25.789 ms 26.460 ms 27.180 ms]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high mild
+Benchmarking activation_backward/softplus_chain_16x65536
+Benchmarking activation_backward/softplus_chain_16x65536: Warming up for 1.0000 s
+Benchmarking activation_backward/softplus_chain_16x65536: Collecting 10 samples in estimated 4.8068 s (110 iterations)
+Benchmarking activation_backward/softplus_chain_16x65536: Analyzing
+activation_backward/softplus_chain_16x65536
+                        time:   [25.696 ms 26.198 ms 26.843 ms]
+Benchmarking activation_backward/mish_chain_16x65536
+Benchmarking activation_backward/mish_chain_16x65536: Warming up for 1.0000 s
+Benchmarking activation_backward/mish_chain_16x65536: Collecting 10 samples in estimated 4.2013 s (110 iterations)
+Benchmarking activation_backward/mish_chain_16x65536: Analyzing
+activation_backward/mish_chain_16x65536
+                        time:   [26.059 ms 27.673 ms 29.135 ms]
+

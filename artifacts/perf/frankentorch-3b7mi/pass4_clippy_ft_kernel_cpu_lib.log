@@ -1,0 +1,42 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling syn v2.0.117
+   Compiling autocfg v1.5.0
+   Compiling crossbeam-utils v0.8.21
+   Compiling bytemuck_derive v1.10.2
+    Checking bytemuck v1.25.0
+   Compiling num-traits v0.2.19
+   Compiling zerocopy v0.8.48
+    Checking crossbeam-epoch v0.9.18
+   Compiling zerocopy-derive v0.8.48
+   Compiling rayon-core v1.13.0
+    Checking crossbeam-deque v0.8.6
+   Compiling matrixmultiply v0.3.10
+    Checking cfg-if v1.0.4
+   Compiling libm v0.2.16
+    Checking half v2.7.1
+    Checking num-complex v0.4.6
+    Checking safe_arch v0.7.4
+    Checking rawpointer v0.2.1
+    Checking either v1.15.0
+    Checking rayon v1.12.0
+    Checking wide v0.7.33
+    Checking ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+    Checking ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+error: the loop variable `ox` is used to index `orow`
+    --> crates/ft-kernel-cpu/src/lib.rs:6361:23
+     |
+6361 |             for ox in 0..output_len {
+     |                       ^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+     = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator and enumerate()
+     |
+6361 -             for ox in 0..output_len {
+6361 +             for (ox, <item>) in orow.iter_mut().enumerate().take(output_len) {
+     |
+
+error: could not compile `ft-kernel-cpu` (lib) due to 1 previous error
