@@ -285,12 +285,13 @@ fn threshold_index_4(
     second_threshold: f64,
     third_threshold: f64,
 ) -> usize {
-    usize::from(u > first_threshold)
-        + usize::from(u > second_threshold)
-        + usize::from(u > third_threshold)
+    usize::from(u >= first_threshold)
+        + usize::from(u >= second_threshold)
+        + usize::from(u >= third_threshold)
 }
 
 #[inline]
+#[cfg(test)]
 fn finite_threshold_cmp(threshold: f64, sample: f64) -> std::cmp::Ordering {
     if threshold < sample {
         std::cmp::Ordering::Less
@@ -302,10 +303,9 @@ fn finite_threshold_cmp(threshold: f64, sample: f64) -> std::cmp::Ordering {
 }
 
 fn threshold_binary_index(cumulative: &[f64], sample: f64) -> usize {
-    match cumulative.binary_search_by(|c| finite_threshold_cmp(*c, sample)) {
-        Ok(i) => i,
-        Err(i) => i.min(cumulative.len() - 1),
-    }
+    cumulative
+        .partition_point(|threshold| *threshold <= sample)
+        .min(cumulative.len() - 1)
 }
 
 struct ThresholdBucketIndex {
@@ -365,7 +365,7 @@ impl ThresholdBucketIndex {
             bucket = self.starts.len() - 1;
         }
         let mut index = self.starts[bucket];
-        while index + 1 < cumulative.len() && cumulative[index] < sample {
+        while index + 1 < cumulative.len() && cumulative[index] <= sample {
             index += 1;
         }
         index
@@ -602,7 +602,7 @@ impl WeightedRandomSampler {
             let mut result = Vec::with_capacity(self.num_samples);
             for _ in 0..self.num_samples {
                 let u = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-                result.push(if u <= first_threshold { 0 } else { 1 });
+                result.push(if u < first_threshold { 0 } else { 1 });
             }
             return Ok(result);
         }
@@ -622,9 +622,9 @@ impl WeightedRandomSampler {
             let mut result = Vec::with_capacity(self.num_samples);
             for _ in 0..self.num_samples {
                 let u = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-                result.push(if u <= first_threshold {
+                result.push(if u < first_threshold {
                     0
-                } else if u <= second_threshold {
+                } else if u < second_threshold {
                     1
                 } else {
                     2
@@ -2422,6 +2422,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn weighted_random_sampler_zero_weight_prefix_is_never_selected_at_zero_draw() {
+        let two = WeightedRandomSampler::new(vec![0.0, 1.0], 8)
+            .with_seed(0)
+            .indices()
+            .expect("two-weight samples");
+        assert_eq!(two, vec![1; 8]);
+
+        let three = WeightedRandomSampler::new(vec![0.0, 0.0, 1.0], 8)
+            .with_seed(0)
+            .indices()
+            .expect("three-weight samples");
+        assert_eq!(three, vec![2; 8]);
+
+        let four = WeightedRandomSampler::new(vec![0.0, 0.0, 0.0, 1.0], 8)
+            .with_seed(0)
+            .indices()
+            .expect("four-weight samples");
+        assert_eq!(four, vec![3; 8]);
+
+        let fallback = WeightedRandomSampler::new(vec![0.0, 0.0, 0.0, 0.0, 1.0], 8)
+            .with_seed(0)
+            .indices()
+            .expect("fallback samples");
+        assert_eq!(fallback, vec![4; 8]);
+    }
+
     fn weighted_sampler_branchless_golden_summary() -> String {
         let two = WeightedRandomSampler::new(vec![1.0, 3.0], 32)
             .with_seed(0x5151_0002)
@@ -2530,11 +2557,11 @@ mod tests {
         let samples = [0.0, first, 0.375, second, 0.625, third, 0.875];
 
         for u in samples {
-            let expected = if u <= first {
+            let expected = if u < first {
                 0
-            } else if u <= second {
+            } else if u < second {
                 1
-            } else if u <= third {
+            } else if u < third {
                 2
             } else {
                 3
