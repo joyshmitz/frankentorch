@@ -17,4 +17,3 @@ batch_norm/grad_1d_8192x1024
                         No change in performance detected.
 Found 1 outliers among 10 measurements (10.00%)
   1 (10.00%) low mild
-

@@ -1,0 +1,18 @@
+    Blocking waiting for file lock on package cache
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 4m 08s
+     Running benches/ops_bench.rs (/data/tmp/frankentorch-next-reprofile-local-target/release/deps/ops_bench-8824b9e24f0b8087)
+Gnuplot not found, using plotters backend
+Benchmarking group_norm/grad_32x256x28x28
+Benchmarking group_norm/grad_32x256x28x28: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 5.1s.
+Benchmarking group_norm/grad_32x256x28x28: Collecting 10 samples in estimated 5.0948 s (10 iterations)
+Benchmarking group_norm/grad_32x256x28x28: Analyzing
+group_norm/grad_32x256x28x28
+                        time:   [498.68 ms 507.61 ms 515.85 ms]
+                        change: [-2.4379% -0.4240% +1.6957%] (p = 0.72 > 0.05)
+                        No change in performance detected.
