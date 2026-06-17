@@ -7143,6 +7143,147 @@ pub fn conv_transpose2d_backward_f64(
     (dinput, dweight, dbias)
 }
 
+/// f32 mirror of [`conv_transpose2d_backward_f64`]. Returns `(dinput, dweight,
+/// dbias?)` at f32 precision (matches torch's f32 conv_transpose2d backward),
+/// with the same channels-last `Σ_oc` ordering. frankentorch-lboou.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn conv_transpose2d_backward_f32(
+    dout: &[f32],
+    input: &[f32],
+    weight: &[f32],
+    batch: usize,
+    in_ch: usize,
+    ih: usize,
+    iw: usize,
+    out_ch: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+    ph: usize,
+    pw: usize,
+    has_bias: bool,
+) -> (Vec<f32>, Vec<f32>, Option<Vec<f32>>) {
+    let mut dout_cl = vec![0.0f32; batch * oh * ow * out_ch];
+    dout_cl
+        .par_chunks_mut(oh * ow * out_ch)
+        .enumerate()
+        .for_each(|(n, dst)| {
+            for oc in 0..out_ch {
+                let src_base = (n * out_ch + oc) * oh * ow;
+                for s in 0..oh * ow {
+                    dst[s * out_ch + oc] = dout[src_base + s];
+                }
+            }
+        });
+    let mut weight_cl = vec![0.0f32; in_ch * kh * kw * out_ch];
+    for ic in 0..in_ch {
+        for oc in 0..out_ch {
+            for kr in 0..kh {
+                for kc in 0..kw {
+                    weight_cl[((ic * kh + kr) * kw + kc) * out_ch + oc] =
+                        weight[(((ic * out_ch + oc) * kh + kr) * kw) + kc];
+                }
+            }
+        }
+    }
+    let mut dinput = vec![0.0f32; batch * in_ch * ih * iw];
+    dinput
+        .par_chunks_mut(ih * iw)
+        .enumerate()
+        .for_each(|(idx, drow)| {
+            let n = idx / in_ch;
+            let ic = idx % in_ch;
+            let nbase = n * oh * ow * out_ch;
+            let wbase = ic * kh * kw * out_ch;
+            for iy in 0..ih {
+                for ix in 0..iw {
+                    let mut acc = 0.0f32;
+                    for kr in 0..kh {
+                        let oy_s = iy * sh + kr;
+                        if oy_s < ph {
+                            continue;
+                        }
+                        let oy = oy_s - ph;
+                        if oy >= oh {
+                            continue;
+                        }
+                        for kc in 0..kw {
+                            let ox_s = ix * sw + kc;
+                            if ox_s < pw {
+                                continue;
+                            }
+                            let ox = ox_s - pw;
+                            if ox >= ow {
+                                continue;
+                            }
+                            let dvec = &dout_cl[nbase + (oy * ow + ox) * out_ch..][..out_ch];
+                            let wvec = &weight_cl[wbase + (kr * kw + kc) * out_ch..][..out_ch];
+                            for oc in 0..out_ch {
+                                acc += dvec[oc] * wvec[oc];
+                            }
+                        }
+                    }
+                    drow[iy * iw + ix] = acc;
+                }
+            }
+        });
+    let mut dweight = vec![0.0f32; in_ch * out_ch * kh * kw];
+    dweight.par_iter_mut().enumerate().for_each(|(widx, dw)| {
+        let kc = widx % kw;
+        let kr = (widx / kw) % kh;
+        let oc = (widx / (kw * kh)) % out_ch;
+        let ic = widx / (kw * kh * out_ch);
+        let mut acc = 0.0f32;
+        for n in 0..batch {
+            for iy in 0..ih {
+                let oy_s = iy * sh + kr;
+                if oy_s < ph {
+                    continue;
+                }
+                let oy = oy_s - ph;
+                if oy >= oh {
+                    continue;
+                }
+                for ix in 0..iw {
+                    let ox_s = ix * sw + kc;
+                    if ox_s < pw {
+                        continue;
+                    }
+                    let ox = ox_s - pw;
+                    if ox >= ow {
+                        continue;
+                    }
+                    let iv = input[((n * in_ch + ic) * ih + iy) * iw + ix];
+                    let dv = dout[((n * out_ch + oc) * oh + oy) * ow + ox];
+                    acc += iv * dv;
+                }
+            }
+        }
+        *dw = acc;
+    });
+    let dbias = if has_bias {
+        let mut db = vec![0.0f32; out_ch];
+        db.par_iter_mut().enumerate().for_each(|(oc, dbo)| {
+            let mut s = 0.0f32;
+            for n in 0..batch {
+                let base = (n * out_ch + oc) * oh * ow;
+                for p in 0..oh * ow {
+                    s += dout[base + p];
+                }
+            }
+            *dbo = s;
+        });
+        Some(db)
+    } else {
+        None
+    };
+    (dinput, dweight, dbias)
+}
+
 /// 3-D im2col gather for conv3d over a PADDED `[batch, in_ch, pd, ph, pw]` input.
 /// Panel `[batch·od·oh·ow, in_ch·kd·kh·kw]`, patch-major, `(in_ch,kd,kh,kw)`-minor.
 #[allow(clippy::too_many_arguments)]
@@ -7471,6 +7612,146 @@ pub fn conv3d_forward_f32(
             }
         });
     out
+}
+
+/// f32 mirror of [`conv3d_col2im_f64`]: scatter-add a `[batch·od·oh·ow,
+/// in_ch·kd·kh·kw]` gradient panel back into a padded `[batch, in_ch, pd, ph, pw]`
+/// buffer. Per-batch accumulation order is identical to the f64 form.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn conv3d_col2im_f32(
+    dpanel: &[f32],
+    batch: usize,
+    in_ch: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+) -> Vec<f32> {
+    let patch_width = in_ch * kd * kh * kw;
+    let patch_count = od * oh * ow;
+    let mut dpadded = vec![0.0f32; batch * in_ch * pd * ph * pw];
+    dpadded
+        .par_chunks_mut(in_ch * pd * ph * pw)
+        .enumerate()
+        .for_each(|(b, dpb)| {
+            for pc in 0..patch_count {
+                let base_d = (pc / (oh * ow)) * sd;
+                let rem = pc % (oh * ow);
+                let base_h = (rem / ow) * sh;
+                let base_w = (rem % ow) * sw;
+                let prow = (b * patch_count + pc) * patch_width;
+                for c in 0..in_ch {
+                    let ch_off = c * pd * ph * pw;
+                    let pch = c * kd * kh * kw;
+                    for kdd in 0..kd {
+                        let d_off = ch_off + (base_d + kdd) * ph * pw;
+                        let pkd = pch + kdd * kh * kw;
+                        for kr in 0..kh {
+                            let irow = d_off + (base_h + kr) * pw + base_w;
+                            let prow_off = prow + pkd + kr * kw;
+                            for kc in 0..kw {
+                                dpb[irow + kc] += dpanel[prow_off + kc];
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    dpadded
+}
+
+/// f32 mirror of [`conv3d_backward_f64`]. Returns `(dpadded, dweight_flat,
+/// dbias?)`. Same im2col + `sgemm`/`sgemm` adjoint structure as the f64 form,
+/// at f32 precision (matches torch's f32 conv3d backward). frankentorch-lboou.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn conv3d_backward_f32(
+    dout: &[f32],
+    padded: &[f32],
+    weight_flat: &[f32],
+    batch: usize,
+    in_ch: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+    out_ch: usize,
+    has_bias: bool,
+) -> (Vec<f32>, Vec<f32>, Option<Vec<f32>>) {
+    let patch_width = in_ch * kd * kh * kw;
+    let patch_count = od * oh * ow;
+    let flat = batch * patch_count;
+    let mut dout_flat = vec![0.0f32; flat * out_ch];
+    dout_flat
+        .par_chunks_mut(out_ch)
+        .enumerate()
+        .for_each(|(row, dr)| {
+            let n = row / patch_count;
+            let p = row % patch_count;
+            for (oc, d) in dr.iter_mut().enumerate() {
+                *d = dout[(n * out_ch + oc) * patch_count + p];
+            }
+        });
+    let panel = conv3d_im2col_f32(
+        padded, batch, in_ch, pd, ph, pw, kd, kh, kw, od, oh, ow, sd, sh, sw,
+    );
+    let mut dout_t = vec![0.0f32; out_ch * flat];
+    dout_t
+        .par_chunks_exact_mut(flat)
+        .enumerate()
+        .for_each(|(oc, row)| {
+            for (r, slot) in row.iter_mut().enumerate() {
+                *slot = dout_flat[r * out_ch + oc];
+            }
+        });
+    let mut dweight = vec![0.0f32; out_ch * patch_width];
+    gemm::sgemm(out_ch, flat, patch_width, &dout_t, &panel, &mut dweight);
+    let mut dpanel = vec![0.0f32; flat * patch_width];
+    gemm::sgemm(
+        flat,
+        out_ch,
+        patch_width,
+        &dout_flat,
+        weight_flat,
+        &mut dpanel,
+    );
+    let dpadded = conv3d_col2im_f32(
+        &dpanel, batch, in_ch, pd, ph, pw, kd, kh, kw, od, oh, ow, sd, sh, sw,
+    );
+    let dbias = if has_bias {
+        let mut db = vec![0.0f32; out_ch];
+        db.par_iter_mut().enumerate().for_each(|(oc, dbo)| {
+            let mut s = 0.0f32;
+            for n in 0..batch {
+                let base = (n * out_ch + oc) * patch_count;
+                for p in 0..patch_count {
+                    s += dout[base + p];
+                }
+            }
+            *dbo = s;
+        });
+        Some(db)
+    } else {
+        None
+    };
+    (dpadded, dweight, dbias)
 }
 
 /// Backward of [`conv3d_forward_f64`]. Returns `(dpadded, dweight_flat, dbias?)`.
