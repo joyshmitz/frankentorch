@@ -1,0 +1,20 @@
+    Checking regex-syntax v0.8.10
+    Checking regex-automata v0.4.14
+    Checking ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+    Checking ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+    Checking regex v1.12.3
+    Checking ft-runtime v0.1.0 (/data/projects/frankentorch/crates/ft-runtime)
+    Checking criterion v0.5.1
+    Checking ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+warning: variable does not need to be mutable
+  --> crates/ft-api/examples/hessian_probe.rs:96:9
+   |
+96 |     let mut cp =
+   |         ----^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ft-api` (example "hessian_probe") generated 1 warning (run `cargo fix --example "hessian_probe" -p ft-api` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 29.55s

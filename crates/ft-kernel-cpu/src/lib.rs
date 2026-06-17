@@ -6400,6 +6400,103 @@ pub fn avg_pool1d_backward_f64(
     din
 }
 
+/// Fused max-pool1d forward (f64) over `[batch, ch, len]`.
+/// Mirrors the `max_pool2d` `kh=1` first-argmax scan without routing through a
+/// rank-4 shape.
+#[must_use]
+pub fn max_pool1d_forward_f64(
+    input: &[f64],
+    batch: usize,
+    ch: usize,
+    len: usize,
+    kernel: usize,
+    output_len: usize,
+    stride: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; batch * ch * output_len];
+    out.par_chunks_mut(output_len)
+        .enumerate()
+        .for_each(|(plane, orow)| {
+            let ibase = plane * len;
+            for (ox, slot) in orow.iter_mut().enumerate() {
+                let start = ox * stride;
+                let mut m = f64::NEG_INFINITY;
+                for kx in 0..kernel {
+                    let v = input[ibase + start + kx];
+                    if v > m {
+                        m = v;
+                    }
+                }
+                *slot = m;
+            }
+        });
+    out
+}
+
+/// Fused max-pool1d forward plus first-argmax sidecar (f64). The sidecar stores
+/// the plane-local input offset as `f64`, matching the 2D saved-index route.
+#[must_use]
+pub fn max_pool1d_forward_with_indices_f64(
+    input: &[f64],
+    batch: usize,
+    ch: usize,
+    len: usize,
+    kernel: usize,
+    output_len: usize,
+    stride: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let mut out = vec![0.0f64; batch * ch * output_len];
+    let mut arg_offsets = vec![0.0f64; batch * ch * output_len];
+    out.par_chunks_mut(output_len)
+        .zip(arg_offsets.par_chunks_mut(output_len))
+        .enumerate()
+        .for_each(|(plane, (orow, arow))| {
+            let ibase = plane * len;
+            for ox in 0..output_len {
+                let start = ox * stride;
+                let mut m = f64::NEG_INFINITY;
+                let mut arg = start;
+                for kx in 0..kernel {
+                    let loc = start + kx;
+                    let v = input[ibase + loc];
+                    if v > m {
+                        m = v;
+                        arg = loc;
+                    }
+                }
+                orow[ox] = m;
+                arow[ox] = arg as f64;
+            }
+        });
+    (out, arg_offsets)
+}
+
+/// Backward of [`max_pool1d_forward_with_indices_f64`]: scatter each output
+/// gradient to the saved first-argmax offset. The per-plane output scan order
+/// matches the equivalent `max_pool2d` route with `kh=1`.
+#[must_use]
+pub fn max_pool1d_backward_from_indices_f64(
+    dout: &[f64],
+    arg_offsets: &[f64],
+    batch: usize,
+    ch: usize,
+    len: usize,
+    output_len: usize,
+) -> Vec<f64> {
+    let mut din = vec![0.0f64; batch * ch * len];
+    din.par_chunks_mut(len)
+        .enumerate()
+        .for_each(|(plane, drow)| {
+            let dbase = plane * output_len;
+            for ox in 0..output_len {
+                let oidx = dbase + ox;
+                let arg = arg_offsets[oidx] as usize;
+                drow[arg] += dout[oidx];
+            }
+        });
+    din
+}
+
 /// Fused max-pool2d forward (f64): per output `[n,c,oy,ox]`, the max over its
 /// `kh×kw` window of `[batch, ch, ih, iw]`. One pass, parallel over `(batch,ch)`
 /// planes.
@@ -24421,6 +24518,73 @@ mod tests {
             vec![0.0, 2.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0]
         );
         assert_eq!(from_indices, from_rescan);
+    }
+
+    #[test]
+    fn max_pool1d_direct_matches_2d_h1_first_tie_forward_backward_bit_exact() {
+        let (batch, ch, len, kernel, stride) = (2usize, 3usize, 10usize, 4usize, 2usize);
+        let output_len = (len - kernel) / stride + 1;
+        let n = batch * ch * len;
+        let input: Vec<f64> = (0..n).map(|i| ((i * 37 + 19) % 11) as f64 - 5.0).collect();
+
+        let (direct, direct_arg) = super::max_pool1d_forward_with_indices_f64(
+            &input, batch, ch, len, kernel, output_len, stride,
+        );
+        let (via_2d, via_2d_arg) = super::max_pool2d_forward_with_indices_f64(
+            &input, batch, ch, 1, len, 1, kernel, 1, output_len, 1, stride,
+        );
+        assert_eq!(
+            direct.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            via_2d.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+        assert_eq!(direct_arg, via_2d_arg);
+        assert_eq!(
+            super::max_pool1d_forward_f64(&input, batch, ch, len, kernel, output_len, stride)
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>(),
+            via_2d.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+
+        let dout: Vec<f64> = (0..batch * ch * output_len)
+            .map(|i| (((i * 29 + 5) % 127) as f64 - 63.0) * 0.03125)
+            .collect();
+        let direct_grad = super::max_pool1d_backward_from_indices_f64(
+            &dout,
+            &direct_arg,
+            batch,
+            ch,
+            len,
+            output_len,
+        );
+        let via_2d_grad = super::max_pool2d_backward_from_indices_f64(
+            &dout,
+            &via_2d_arg,
+            batch,
+            ch,
+            1,
+            len,
+            1,
+            output_len,
+        );
+        assert_eq!(
+            direct_grad.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            via_2d_grad.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+
+        let mut digest = 0xcbf29ce484222325u64;
+        for bits in direct.iter().chain(direct_grad.iter()).map(|v| v.to_bits()) {
+            digest ^= bits;
+            digest = digest.wrapping_mul(0x100000001b3);
+        }
+        for bits in direct_arg.iter().map(|v| v.to_bits()) {
+            digest ^= bits;
+            digest = digest.wrapping_mul(0x100000001b3);
+        }
+        assert_eq!(
+            digest, 0x0c2d_220c_0c70_c415,
+            "max_pool1d direct first-tie golden digest"
+        );
     }
 
     #[test]

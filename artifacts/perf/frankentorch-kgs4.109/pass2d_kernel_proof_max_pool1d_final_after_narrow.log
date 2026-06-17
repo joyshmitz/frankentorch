@@ -1,0 +1,8 @@
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.61s
+     Running unittests src/lib.rs (/data/tmp/frankentorch-kgs4109-local-target/debug/deps/ft_kernel_cpu-d26c108ecd1e4673)
+
+running 1 test
+test tests::max_pool1d_direct_matches_2d_h1_first_tie_forward_backward_bit_exact ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 482 filtered out; finished in 0.01s

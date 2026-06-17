@@ -1,0 +1,3 @@
+artifacts/perf/frankentorch-kgs4.109/pass5_final_kernel_proof_max_pool1d.log: OK
+artifacts/perf/frankentorch-kgs4.109/pass5_final_api_proof_max_pool1d.log: OK
+artifacts/perf/frankentorch-kgs4.109/pass3_local_rebench_max_pool1d_grad.log: OK

@@ -1,0 +1,19 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling regex-syntax v0.8.10
+   Compiling regex-automata v0.4.14
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling regex v1.12.3
+   Compiling criterion v0.5.1
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-runtime v0.1.0 (/data/projects/frankentorch/crates/ft-runtime)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 33s
+     Running unittests src/lib.rs (/data/tmp/frankentorch-kgs4109-local-target/debug/deps/ft_api-4d4dd39d7b1afbd1)
+
+running 1 test
+test tests::functional_max_pool1d_fused_matches_reshape_2d_forward_and_backward_bits ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2131 filtered out; finished in 0.01s
