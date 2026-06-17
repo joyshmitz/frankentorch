@@ -1,0 +1,13 @@
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.10s
+     Running benches/ops_bench.rs (/data/tmp/frankentorch-next-reprofile-local-target/release/deps/ops_bench-8824b9e24f0b8087)
+Gnuplot not found, using plotters backend
+Benchmarking batch_norm/grad_1d_8192x1024
+Benchmarking batch_norm/grad_1d_8192x1024: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 6.9s.
+Benchmarking batch_norm/grad_1d_8192x1024: Collecting 10 samples in estimated 6.8816 s (10 iterations)
+Benchmarking batch_norm/grad_1d_8192x1024: Analyzing
+batch_norm/grad_1d_8192x1024
+                        time:   [689.25 ms 701.11 ms 712.43 ms]
+                        change: [-2.6085% +1.0733% +4.2223%] (p = 0.59 > 0.05)
+                        No change in performance detected.

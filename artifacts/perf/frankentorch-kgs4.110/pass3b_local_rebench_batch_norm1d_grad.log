@@ -1,0 +1,42 @@
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+error[E0425]: cannot find value `ctx` in this scope
+     --> crates/ft-api/src/lib.rs:25183:25
+      |
+25169 |                     move |_ctx, ins| {
+      |                           ---- `_ctx` defined here
+...
+25183 |                         ctx.save_for_backward(means, vec![bsz, ng]);
+      |                         ^^^
+      |
+help: the leading underscore in `_ctx` marks it as unused, consider renaming it to `ctx`
+      |
+25169 -                     move |_ctx, ins| {
+25169 +                     move |ctx, ins| {
+      |
+
+error[E0425]: cannot find value `ctx` in this scope
+     --> crates/ft-api/src/lib.rs:25184:25
+      |
+25169 |                     move |_ctx, ins| {
+      |                           ---- `_ctx` defined here
+...
+25184 |                         ctx.save_for_backward(rstds, vec![bsz, ng]);
+      |                         ^^^
+      |
+help: the leading underscore in `_ctx` marks it as unused, consider renaming it to `ctx`
+      |
+25169 -                     move |_ctx, ins| {
+25169 +                     move |ctx, ins| {
+      |
+
+warning: unused variable: `ctx`
+    --> crates/ft-api/src/lib.rs:9925:27
+     |
+9925 |                     move |ctx, ins| {
+     |                           ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0425`.
+warning: `ft-api` (lib) generated 1 warning
+error: could not compile `ft-api` (lib) due to 2 previous errors; 1 warning emitted
