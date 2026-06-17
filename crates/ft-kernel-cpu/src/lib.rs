@@ -6709,6 +6709,86 @@ pub fn max_pool2d_forward_with_indices_f64(
     (out, arg_offsets)
 }
 
+/// f32 mirror of [`max_pool2d_forward_with_indices_f64`]: returns `(maxes,
+/// arg_offsets)` (the first-argmax within-plane offset per output), at f32
+/// precision. frankentorch-rosw9.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn max_pool2d_forward_with_indices_f32(
+    input: &[f32],
+    batch: usize,
+    ch: usize,
+    ih: usize,
+    iw: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    let mut out = vec![0.0f32; batch * ch * oh * ow];
+    let mut arg_offsets = vec![0.0f32; batch * ch * oh * ow];
+    out.par_chunks_mut(oh * ow)
+        .zip(arg_offsets.par_chunks_mut(oh * ow))
+        .enumerate()
+        .for_each(|(plane, (orow, arow))| {
+            let ibase = plane * ih * iw;
+            for oy in 0..oh {
+                let base_h = oy * sh;
+                for ox in 0..ow {
+                    let base_w = ox * sw;
+                    let mut m = f32::NEG_INFINITY;
+                    let mut arg = 0usize;
+                    for kr in 0..kh {
+                        let loc = (base_h + kr) * iw + base_w;
+                        for kc in 0..kw {
+                            let v = input[ibase + loc + kc];
+                            if v > m {
+                                m = v;
+                                arg = loc + kc;
+                            }
+                        }
+                    }
+                    let oidx = oy * ow + ox;
+                    orow[oidx] = m;
+                    arow[oidx] = arg as f32;
+                }
+            }
+        });
+    (out, arg_offsets)
+}
+
+/// f32 mirror of [`max_pool2d_backward_from_indices_f64`]: scatter `dout` to the
+/// saved argmax offsets, at f32 precision. frankentorch-rosw9.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn max_pool2d_backward_from_indices_f32(
+    dout: &[f32],
+    arg_offsets: &[f32],
+    batch: usize,
+    ch: usize,
+    ih: usize,
+    iw: usize,
+    oh: usize,
+    ow: usize,
+) -> Vec<f32> {
+    let mut din = vec![0.0f32; batch * ch * ih * iw];
+    din.par_chunks_mut(ih * iw)
+        .enumerate()
+        .for_each(|(plane, drow)| {
+            let dbase = plane * oh * ow;
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let oidx = dbase + oy * ow + ox;
+                    let arg = arg_offsets[oidx] as usize;
+                    drow[arg] += dout[oidx];
+                }
+            }
+        });
+    din
+}
+
 /// f32 mirror of [`max_pool2d_forward_f64`]: per output, the max over its `kh×kw`
 /// window, one pass parallel over `(batch,ch)` planes. Replaces the f32 op-graph
 /// (per-output narrow/amax/cat) the f32 no-grad path fell through to.
