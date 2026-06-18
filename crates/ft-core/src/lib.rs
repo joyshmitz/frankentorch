@@ -4492,6 +4492,20 @@ mod tests {
     }
 
     #[test]
+    fn dense_tensor_to_dtype_compacts_offset_float_view() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F32, Device::Cpu).with_storage_offset(2);
+        let tensor = DenseTensor::from_storage_f32(meta, vec![99.0, 98.0, 1.5, 2.5])
+            .expect("offset f32 tensor");
+
+        let cast = tensor.to_dtype(DType::F64).expect("cast offset f32");
+
+        assert_eq!(cast.meta().dtype(), DType::F64);
+        assert_eq!(cast.meta().storage_offset(), 0);
+        assert_eq!(cast.typed_storage().as_f64().unwrap(), &[1.5, 2.5]);
+        assert_eq!(cast.contiguous_values().unwrap(), &[1.5, 2.5]);
+    }
+
+    #[test]
     fn dense_tensor_to_dtype_same_is_clone() {
         let dt = DenseTensor::from_contiguous_values(vec![1.0, 2.0], vec![2], Device::Cpu)
             .expect("create tensor");
