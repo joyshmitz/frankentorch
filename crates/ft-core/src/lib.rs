@@ -5493,6 +5493,28 @@ mod tests {
     }
 
     #[test]
+    fn sparse_coo_empty_preserves_requested_complex128_dtype() {
+        let sparse = SparseCOOTensor::from_coords(
+            &[],
+            vec![],
+            vec![2, 2],
+            DType::Complex128,
+            Device::Cpu,
+        )
+        .unwrap();
+
+        assert_eq!(sparse.dtype(), DType::Complex128);
+        assert!(matches!(
+            sparse.values().typed_storage(),
+            TensorStorage::Complex128(values) if values.is_empty()
+        ));
+
+        let dense = sparse.to_dense().unwrap();
+        assert_eq!(dense.meta().dtype(), DType::Complex128);
+        assert_eq!(dense.contiguous_values_as_f64().unwrap(), &[0.0; 4]);
+    }
+
+    #[test]
     fn sparse_coo_index_out_of_bounds() {
         // Index [5, 0] is out of bounds for shape [3, 4] (row 5 >= 3)
         // indices shape [2, 1]: 2 sparse dims, 1 non-zero
