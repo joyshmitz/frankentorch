@@ -29097,6 +29097,111 @@ mod tests {
     }
 
     #[test]
+    fn softmax_log_softmax_strided_shift_invariance_and_exp_consistency() {
+        let shape = vec![3usize, 4usize, 2usize];
+        let meta64 = TensorMeta::from_shape(shape.clone(), DType::F64, Device::Cpu);
+        let meta32 = TensorMeta::from_shape(shape.clone(), DType::F32, Device::Cpu);
+        let dim = 1usize;
+        let outer = shape[0];
+        let reduce = shape[1];
+        let inner = shape[2];
+        let numel = outer * reduce * inner;
+
+        let data64: Vec<f64> = (0..numel)
+            .map(|i| ((i * 37 % 19) as f64 - 9.0) * 0.125 + ((i % 5) as f64) * 0.015625)
+            .collect();
+        let data32: Vec<f32> = data64.iter().map(|&v| v as f32).collect();
+
+        let mut shifted64 = data64.clone();
+        let mut shifted32 = data32.clone();
+        for o in 0..outer {
+            for i in 0..inner {
+                let shift64 = [16.0_f64, -8.0, 4.0, -2.0, 1.0, -0.5][o * inner + i];
+                let shift32 = shift64 as f32;
+                for r in 0..reduce {
+                    let idx = o * reduce * inner + r * inner + i;
+                    shifted64[idx] += shift64;
+                    shifted32[idx] += shift32;
+                }
+            }
+        }
+
+        let soft64 = softmax_dim_tensor_contiguous_f64(&data64, &meta64, dim).unwrap();
+        let soft64_shift =
+            softmax_dim_tensor_contiguous_f64(&shifted64, &meta64, dim).unwrap();
+        let log64 = log_softmax_dim_tensor_contiguous_f64(&data64, &meta64, dim).unwrap();
+        let log64_shift =
+            log_softmax_dim_tensor_contiguous_f64(&shifted64, &meta64, dim).unwrap();
+
+        let soft32 = super::softmax_dim_tensor_contiguous_f32(&data32, &meta32, dim).unwrap();
+        let soft32_shift =
+            super::softmax_dim_tensor_contiguous_f32(&shifted32, &meta32, dim).unwrap();
+        let log32 = super::log_softmax_dim_tensor_contiguous_f32(&data32, &meta32, dim).unwrap();
+        let log32_shift =
+            super::log_softmax_dim_tensor_contiguous_f32(&shifted32, &meta32, dim).unwrap();
+
+        for idx in 0..numel {
+            assert!(
+                (soft64[idx] - soft64_shift[idx]).abs() <= 2e-15,
+                "f64 softmax shift invariance failed at {idx}: {} vs {}",
+                soft64[idx],
+                soft64_shift[idx]
+            );
+            assert!(
+                (log64[idx] - log64_shift[idx]).abs() <= 2e-15,
+                "f64 log_softmax shift invariance failed at {idx}: {} vs {}",
+                log64[idx],
+                log64_shift[idx]
+            );
+            assert!(
+                (log64[idx].exp() - soft64[idx]).abs() <= 2e-15,
+                "f64 exp(log_softmax) != softmax at {idx}: {} vs {}",
+                log64[idx].exp(),
+                soft64[idx]
+            );
+
+            assert!(
+                (soft32[idx] - soft32_shift[idx]).abs() <= 2e-6,
+                "f32 softmax shift invariance failed at {idx}: {} vs {}",
+                soft32[idx],
+                soft32_shift[idx]
+            );
+            assert!(
+                (log32[idx] - log32_shift[idx]).abs() <= 2e-6,
+                "f32 log_softmax shift invariance failed at {idx}: {} vs {}",
+                log32[idx],
+                log32_shift[idx]
+            );
+            assert!(
+                (log32[idx].exp() - soft32[idx]).abs() <= 2e-6,
+                "f32 exp(log_softmax) != softmax at {idx}: {} vs {}",
+                log32[idx].exp(),
+                soft32[idx]
+            );
+        }
+
+        for o in 0..outer {
+            for i in 0..inner {
+                let mut sum64 = 0.0_f64;
+                let mut sum32 = 0.0_f32;
+                for r in 0..reduce {
+                    let idx = o * reduce * inner + r * inner + i;
+                    sum64 += soft64[idx];
+                    sum32 += soft32[idx];
+                }
+                assert!(
+                    (sum64 - 1.0).abs() <= 2e-15,
+                    "f64 strided lane ({o},{i}) sums to {sum64}"
+                );
+                assert!(
+                    (sum32 - 1.0).abs() <= 2e-6,
+                    "f32 strided lane ({o},{i}) sums to {sum32}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn log_softmax_dim_values() {
         let meta = TensorMeta::from_shape(vec![1, 3], DType::F64, Device::Cpu);
         let input = vec![1.0, 2.0, 3.0];
