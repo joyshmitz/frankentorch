@@ -902,20 +902,19 @@ impl<'a, D: Dataset> DataLoader<'a, D> {
                 )));
             }
         }
+        let batch = if let Some(batch) = self.dataset.collate_indices(batch_indices, session) {
+            batch?
+        } else {
+            // Collect samples for this batch
+            let mut samples = Vec::with_capacity(batch_size);
+            for &idx in batch_indices {
+                samples.push(self.dataset.get(idx));
+            }
+
+            // Collate: stack tensors along a new batch dimension
+            collate(session, &samples, batch_size)?
+        };
         self.position = batch_end;
-
-        if let Some(batch) = self.dataset.collate_indices(batch_indices, session) {
-            return batch.map(Some);
-        }
-
-        // Collect samples for this batch
-        let mut samples = Vec::with_capacity(batch_size);
-        for &idx in batch_indices {
-            samples.push(self.dataset.get(idx));
-        }
-
-        // Collate: stack tensors along a new batch dimension
-        let batch = collate(session, &samples, batch_size)?;
         Ok(Some(batch))
     }
 
@@ -2329,6 +2328,30 @@ mod tests {
             message.contains("values length does not match declared tensor shape"),
             "unexpected error: {message}"
         );
+    }
+
+    #[test]
+    fn dataloader_collate_error_does_not_advance_position() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ds = TensorDataset::new(vec![
+            DataItem::single("input", vec![1.0], vec![2]),
+            DataItem::single("input", vec![3.0, 4.0], vec![2]),
+            DataItem::single("input", vec![5.0, 6.0], vec![2]),
+        ]);
+        let config = DataLoaderConfig::new(2);
+        let mut loader = DataLoader::new(&ds, config);
+
+        for attempt in 0..2 {
+            let message = loader
+                .next_batch(&mut session)
+                .err()
+                .map(|err| err.to_string())
+                .unwrap_or_default();
+            assert!(
+                message.contains("values length does not match declared tensor shape"),
+                "attempt {attempt} unexpectedly advanced past malformed batch: {message}"
+            );
+        }
     }
 
     // ── Subset and random_split tests ──────────────────────────────────
