@@ -5271,6 +5271,29 @@ mod tests {
     }
 
     #[test]
+    fn sparse_coo_from_coords_nonempty_preserves_requested_f32_dtype() {
+        let coords = vec![vec![0, 1], vec![1, 0]];
+        let sparse = SparseCOOTensor::from_coords(
+            &coords,
+            vec![1.5, 2.5],
+            vec![2, 2],
+            DType::F32,
+            Device::Cpu,
+        )
+        .unwrap();
+
+        assert_eq!(sparse.dtype(), DType::F32);
+        match sparse.values().typed_storage() {
+            TensorStorage::F32(values) => assert_eq!(values.as_slice(), &[1.5f32, 2.5]),
+            other => panic!("expected F32 values storage, got {other:?}"),
+        }
+
+        let dense = sparse.to_dense().unwrap();
+        assert_eq!(dense.meta().dtype(), DType::F32);
+        assert_eq!(dense.contiguous_values_f32().unwrap(), &[0.0, 1.5, 2.5, 0.0]);
+    }
+
+    #[test]
     fn sparse_coo_empty() {
         let sparse =
             SparseCOOTensor::from_coords(&[], vec![], vec![5, 5], DType::F64, Device::Cpu).unwrap();
