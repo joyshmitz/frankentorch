@@ -6152,6 +6152,22 @@ mod tests {
     }
 
     #[test]
+    fn cosine_annealing_lr_schedule_golden_matches_torch() {
+        // Differential golden vs torch.optim.lr_scheduler.CosineAnnealingLR 2.12:
+        // base_lr=1, T_max=4, eta_min=0 -> [1,0.8535533906,0.5,0.1464466094,0]
+        // (eta_min+(base-eta_min)*(1+cos(pi*e/T_max))/2). frankentorch-u7ja4.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let opt = SGD::new(vec![x], 1.0);
+        let want = [1.0, 0.853_553_390_6, 0.5, 0.146_446_609_4, 0.0];
+        for (e, w) in want.iter().enumerate() {
+            let sch = CosineAnnealingLR::new(&opt, 4).eta_min(0.0).last_epoch(e as i64);
+            let lr = sch.get_lr()[0];
+            assert!((lr - w).abs() < 1e-9, "CosineAnnealingLR epoch {e} lr={lr} != {w}");
+        }
+    }
+
+    #[test]
     fn exponential_lr_schedule_golden_matches_torch() {
         // Differential golden vs torch.optim.lr_scheduler.ExponentialLR 2.12:
         // base_lr=1, gamma=0.9 -> [1,0.9,0.81,0.729,0.6561] over epochs 0..4
