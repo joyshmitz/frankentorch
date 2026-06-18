@@ -15956,6 +15956,12 @@ impl HingeEmbeddingLoss {
         input: TensorNodeId,
         target: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        if !self.margin.is_finite() {
+            return Err(incompatible_error(
+                "HingeEmbeddingLoss: margin must be finite",
+            ));
+        }
+
         // For y=1: loss = x
         // For y=-1: loss = max(0, margin - x)
         // Compose through autograd primitives so the gradient on input
@@ -21554,6 +21560,23 @@ mod tests {
             format!("{err:?}").contains("target labels must be 1.0 or -1.0"),
             "unexpected target-label error: {err:?}"
         );
+    }
+
+    #[test]
+    fn hinge_embedding_loss_rejects_non_finite_margin() {
+        for margin in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input = s.tensor_variable(vec![0.3], vec![1], false).unwrap();
+            let target = s.tensor_variable(vec![-1.0], vec![1], false).unwrap();
+            let loss = HingeEmbeddingLoss::new(margin);
+            let err = loss
+                .forward_hinge(&mut s, input, target)
+                .expect_err("non-finite margin must fail closed");
+            assert!(
+                format!("{err:?}").contains("margin must be finite"),
+                "unexpected non-finite margin error for {margin}: {err:?}"
+            );
+        }
     }
 
     #[test]
