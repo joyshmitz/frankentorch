@@ -2513,6 +2513,53 @@ mod tests {
     }
 
     #[test]
+    fn dataloader_custom_collate_error_does_not_advance_position() {
+        struct FailingCollateDataset;
+
+        impl Dataset for FailingCollateDataset {
+            fn len(&self) -> usize {
+                3
+            }
+
+            fn get(&self, _index: usize) -> DataItem {
+                DataItem::single("input", vec![0.0], vec![1])
+            }
+
+            fn collate_indices(
+                &self,
+                indices: &[usize],
+                _session: &mut FrankenTorchSession,
+            ) -> Option<Result<Batch, AutogradError>> {
+                if indices == [0, 1] {
+                    Some(Err(dataloader_error(
+                        "DataLoader: custom collate failed first batch",
+                    )))
+                } else {
+                    Some(Err(dataloader_error(
+                        "DataLoader: custom collate advanced past failed batch",
+                    )))
+                }
+            }
+        }
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ds = FailingCollateDataset;
+        let mut loader = DataLoader::new(&ds, DataLoaderConfig::new(2));
+
+        for attempt in 0..2 {
+            let message = loader
+                .next_batch(&mut session)
+                .err()
+                .map(|err| err.to_string())
+                .unwrap_or_default();
+            assert!(
+                message.contains("custom collate failed first batch"),
+                "attempt {attempt} unexpectedly advanced after custom collate error: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn dataloader_zero_batch_size_never_touches_samples() {
         struct CountingDataset {
             len: usize,
