@@ -5156,6 +5156,25 @@ mod tests {
     }
 
     #[test]
+    fn sparse_coo_from_coords_supports_rank2_dense_blocks() {
+        let coords = vec![vec![0, 1], vec![1, 0]];
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+
+        let sparse =
+            SparseCOOTensor::from_coords(&coords, values, vec![2, 2, 2, 2], DType::F64, Device::Cpu)
+                .unwrap();
+
+        assert_eq!(sparse.sparse_dim(), 2);
+        assert_eq!(sparse.values().meta().shape(), &[2, 2, 2]);
+
+        let dense = sparse.to_dense().unwrap();
+        let expected = vec![
+            0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        assert_eq!(dense.contiguous_values().unwrap(), expected.as_slice());
+    }
+
+    #[test]
     fn sparse_coo_empty() {
         let sparse =
             SparseCOOTensor::from_coords(&[], vec![], vec![5, 5], DType::F64, Device::Cpu).unwrap();
