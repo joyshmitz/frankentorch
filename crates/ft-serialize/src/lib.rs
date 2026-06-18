@@ -3623,6 +3623,117 @@ mod tests {
         }
     }
 
+    proptest! {
+        // No-mock native (FTSV) state-dict round-trip over ARBITRARY bit patterns
+        // (frankentorch-2ln64). The save path was heavily perf-churned (SWAR-pack
+        // f32/half, zero-copy saves, inline width-4 f64 decode), so reinterpret
+        // random u64/u32/u16 as f64/f32/f16/bf16 — reaching NaN payloads, +/-inf,
+        // -0.0, subnormals — and assert bit-exact (to_bits) recovery through
+        // encode_state_dict_to_bytes -> load_state_dict_from_bytes.
+        #[test]
+        fn prop_native_f64_roundtrip_preserves_all_bit_patterns(
+            bits in prop::collection::vec(any::<u64>(), 1..=20),
+            w4 in prop::collection::vec(any::<u64>(), 4..=4),
+        ) {
+            let vals: Vec<f64> = bits.iter().map(|&b| f64::from_bits(b)).collect();
+            let w4v: Vec<f64> = w4.iter().map(|&b| f64::from_bits(b)).collect();
+            let mut sd = BTreeMap::new();
+            sd.insert("a".to_string(), make_f64_tensor(vals.clone(), vec![vals.len()]));
+            // shape [4] exercises the rank-1 width-4 f64 fast decode path.
+            sd.insert("w4".to_string(), make_f64_tensor(w4v.clone(), vec![4]));
+            let bytes = super::encode_state_dict_to_bytes(&sd).expect("encode");
+            let loaded = load_state_dict_from_bytes(&bytes).expect("load");
+            prop_assert_eq!(loaded.len(), 2);
+            prop_assert_eq!(loaded["a"].meta().dtype(), DType::F64);
+            let ga = loaded["a"].contiguous_values().expect("a vals");
+            for i in 0..vals.len() {
+                prop_assert_eq!(ga[i].to_bits(), vals[i].to_bits());
+            }
+            let gw = loaded["w4"].contiguous_values().expect("w4 vals");
+            for i in 0..4 {
+                prop_assert_eq!(gw[i].to_bits(), w4v[i].to_bits());
+            }
+            let seed = det_seed(&[vals.len() as u64]);
+            let log = build_property_log(
+                "prop_native_f64_roundtrip_preserves_all_bit_patterns",
+                "strict",
+                seed,
+                seed,
+                det_seed(&[bytes.len() as u64]),
+                "native_f64_bitexact_roundtrip_ok",
+            );
+            assert_log_contract(&log);
+        }
+
+        #[test]
+        fn prop_native_f32_roundtrip_preserves_all_bit_patterns(
+            bits in prop::collection::vec(any::<u32>(), 1..=20),
+        ) {
+            let vals: Vec<f32> = bits.iter().map(|&b| f32::from_bits(b)).collect();
+            let meta = TensorMeta::from_shape(vec![vals.len()], DType::F32, Device::Cpu);
+            let t = DenseTensor::from_storage_f32(meta, vals.clone()).expect("f32 tensor");
+            let mut sd = BTreeMap::new();
+            sd.insert("w".to_string(), t);
+            let bytes = super::encode_state_dict_to_bytes(&sd).expect("encode");
+            let loaded = load_state_dict_from_bytes(&bytes).expect("load");
+            prop_assert_eq!(loaded["w"].meta().dtype(), DType::F32);
+            let got = loaded["w"].contiguous_values_f32().expect("f32 vals");
+            for i in 0..vals.len() {
+                prop_assert_eq!(got[i].to_bits(), vals[i].to_bits());
+            }
+            let seed = det_seed(&[vals.len() as u64]);
+            let log = build_property_log(
+                "prop_native_f32_roundtrip_preserves_all_bit_patterns",
+                "strict",
+                seed,
+                seed,
+                det_seed(&[bytes.len() as u64]),
+                "native_f32_bitexact_roundtrip_ok",
+            );
+            assert_log_contract(&log);
+        }
+
+        #[test]
+        fn prop_native_f16_bf16_roundtrip_preserves_all_bit_patterns(
+            bits in prop::collection::vec(any::<u16>(), 1..=20),
+        ) {
+            let n = bits.len();
+            let f16v: Vec<Float16> = bits.iter().map(|&b| Float16::from_bits(b)).collect();
+            let bf16v: Vec<BFloat16> = bits.iter().map(|&b| BFloat16::from_bits(b)).collect();
+            let f16_meta = TensorMeta::from_shape(vec![n], DType::F16, Device::Cpu);
+            let bf16_meta = TensorMeta::from_shape(vec![n], DType::BF16, Device::Cpu);
+            let mut sd = BTreeMap::new();
+            sd.insert(
+                "h".to_string(),
+                DenseTensor::from_storage_f16(f16_meta, f16v.clone()).expect("f16 tensor"),
+            );
+            sd.insert(
+                "bf".to_string(),
+                DenseTensor::from_storage_bf16(bf16_meta, bf16v.clone()).expect("bf16 tensor"),
+            );
+            let bytes = super::encode_state_dict_to_bytes(&sd).expect("encode");
+            let loaded = load_state_dict_from_bytes(&bytes).expect("load");
+            prop_assert_eq!(loaded["h"].meta().dtype(), DType::F16);
+            prop_assert_eq!(loaded["bf"].meta().dtype(), DType::BF16);
+            let gh = loaded["h"].typed_storage().as_f16().expect("f16 storage");
+            let gbf = loaded["bf"].typed_storage().as_bf16().expect("bf16 storage");
+            for i in 0..n {
+                prop_assert_eq!(gh[i].to_bits(), f16v[i].to_bits());
+                prop_assert_eq!(gbf[i].to_bits(), bf16v[i].to_bits());
+            }
+            let seed = det_seed(&[n as u64]);
+            let log = build_property_log(
+                "prop_native_f16_bf16_roundtrip_preserves_all_bit_patterns",
+                "strict",
+                seed,
+                seed,
+                det_seed(&[bytes.len() as u64]),
+                "native_half_bitexact_roundtrip_ok",
+            );
+            assert_log_contract(&log);
+        }
+    }
+
     // ── bd-437p: hardened encode/decode and boundary cases ──
 
     #[test]
