@@ -4312,6 +4312,8 @@ impl CyclicLR {
     /// * `step_size_up` - Number of iterations in the increasing half of a cycle.
     pub fn new(optimizer: &dyn Optimizer, base_lr: f64, max_lr: f64, step_size_up: usize) -> Self {
         let _ = optimizer;
+        let base_lr = finite_non_negative_factor(base_lr);
+        let max_lr = finite_non_negative_factor(max_lr);
         // step_size_up=0 (and the default step_size_down=step_size_up=0)
         // make `compute_lr` divide by zero in two places: the integer
         // `iteration / total_size` panics, and the float
@@ -4413,8 +4415,8 @@ impl LRScheduler for CyclicLR {
         }
         for (key, val) in &state.extra {
             match key.as_str() {
-                "base_lr" => self.base_lr = *val,
-                "max_lr" => self.max_lr = *val,
+                "base_lr" => self.base_lr = finite_non_negative_factor(*val),
+                "max_lr" => self.max_lr = finite_non_negative_factor(*val),
                 "step_size_up" => {
                     if let Some(step_size_up) = decode_exact_usize_field(*val, 1) {
                         self.step_size_up = step_size_up;
@@ -12204,6 +12206,51 @@ mod tests {
             let lr = opt.get_lr();
             assert!((lr - 0.001).abs() < 1e-12, "invalid gamma {gamma:?}");
             assert!(lr.is_finite(), "lr must stay finite for {gamma:?}");
+        }
+    }
+
+    #[test]
+    fn cyclic_lr_invalid_bounds_are_clamped() {
+        for bound in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.5] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_base = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("variable");
+            let mut opt_base = SGD::new(vec![x_base], 0.1);
+            let mut base_scheduler = CyclicLR::new(&opt_base, bound, 0.01, 1);
+
+            base_scheduler.step(&mut opt_base, None);
+            assert_eq!(opt_base.get_lr(), 0.0, "invalid base_lr {bound:?}");
+            assert!(opt_base.get_lr().is_finite(), "base lr must remain finite");
+            assert!(opt_base.get_lr() >= 0.0, "base lr must remain non-negative");
+
+            let x_max = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("variable");
+            let mut opt_max = SGD::new(vec![x_max], 0.1);
+            let mut max_scheduler = CyclicLR::new(&opt_max, 0.001, bound, 1);
+
+            max_scheduler.step(&mut opt_max, None);
+            max_scheduler.step(&mut opt_max, None);
+            assert_eq!(opt_max.get_lr(), 0.0, "invalid max_lr {bound:?}");
+            assert!(opt_max.get_lr().is_finite(), "max lr must remain finite");
+            assert!(opt_max.get_lr() >= 0.0, "max lr must remain non-negative");
+
+            max_scheduler.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![0.0],
+                extra: vec![
+                    ("base_lr".to_owned(), bound),
+                    ("max_lr".to_owned(), bound),
+                    ("step_size_up".to_owned(), 1.0),
+                    ("step_size_down".to_owned(), 1.0),
+                    ("iteration".to_owned(), 1.0),
+                ],
+            });
+            max_scheduler.step(&mut opt_max, None);
+            assert_eq!(opt_max.get_lr(), 0.0, "loaded invalid bound {bound:?}");
+            assert!(opt_max.get_lr().is_finite(), "loaded lr must remain finite");
+            assert!(opt_max.get_lr() >= 0.0, "loaded lr must remain non-negative");
         }
     }
 
