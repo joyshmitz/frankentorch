@@ -1595,6 +1595,32 @@ mod tests {
     }
 
     #[test]
+    fn tensor_dataset_columnar_cache_collates_scalar_samples() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ds = TensorDataset::new(vec![
+            DataItem::single("input", vec![1.5], Vec::new()),
+            DataItem::single("input", vec![-2.0], Vec::new()),
+            DataItem::single("input", vec![4.25], Vec::new()),
+        ]);
+        assert!(ds.columns.is_some());
+
+        let mut loader = DataLoader::new(&ds, DataLoaderConfig::new(3));
+        let batch = loader.next_batch(&mut session).unwrap().unwrap();
+        let input = batch.input().unwrap();
+        assert_eq!(session.tensor_shape(input).unwrap(), vec![3]);
+        assert_eq!(
+            session.tensor_values(input).unwrap(),
+            vec![1.5, -2.0, 4.25]
+        );
+
+        let mut shuffled = DataLoader::with_indices(&ds, vec![2, 0], DataLoaderConfig::new(2));
+        let batch = shuffled.next_batch(&mut session).unwrap().unwrap();
+        let input = batch.input().unwrap();
+        assert_eq!(session.tensor_shape(input).unwrap(), vec![2]);
+        assert_eq!(session.tensor_values(input).unwrap(), vec![4.25, 1.5]);
+    }
+
+    #[test]
     fn tensor_dataset_columnar_cache_falls_back_for_mismatched_shapes() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let ds = TensorDataset::new(vec![
