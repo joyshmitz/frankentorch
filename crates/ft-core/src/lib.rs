@@ -5352,6 +5352,36 @@ mod tests {
     }
 
     #[test]
+    fn sparse_coo_from_coords_nonempty_preserves_requested_complex64_dtype() {
+        let coords = vec![vec![0, 1], vec![1, 0]];
+        let sparse = SparseCOOTensor::from_coords(
+            &coords,
+            vec![1.5, 2.5],
+            vec![2, 2],
+            DType::Complex64,
+            Device::Cpu,
+        )
+        .unwrap();
+
+        assert_eq!(sparse.dtype(), DType::Complex64);
+        match sparse.values().typed_storage() {
+            TensorStorage::Complex64(values) => {
+                let vals: Vec<(f32, f32)> =
+                    values.iter().map(|value| (value.re, value.im)).collect();
+                assert_eq!(vals, vec![(1.5, 0.0), (2.5, 0.0)]);
+            }
+            other => panic!("expected Complex64 values storage, got {other:?}"),
+        }
+
+        let dense = sparse.to_dense().unwrap();
+        assert_eq!(dense.meta().dtype(), DType::Complex64);
+        assert_eq!(
+            dense.contiguous_values_as_f64().unwrap(),
+            &[0.0, 1.5, 2.5, 0.0]
+        );
+    }
+
+    #[test]
     fn sparse_coo_empty() {
         let sparse =
             SparseCOOTensor::from_coords(&[], vec![], vec![5, 5], DType::F64, Device::Cpu).unwrap();
