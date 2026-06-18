@@ -3091,7 +3091,7 @@ impl LRScheduler for LinearLR {
         }
         for (key, val) in &state.extra {
             match key.as_str() {
-                "initial_lr" => self.initial_lr = *val,
+                "initial_lr" => self.initial_lr = finite_non_negative_factor(*val),
                 "start_factor" => self.start_factor = finite_non_negative_factor(*val),
                 "end_factor" => self.end_factor = finite_non_negative_factor(*val),
                 "total_iters" => {
@@ -4110,7 +4110,7 @@ impl LRScheduler for PolynomialLR {
         }
         for (key, val) in &state.extra {
             match key.as_str() {
-                "initial_lr" => self.initial_lr = *val,
+                "initial_lr" => self.initial_lr = finite_non_negative_factor(*val),
                 "total_iters" => {
                     if let Some(total_iters) = decode_exact_usize_field(*val, 0) {
                         self.total_iters = total_iters;
@@ -4193,7 +4193,7 @@ impl LRScheduler for ConstantLR {
         }
         for (key, val) in &state.extra {
             match key.as_str() {
-                "initial_lr" => self.initial_lr = *val,
+                "initial_lr" => self.initial_lr = finite_non_negative_factor(*val),
                 "factor" => self.factor = finite_non_negative_factor(*val),
                 "total_iters" => {
                     if let Some(total_iters) = decode_exact_usize_field(*val, 0) {
@@ -12038,6 +12038,66 @@ mod tests {
             sched.step(&mut opt, Some(0));
             assert_eq!(opt.get_lr(), 0.0, "loaded invalid factor {factor:?}");
             assert!(opt.get_lr().is_finite(), "loaded lr must remain finite");
+        }
+    }
+
+    #[test]
+    fn warmup_schedulers_clamp_loaded_invalid_initial_lr() {
+        for initial_lr in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+            let x = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut sched = LinearLR::new(&opt).start_factor(1.0).end_factor(1.0);
+            sched.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![1.0],
+                extra: vec![
+                    ("initial_lr".to_owned(), initial_lr),
+                    ("start_factor".to_owned(), 1.0),
+                    ("end_factor".to_owned(), 1.0),
+                    ("total_iters".to_owned(), 5.0),
+                ],
+            });
+            sched.step(&mut opt, Some(0));
+            assert_eq!(opt.get_lr(), 0.0, "LinearLR initial_lr {initial_lr:?}");
+            assert!(opt.get_lr().is_finite());
+
+            let x = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut sched = PolynomialLR::new(&opt, 10, 1.0);
+            sched.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![1.0],
+                extra: vec![
+                    ("initial_lr".to_owned(), initial_lr),
+                    ("total_iters".to_owned(), 10.0),
+                    ("power".to_owned(), 1.0),
+                ],
+            });
+            sched.step(&mut opt, Some(5));
+            assert_eq!(
+                opt.get_lr(),
+                0.0,
+                "PolynomialLR initial_lr {initial_lr:?}"
+            );
+            assert!(opt.get_lr().is_finite());
+
+            let x = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut sched = ConstantLR::new(&opt, 0.5, 3);
+            sched.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![1.0],
+                extra: vec![
+                    ("initial_lr".to_owned(), initial_lr),
+                    ("factor".to_owned(), 0.5),
+                    ("total_iters".to_owned(), 3.0),
+                ],
+            });
+            sched.step(&mut opt, Some(0));
+            assert_eq!(opt.get_lr(), 0.0, "ConstantLR initial_lr {initial_lr:?}");
+            assert!(opt.get_lr().is_finite());
         }
     }
 
