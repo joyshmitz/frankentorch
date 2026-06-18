@@ -3536,6 +3536,78 @@ mod tests {
         }
     }
 
+    proptest! {
+        // No-mock safetensors round-trip over ARBITRARY bit patterns
+        // (frankentorch-s7mwc). Reinterpreting random u64/u32 as f64/f32 reaches
+        // NaN payloads, +/-inf, -0.0, subnormals, and MIN/MAX — bit patterns the
+        // fixed per-dtype round-trip tests never hit — and the two-entry state dict
+        // exercises multi-tensor ordering/offsets. Round-trip must be bit-exact.
+        #[test]
+        fn prop_safetensors_f64_roundtrip_preserves_all_bit_patterns(
+            raw in prop::collection::vec(any::<u64>(), 1..=24),
+        ) {
+            let n = raw.len();
+            let values: Vec<f64> = raw.iter().map(|&b| f64::from_bits(b)).collect();
+            let mut sd = BTreeMap::new();
+            sd.insert("a".to_string(), make_f64_tensor(values.clone(), vec![n]));
+            sd.insert("b.weight".to_string(), make_f64_tensor(values.clone(), vec![n, 1]));
+            let bytes = super::save_safetensors_to_bytes(&sd, None).expect("save f64");
+            let loaded = load_safetensors_from_bytes(&bytes).expect("load f64");
+            prop_assert_eq!(loaded.len(), 2);
+            for (key, shape) in [("a", vec![n]), ("b.weight", vec![n, 1])] {
+                let t = &loaded[key];
+                prop_assert_eq!(t.meta().shape(), shape.as_slice());
+                prop_assert_eq!(t.meta().dtype(), DType::F64);
+                let got = t.contiguous_values().expect("f64 vals");
+                for i in 0..n {
+                    prop_assert_eq!(got[i].to_bits(), values[i].to_bits());
+                }
+            }
+            let seed = det_seed(&[n as u64]);
+            let log = build_property_log(
+                "prop_safetensors_f64_roundtrip_preserves_all_bit_patterns",
+                "strict",
+                seed,
+                seed,
+                det_seed(&[bytes.len() as u64]),
+                "safetensors_f64_bitexact_roundtrip_ok",
+            );
+            assert_log_contract(&log);
+        }
+
+        #[test]
+        fn prop_safetensors_f32_roundtrip_preserves_all_bit_patterns(
+            raw in prop::collection::vec(any::<u32>(), 1..=24),
+        ) {
+            let n = raw.len();
+            let values: Vec<f32> = raw.iter().map(|&b| f32::from_bits(b)).collect();
+            let meta = TensorMeta::from_shape(vec![n], DType::F32, Device::Cpu);
+            let t = DenseTensor::from_storage_f32(meta, values.clone()).expect("f32 tensor");
+            let mut sd = BTreeMap::new();
+            sd.insert("w".to_string(), t);
+            let bytes = super::save_safetensors_to_bytes(&sd, None).expect("save f32");
+            let loaded = load_safetensors_from_bytes(&bytes).expect("load f32");
+            let lt = &loaded["w"];
+            let expected_shape = vec![n];
+            prop_assert_eq!(lt.meta().shape(), expected_shape.as_slice());
+            prop_assert_eq!(lt.meta().dtype(), DType::F32);
+            let got = lt.contiguous_values_f32().expect("f32 vals");
+            for i in 0..n {
+                prop_assert_eq!(got[i].to_bits(), values[i].to_bits());
+            }
+            let seed = det_seed(&[n as u64]);
+            let log = build_property_log(
+                "prop_safetensors_f32_roundtrip_preserves_all_bit_patterns",
+                "strict",
+                seed,
+                seed,
+                det_seed(&[bytes.len() as u64]),
+                "safetensors_f32_bitexact_roundtrip_ok",
+            );
+            assert_log_contract(&log);
+        }
+    }
+
     // ── bd-437p: hardened encode/decode and boundary cases ──
 
     #[test]
