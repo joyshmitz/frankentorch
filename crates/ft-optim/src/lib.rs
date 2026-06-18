@@ -2309,7 +2309,7 @@ impl StepLR {
     /// Set the multiplicative decay factor (default: 0.1).
     #[must_use]
     pub fn gamma(mut self, gamma: f64) -> Self {
-        self.gamma = gamma;
+        self.gamma = finite_non_negative_factor(gamma);
         self
     }
 
@@ -2395,7 +2395,7 @@ impl LRScheduler for StepLR {
                         self.step_size = step_size;
                     }
                 }
-                "gamma" => self.gamma = *val,
+                "gamma" => self.gamma = finite_non_negative_factor(*val),
                 _ => {}
             }
         }
@@ -2441,7 +2441,7 @@ impl MultiStepLR {
     /// Set the multiplicative decay factor (default: 0.1).
     #[must_use]
     pub fn gamma(mut self, gamma: f64) -> Self {
-        self.gamma = gamma;
+        self.gamma = finite_non_negative_factor(gamma);
         self
     }
 
@@ -2534,7 +2534,7 @@ impl LRScheduler for MultiStepLR {
         for (key, val) in &state.extra {
             match key.as_str() {
                 "initial_lr" => self.initial_lr = *val,
-                "gamma" => self.gamma = *val,
+                "gamma" => self.gamma = finite_non_negative_factor(*val),
                 _ => {
                     if let Some(index) = key
                         .strip_prefix("milestone_")
@@ -2876,7 +2876,7 @@ impl ExponentialLR {
         let initial_lr = optimizer.get_lr();
         Self {
             initial_lr,
-            gamma,
+            gamma: finite_non_negative_factor(gamma),
             last_epoch: -1,
             last_lr: initial_lr,
             verbose: false,
@@ -2954,7 +2954,7 @@ impl LRScheduler for ExponentialLR {
         for (key, val) in &state.extra {
             match key.as_str() {
                 "initial_lr" => self.initial_lr = *val,
-                "gamma" => self.gamma = *val,
+                "gamma" => self.gamma = finite_non_negative_factor(*val),
                 _ => {}
             }
         }
@@ -9526,6 +9526,96 @@ mod tests {
                 "lr should remain constant with gamma=1.0"
             );
         }
+    }
+
+    #[test]
+    fn decay_lr_schedulers_clamp_invalid_gamma_to_zero() {
+        for gamma in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.5] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("var");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut scheduler = StepLR::new(&opt, 1).gamma(gamma);
+            scheduler.step(&mut opt, Some(1));
+            assert_eq!(opt.get_lr(), 0.0, "StepLR gamma {gamma:?}");
+            assert!(opt.get_lr().is_finite(), "StepLR lr must stay finite");
+
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("var");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut scheduler = MultiStepLR::new(&opt, vec![1]).gamma(gamma);
+            scheduler.step(&mut opt, Some(1));
+            assert_eq!(opt.get_lr(), 0.0, "MultiStepLR gamma {gamma:?}");
+            assert!(opt.get_lr().is_finite(), "MultiStepLR lr must stay finite");
+
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("var");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut scheduler = ExponentialLR::new(&opt, gamma);
+            scheduler.step(&mut opt, Some(1));
+            assert_eq!(opt.get_lr(), 0.0, "ExponentialLR gamma {gamma:?}");
+            assert!(
+                opt.get_lr().is_finite(),
+                "ExponentialLR lr must stay finite"
+            );
+        }
+    }
+
+    #[test]
+    fn decay_lr_schedulers_clamp_loaded_invalid_gamma_to_zero() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = StepLR::new(&opt, 1).gamma(0.5);
+        scheduler.load_state_dict(SchedulerState {
+            last_epoch: -1,
+            last_lrs: vec![1.0],
+            extra: vec![
+                ("initial_lr".to_owned(), 1.0),
+                ("step_size".to_owned(), 1.0),
+                ("gamma".to_owned(), f64::NAN),
+            ],
+        });
+        scheduler.step(&mut opt, Some(1));
+        assert_eq!(opt.get_lr(), 0.0);
+
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = MultiStepLR::new(&opt, vec![1]).gamma(0.5);
+        scheduler.load_state_dict(SchedulerState {
+            last_epoch: -1,
+            last_lrs: vec![1.0],
+            extra: vec![
+                ("initial_lr".to_owned(), 1.0),
+                ("gamma".to_owned(), f64::INFINITY),
+                ("milestone_0".to_owned(), 1.0),
+            ],
+        });
+        scheduler.step(&mut opt, Some(1));
+        assert_eq!(opt.get_lr(), 0.0);
+
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = ExponentialLR::new(&opt, 0.5);
+        scheduler.load_state_dict(SchedulerState {
+            last_epoch: -1,
+            last_lrs: vec![1.0],
+            extra: vec![
+                ("initial_lr".to_owned(), 1.0),
+                ("gamma".to_owned(), -0.5),
+            ],
+        });
+        scheduler.step(&mut opt, Some(1));
+        assert_eq!(opt.get_lr(), 0.0);
     }
 
     #[test]
