@@ -2277,6 +2277,31 @@ fn coo_coordinate(
         .collect()
 }
 
+fn dense_tensor_from_complex128_values(
+    values: Vec<Complex128>,
+    shape: Vec<usize>,
+    dtype: DType,
+    device: Device,
+) -> Result<DenseTensor, DenseTensorError> {
+    let meta = TensorMeta::from_shape(shape, dtype, device);
+    let storage = match dtype {
+        DType::Complex64 => {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+            {
+                TensorStorage::Complex64(Arc::new(
+                    values
+                        .into_iter()
+                        .map(|value| Complex64::new(value.re as f32, value.im as f32))
+                        .collect(),
+                ))
+            }
+        }
+        DType::Complex128 => TensorStorage::Complex128(Arc::new(values)),
+        _ => return Err(DenseTensorError::UnsupportedDType(dtype)),
+    };
+    DenseTensor::from_typed_storage(meta, storage)
+}
+
 /// Sparse tensor in COO (Coordinate) format.
 ///
 /// COO format stores sparse tensors as a pair of tensors:
@@ -2556,6 +2581,10 @@ impl SparseCOOTensor {
     /// This allocates a new dense tensor with zeros and fills in the non-zero values.
     pub fn to_dense(&self) -> Result<DenseTensor, SparseTensorError> {
         let numel = checked_shape_numel(&self.dense_shape)?;
+        if self.dtype().is_complex() {
+            return self.to_dense_complex(numel);
+        }
+
         let mut dense_data = vec![0.0f64; numel];
 
         let nnz = self.nnz();
@@ -2618,6 +2647,70 @@ impl SparseCOOTensor {
         let result =
             DenseTensor::from_contiguous_values(dense_data, self.dense_shape.clone(), self.device)?;
         Ok(result.to_dtype(self.dtype())?)
+    }
+
+    fn to_dense_complex(&self, numel: usize) -> Result<DenseTensor, SparseTensorError> {
+        let mut dense_data = vec![Complex128::new(0.0, 0.0); numel];
+
+        let nnz = self.nnz();
+        if nnz == 0 {
+            return Ok(dense_tensor_from_complex128_values(
+                dense_data,
+                self.dense_shape.clone(),
+                self.dtype(),
+                self.device,
+            )?);
+        }
+
+        let indices_data = self.indices.contiguous_values()?;
+        let values_data = self.values.contiguous_complex_values_as_complex128()?;
+        let strides = contiguous_strides(&self.dense_shape);
+
+        if self.sparse_dim == self.dense_shape.len() {
+            for i in 0..nnz {
+                let mut linear_idx = 0usize;
+                for d in 0..self.sparse_dim {
+                    let idx = indices_data[d * nnz + i];
+                    if idx < 0 || (idx as usize) >= self.dense_shape[d] {
+                        return Err(SparseTensorError::IndexOutOfBounds {
+                            dim: d,
+                            index: idx,
+                            size: self.dense_shape[d],
+                        });
+                    }
+                    linear_idx += (idx as usize) * strides[d];
+                }
+                dense_data[linear_idx] += values_data[i];
+            }
+        } else {
+            let dense_dims = &self.dense_shape[self.sparse_dim..];
+            let dense_numel = checked_shape_numel(dense_dims)?;
+
+            for i in 0..nnz {
+                let mut sparse_linear_idx = 0usize;
+                for d in 0..self.sparse_dim {
+                    let idx = indices_data[d * nnz + i];
+                    if idx < 0 || (idx as usize) >= self.dense_shape[d] {
+                        return Err(SparseTensorError::IndexOutOfBounds {
+                            dim: d,
+                            index: idx,
+                            size: self.dense_shape[d],
+                        });
+                    }
+                    sparse_linear_idx += (idx as usize) * strides[d];
+                }
+                for j in 0..dense_numel {
+                    dense_data[sparse_linear_idx + j] += values_data[i * dense_numel + j];
+                }
+            }
+        }
+
+        Ok(dense_tensor_from_complex128_values(
+            dense_data,
+            self.dense_shape.clone(),
+            self.dtype(),
+            self.device,
+        )?)
     }
 }
 
@@ -5289,6 +5382,36 @@ mod tests {
         let expected = vec![0.0, 3.5, 0.0, 0.0];
         let actual = dense.contiguous_values().unwrap();
         assert_eq!(actual, expected.as_slice());
+    }
+
+    #[test]
+    fn sparse_coo_to_dense_preserves_complex_imaginary_values() {
+        let indices =
+            DenseI64Tensor::from_contiguous_values(vec![0, 0, 1, 1, 1, 0], vec![2, 3], Device::Cpu)
+                .unwrap();
+        let values_meta = TensorMeta::from_shape(vec![3], DType::Complex64, Device::Cpu);
+        let values_storage = TensorStorage::Complex64(Arc::new(vec![
+            Complex64::new(1.0, 2.0),
+            Complex64::new(3.0, -0.5),
+            Complex64::new(-4.0, 5.0),
+        ]));
+        let values = DenseTensor::from_typed_storage(values_meta, values_storage).unwrap();
+        let sparse = SparseCOOTensor::new(indices, values, vec![2, 2], false).unwrap();
+
+        let dense = sparse.to_dense().unwrap();
+
+        assert_eq!(dense.meta().dtype(), DType::Complex64);
+        match dense.typed_storage() {
+            TensorStorage::Complex64(values) => {
+                let values: Vec<(f32, f32)> =
+                    values.iter().map(|value| (value.re, value.im)).collect();
+                assert_eq!(
+                    values,
+                    vec![(0.0, 0.0), (4.0, 1.5), (-4.0, 5.0), (0.0, 0.0)]
+                );
+            }
+            other => panic!("expected Complex64 dense storage, got {other:?}"),
+        }
     }
 
     #[test]
