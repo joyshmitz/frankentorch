@@ -3261,6 +3261,24 @@ mod tests {
     }
 
     #[test]
+    fn dense_view_preserves_version_counter() {
+        let mut tensor =
+            DenseTensor::from_contiguous_values(vec![1.0, 2.0, 3.0, 4.0], vec![4], Device::Cpu)
+                .unwrap();
+        tensor
+            .update_contiguous_values(&[5.0, 6.0, 7.0, 8.0])
+            .unwrap();
+
+        let view = tensor.view(vec![2, 2]).unwrap();
+
+        assert_ne!(view.id(), tensor.id());
+        assert_eq!(view.storage_id(), tensor.storage_id());
+        assert_eq!(view.version(), tensor.version());
+        assert_eq!(view.version(), 1);
+        assert_eq!(view.contiguous_values().unwrap(), &[5.0, 6.0, 7.0, 8.0]);
+    }
+
+    #[test]
     fn dense_scalar_view_preserves_storage_offset() {
         let meta = TensorMeta::from_shape(vec![1], DType::F64, Device::Cpu).with_storage_offset(1);
         let tensor = DenseTensor::from_storage(meta, vec![99.0, 7.0]).unwrap();
