@@ -128,6 +128,14 @@ fn next_scheduler_epoch(last_epoch: i64) -> i64 {
     last_epoch.saturating_add(1)
 }
 
+fn finite_non_negative_factor(value: f64) -> f64 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
 fn load_param_gradient(
     session: &FrankenTorchSession,
     param: TensorNodeId,
@@ -3470,7 +3478,7 @@ impl LambdaLR {
         if epoch < 0 {
             return self.initial_lr;
         }
-        let multiplier = (self.lr_lambda)(epoch).max(0.0);
+        let multiplier = finite_non_negative_factor((self.lr_lambda)(epoch));
         self.initial_lr * multiplier
     }
 }
@@ -4232,7 +4240,7 @@ impl LRScheduler for MultiplicativeLR {
             optimizer.set_lr(self.initial_lr);
             self.last_lr = self.initial_lr;
         } else {
-            let factor = (self.factor_fn)(new_epoch);
+            let factor = finite_non_negative_factor((self.factor_fn)(new_epoch));
             let new_lr = self.last_lr * factor;
             optimizer.set_lr(new_lr);
             self.last_lr = new_lr;
@@ -10498,6 +10506,24 @@ mod tests {
     }
 
     #[test]
+    fn lambda_lr_non_finite_multiplier_is_clamped() {
+        for multiplier in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("var");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut scheduler = LambdaLR::new(&opt, move |_epoch| multiplier);
+
+            scheduler.step(&mut opt, Some(0));
+
+            let lr = opt.get_lr();
+            assert_eq!(lr, 0.0, "non-finite multiplier {multiplier:?}");
+            assert!(lr.is_finite(), "lr must stay finite for {multiplier:?}");
+        }
+    }
+
+    #[test]
     fn lambda_lr_state_dict_round_trip() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session
@@ -11996,6 +12022,27 @@ mod tests {
 
         scheduler.step(&mut opt, None); // epoch 2: lr *= 0.5 → 0.25
         assert!((opt.get_lr() - 0.25).abs() < 1e-10);
+    }
+
+    #[test]
+    fn multiplicative_lr_invalid_factor_is_clamped() {
+        for factor in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -2.0] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("variable");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut scheduler = MultiplicativeLR::new(&opt, move |_epoch| factor);
+
+            scheduler.step(&mut opt, None);
+            assert_eq!(opt.get_lr(), 1.0, "epoch 0 keeps initial lr");
+
+            scheduler.step(&mut opt, None);
+
+            let lr = opt.get_lr();
+            assert_eq!(lr, 0.0, "invalid factor {factor:?}");
+            assert!(lr.is_finite(), "lr must stay finite for {factor:?}");
+        }
     }
 
     #[test]
