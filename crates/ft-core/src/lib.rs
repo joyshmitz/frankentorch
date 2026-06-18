@@ -2956,6 +2956,10 @@ impl SparseCSRTensor {
             .ok_or_else(|| DenseTensorError::ShapeOverflow {
                 shape: vec![nrows, ncols],
             })?;
+        if self.dtype().is_complex() {
+            return self.to_dense_complex(numel);
+        }
+
         let mut dense_data = vec![0.0f64; numel];
 
         let crow_data = self.crow_indices.contiguous_values()?;
@@ -2974,6 +2978,31 @@ impl SparseCSRTensor {
         let result =
             DenseTensor::from_contiguous_values(dense_data, vec![nrows, ncols], self.device)?;
         Ok(result.to_dtype(self.dtype())?)
+    }
+
+    fn to_dense_complex(&self, numel: usize) -> Result<DenseTensor, SparseTensorError> {
+        let [nrows, ncols] = self.shape;
+        let mut dense_data = vec![Complex128::new(0.0, 0.0); numel];
+
+        let crow_data = self.crow_indices.contiguous_values()?;
+        let col_data = self.col_indices.contiguous_values()?;
+        let values_data = self.values.contiguous_complex_values_as_complex128()?;
+
+        for row in 0..nrows {
+            let start = crow_data[row] as usize;
+            let end = crow_data[row + 1] as usize;
+            for idx in start..end {
+                let col = col_data[idx] as usize;
+                dense_data[row * ncols + col] = values_data[idx];
+            }
+        }
+
+        Ok(dense_tensor_from_complex128_values(
+            dense_data,
+            vec![nrows, ncols],
+            self.dtype(),
+            self.device,
+        )?)
     }
 }
 
@@ -5829,6 +5858,44 @@ mod tests {
         let expected = vec![1.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0, 0.0];
         let actual = dense.contiguous_values().unwrap();
         assert_eq!(actual, expected.as_slice());
+    }
+
+    #[test]
+    fn sparse_csr_to_dense_preserves_complex_imaginary_values() {
+        let crow =
+            DenseI64Tensor::from_contiguous_values(vec![0, 2, 3], vec![3], Device::Cpu).unwrap();
+        let col =
+            DenseI64Tensor::from_contiguous_values(vec![0, 2, 1], vec![3], Device::Cpu).unwrap();
+        let values_meta = TensorMeta::from_shape(vec![3], DType::Complex128, Device::Cpu);
+        let values_storage = TensorStorage::Complex128(Arc::new(vec![
+            Complex128::new(1.0, 2.0),
+            Complex128::new(3.0, -4.0),
+            Complex128::new(-5.0, 6.0),
+        ]));
+        let values = DenseTensor::from_typed_storage(values_meta, values_storage).unwrap();
+        let csr = SparseCSRTensor::new(crow, col, values, [2, 3]).unwrap();
+
+        let dense = csr.to_dense().unwrap();
+
+        assert_eq!(dense.meta().dtype(), DType::Complex128);
+        match dense.typed_storage() {
+            TensorStorage::Complex128(values) => {
+                let values: Vec<(f64, f64)> =
+                    values.iter().map(|value| (value.re, value.im)).collect();
+                assert_eq!(
+                    values,
+                    vec![
+                        (1.0, 2.0),
+                        (0.0, 0.0),
+                        (3.0, -4.0),
+                        (0.0, 0.0),
+                        (-5.0, 6.0),
+                        (0.0, 0.0),
+                    ]
+                );
+            }
+            other => panic!("expected Complex128 dense storage, got {other:?}"),
+        }
     }
 
     #[test]
