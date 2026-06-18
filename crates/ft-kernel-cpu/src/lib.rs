@@ -8031,6 +8031,59 @@ pub fn conv3d_col2im_f64(
     dpadded
 }
 
+/// Scatter-add one repeated `dpanel` row into every conv3d output patch. This is
+/// the exact col2im specialization for `dout == 1`: every patch receives the same
+/// summed weight row, so materializing `flat * patch_width` identical rows is pure
+/// bandwidth waste.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+fn conv3d_col2im_repeated_row_f64(
+    dpanel_row: &[f64],
+    batch: usize,
+    in_ch: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+) -> Vec<f64> {
+    let patch_count = od * oh * ow;
+    let mut dpadded = vec![0.0f64; batch * in_ch * pd * ph * pw];
+    dpadded
+        .par_chunks_mut(in_ch * pd * ph * pw)
+        .for_each(|dpb| {
+            for pc in 0..patch_count {
+                let base_d = (pc / (oh * ow)) * sd;
+                let rem = pc % (oh * ow);
+                let base_h = (rem / ow) * sh;
+                let base_w = (rem % ow) * sw;
+                for c in 0..in_ch {
+                    let ch_off = c * pd * ph * pw;
+                    let pch = c * kd * kh * kw;
+                    for kdd in 0..kd {
+                        let d_off = ch_off + (base_d + kdd) * ph * pw;
+                        let pkd = pch + kdd * kh * kw;
+                        for kr in 0..kh {
+                            let irow = d_off + (base_h + kr) * pw + base_w;
+                            let prow_off = pkd + kr * kw;
+                            for kc in 0..kw {
+                                dpb[irow + kc] += dpanel_row[prow_off + kc];
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    dpadded
+}
+
 /// Fused conv3d forward (f64) on a PADDED input: 3-D im2col + `panel @
 /// weight_flat^T` (dgemm_bt) straight to NCDHW, plus optional per-channel bias.
 #[allow(clippy::too_many_arguments)]
@@ -8399,6 +8452,146 @@ pub fn conv3d_backward_f32(
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn conv3d_backward_f64(
+    dout: &[f64],
+    padded: &[f64],
+    weight_flat: &[f64],
+    batch: usize,
+    in_ch: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+    out_ch: usize,
+    has_bias: bool,
+) -> (Vec<f64>, Vec<f64>, Option<Vec<f64>>) {
+    if !dout.is_empty() && dout.iter().all(|&v| v.to_bits() == 1.0f64.to_bits()) {
+        return conv3d_backward_ones_dout_f64(
+            padded,
+            weight_flat,
+            batch,
+            in_ch,
+            pd,
+            ph,
+            pw,
+            kd,
+            kh,
+            kw,
+            od,
+            oh,
+            ow,
+            sd,
+            sh,
+            sw,
+            out_ch,
+            has_bias,
+        );
+    }
+    conv3d_backward_generic_f64(
+        dout,
+        padded,
+        weight_flat,
+        batch,
+        in_ch,
+        pd,
+        ph,
+        pw,
+        kd,
+        kh,
+        kw,
+        od,
+        oh,
+        ow,
+        sd,
+        sh,
+        sw,
+        out_ch,
+        has_bias,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+fn conv3d_backward_ones_dout_f64(
+    padded: &[f64],
+    weight_flat: &[f64],
+    batch: usize,
+    in_ch: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+    out_ch: usize,
+    has_bias: bool,
+) -> (Vec<f64>, Vec<f64>, Option<Vec<f64>>) {
+    let patch_width = in_ch * kd * kh * kw;
+    let patch_count = od * oh * ow;
+    let flat = batch * patch_count;
+    let panel = conv3d_im2col_f64(
+        padded, batch, in_ch, pd, ph, pw, kd, kh, kw, od, oh, ow, sd, sh, sw,
+    );
+
+    let ones_flat = vec![1.0f64; flat];
+    let mut dweight_row = vec![0.0f64; patch_width];
+    gemm::dgemm(1, flat, patch_width, &ones_flat, &panel, &mut dweight_row);
+    let mut dweight = vec![0.0f64; out_ch * patch_width];
+    dweight
+        .par_chunks_mut(patch_width)
+        .for_each(|row| row.copy_from_slice(&dweight_row));
+
+    let ones_out = vec![1.0f64; out_ch];
+    let mut dpanel_row = vec![0.0f64; patch_width];
+    gemm::dgemm(
+        1,
+        out_ch,
+        patch_width,
+        &ones_out,
+        weight_flat,
+        &mut dpanel_row,
+    );
+    let dpadded = conv3d_col2im_repeated_row_f64(
+        &dpanel_row,
+        batch,
+        in_ch,
+        pd,
+        ph,
+        pw,
+        kd,
+        kh,
+        kw,
+        od,
+        oh,
+        ow,
+        sd,
+        sh,
+        sw,
+    );
+    let dbias = if has_bias {
+        Some(vec![flat as f64; out_ch])
+    } else {
+        None
+    };
+    (dpadded, dweight, dbias)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+fn conv3d_backward_generic_f64(
     dout: &[f64],
     padded: &[f64],
     weight_flat: &[f64],
@@ -26104,6 +26297,83 @@ mod tests {
         for i in 0..want.len() {
             assert_eq!(got[i].to_bits(), want[i].to_bits(), "depthwise3d idx={i}");
         }
+    }
+
+    #[test]
+    fn conv3d_backward_ones_dout_fast_path_matches_generic_reference() {
+        let (batch, in_ch, pd, ph, pw) = (2usize, 3usize, 5usize, 4usize, 6usize);
+        let (kd, kh, kw, sd, sh, sw) = (2usize, 2usize, 3usize, 1usize, 1usize, 2usize);
+        let out_ch = 4usize;
+        let od = (pd - kd) / sd + 1;
+        let oh = (ph - kh) / sh + 1;
+        let ow = (pw - kw) / sw + 1;
+        let patch_count = od * oh * ow;
+        let patch_width = in_ch * kd * kh * kw;
+        let padded: Vec<f64> = (0..batch * in_ch * pd * ph * pw)
+            .map(|i| ((i as f64 * 0.037).sin() * 0.7) + (i % 11) as f64 * 0.03 - 0.4)
+            .collect();
+        let weight_flat: Vec<f64> = (0..out_ch * patch_width)
+            .map(|i| ((i as f64 * 0.041).cos() * 0.5) - (i % 7) as f64 * 0.02)
+            .collect();
+        let dout = vec![1.0f64; batch * out_ch * patch_count];
+
+        let want = super::conv3d_backward_generic_f64(
+            &dout,
+            &padded,
+            &weight_flat,
+            batch,
+            in_ch,
+            pd,
+            ph,
+            pw,
+            kd,
+            kh,
+            kw,
+            od,
+            oh,
+            ow,
+            sd,
+            sh,
+            sw,
+            out_ch,
+            true,
+        );
+        let got = super::conv3d_backward_f64(
+            &dout,
+            &padded,
+            &weight_flat,
+            batch,
+            in_ch,
+            pd,
+            ph,
+            pw,
+            kd,
+            kh,
+            kw,
+            od,
+            oh,
+            ow,
+            sd,
+            sh,
+            sw,
+            out_ch,
+            true,
+        );
+
+        let assert_close = |name: &str, got: &[f64], want: &[f64]| {
+            assert_eq!(got.len(), want.len(), "{name} length");
+            for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+                let tol = 1.0e-10 * (1.0 + g.abs().max(w.abs()));
+                assert!(
+                    (g - w).abs() <= tol,
+                    "{name} mismatch at {i}: got={g} want={w} tol={tol}"
+                );
+            }
+        };
+
+        assert_close("dpadded", &got.0, &want.0);
+        assert_close("dweight", &got.1, &want.1);
+        assert_close("dbias", got.2.as_ref().unwrap(), want.2.as_ref().unwrap());
     }
 
     #[test]
