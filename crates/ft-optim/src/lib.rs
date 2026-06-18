@@ -6152,6 +6152,22 @@ mod tests {
     }
 
     #[test]
+    fn step_lr_schedule_golden_matches_torch() {
+        // Differential golden vs torch.optim.lr_scheduler.StepLR 2.12: base_lr=1,
+        // step_size=2, gamma=0.5 -> lr sequence [1,1,0.5,0.5,0.25,0.25,0.125] over
+        // epochs 0..6 (lr=base*gamma^(epoch/step_size)). frankentorch-zu2ad.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let opt = SGD::new(vec![x], 1.0);
+        let want = [1.0, 1.0, 0.5, 0.5, 0.25, 0.25, 0.125];
+        for (e, w) in want.iter().enumerate() {
+            let sch = StepLR::new(&opt, 2).gamma(0.5).last_epoch(e as i64);
+            let lr = sch.get_lr()[0];
+            assert!((lr - w).abs() < 1e-12, "StepLR epoch {e} lr={lr} != {w}");
+        }
+    }
+
+    #[test]
     fn adagrad_first_step_golden_matches_torch() {
         // Differential golden vs torch.optim.Adagrad 2.12: x=[2,-3], lr=0.1,
         // defaults (eps=1e-10); one step == [1.900000000002,-2.900000000002]
