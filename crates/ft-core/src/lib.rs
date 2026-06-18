@@ -2522,11 +2522,12 @@ impl SparseCOOTensor {
 
         let nnz = self.nnz();
         if nnz == 0 {
-            return Ok(DenseTensor::from_contiguous_values(
+            let result = DenseTensor::from_contiguous_values(
                 dense_data,
                 self.dense_shape.clone(),
                 self.device,
-            )?);
+            )?;
+            return Ok(result.to_dtype(self.dtype())?);
         }
 
         let indices_data = self.indices.contiguous_values()?;
