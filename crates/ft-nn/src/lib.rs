@@ -15801,6 +15801,11 @@ impl TripletMarginLoss {
         negative: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         // d(a, p) - d(a, n) + margin, clamped to >= 0.
+        if !self.margin.is_finite() || self.margin <= 0.0 {
+            return Err(incompatible_error(
+                "TripletMarginLoss: margin must be finite and greater than 0",
+            ));
+        }
         if !self.p.is_finite() || self.p <= 0.0 {
             return Err(incompatible_error(
                 "TripletMarginLoss: p must be finite and greater than 0",
@@ -15876,6 +15881,12 @@ impl TripletMarginWithDistanceLoss {
         positive: TensorNodeId,
         negative: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        if !self.margin.is_finite() || self.margin <= 0.0 {
+            return Err(incompatible_error(
+                "TripletMarginWithDistanceLoss: margin must be finite and greater than 0",
+            ));
+        }
+
         let dist_pos = self.compute_distance(session, anchor, positive)?;
         let dist_neg = self.compute_distance(session, anchor, negative)?;
         let diff = session.tensor_sub(dist_pos, dist_neg)?;
@@ -21460,6 +21471,30 @@ mod tests {
             err.to_string().contains("p must be finite"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn triplet_margin_losses_reject_non_positive_or_non_finite_margin() {
+        for margin in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+            let p = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+            let n = s.tensor_variable(vec![2.0], vec![1], false).unwrap();
+
+            let loss = TripletMarginLoss::new(margin, 2.0);
+            let err = loss.forward_triplet(&mut s, a, p, n).unwrap_err();
+            assert!(
+                err.to_string().contains("margin must be finite"),
+                "unexpected TripletMarginLoss margin error for {margin}: {err}"
+            );
+
+            let loss = TripletMarginWithDistanceLoss::new(margin, DistanceKind::L2);
+            let err = loss.forward_triplet(&mut s, a, p, n).unwrap_err();
+            assert!(
+                err.to_string().contains("margin must be finite"),
+                "unexpected TripletMarginWithDistanceLoss margin error for {margin}: {err}"
+            );
+        }
     }
 
     #[test]
