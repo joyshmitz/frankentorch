@@ -2103,6 +2103,19 @@ mod tests {
     }
 
     #[test]
+    fn dataloader_empty_custom_indices_yield_no_batches() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ds = make_dataset(3, 1);
+        let mut loader = DataLoader::with_indices(&ds, Vec::new(), DataLoaderConfig::new(2));
+
+        assert_eq!(loader.num_batches(), 0);
+        assert!(loader.next_batch(&mut session).unwrap().is_none());
+
+        loader.reset();
+        assert!(loader.next_batch(&mut session).unwrap().is_none());
+    }
+
+    #[test]
     fn dataloader_reset_replays_custom_index_order() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let ds = make_dataset(4, 1);
