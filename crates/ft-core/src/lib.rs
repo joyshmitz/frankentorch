@@ -1751,7 +1751,9 @@ impl DenseTensor {
                 actual: self.meta.numel(),
             });
         }
-        let new_meta = TensorMeta::from_shape(new_shape, self.meta.dtype(), self.meta.device());
+        let new_meta =
+            TensorMeta::from_shape(new_shape, self.meta.dtype(), self.meta.device())
+                .with_storage_offset(self.meta.storage_offset());
         Ok(Self {
             id: NEXT_TENSOR_ID.fetch_add(1, Ordering::Relaxed),
             storage_id: self.storage_id, // same storage
@@ -3222,6 +3224,19 @@ mod tests {
             .view(vec![usize::MAX, 2])
             .expect_err("overflowing view shape must fail");
         assert!(matches!(err, DenseTensorError::ShapeOverflow { .. }));
+    }
+
+    #[test]
+    fn dense_view_preserves_storage_offset() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu).with_storage_offset(1);
+        let tensor = DenseTensor::from_storage(meta, vec![99.0, 1.0, 2.0]).unwrap();
+
+        let view = tensor.view(vec![1, 2]).unwrap();
+
+        assert_eq!(view.storage_id(), tensor.storage_id());
+        assert_eq!(view.meta().storage_offset(), 1);
+        assert_eq!(view.meta().shape(), &[1, 2]);
+        assert_eq!(view.contiguous_values().unwrap(), &[1.0, 2.0]);
     }
 
     #[test]
