@@ -6330,6 +6330,24 @@ mod tests {
     }
 
     #[test]
+    fn sgd_training_step_integration_golden_matches_torch() {
+        // Integration golden vs torch.optim.SGD 2.12: x=[2,-3], loss=sum(x^2),
+        // backward, SGD(lr=0.1).step -> x==[1.6,-2.4]. Tests the full
+        // forward->backward->optimizer.step loop composition. frankentorch-wpwbb.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![2.0, -3.0], vec![2], true).unwrap();
+        let sq = s.tensor_mul(x, x).unwrap();
+        let loss = s.tensor_sum(sq).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let mut opt = SGD::new(vec![x], 0.1);
+        opt.step(&mut s, &report).unwrap();
+        let after = s.tensor_values(x).unwrap();
+        for (g, w) in after.iter().zip([1.6, -2.4].iter()) {
+            assert!((g - w).abs() < 1e-12, "sgd step {g} != {w}");
+        }
+    }
+
+    #[test]
     fn adam_first_step_golden_matches_torch() {
         // Differential golden vs torch.optim.Adam 2.12: x=[2,-3], lr=0.1,
         // loss=sum(x^2) (grad=[4,-6]); one Adam step (defaults) ==
