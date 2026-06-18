@@ -3279,7 +3279,14 @@ impl EmbeddingBag {
                     },
                 )));
             }
-            let mut start = start_f as usize;
+            let start = start_f as usize;
+            if start > n_indices {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: "EmbeddingBag: offset value out of range for indices",
+                    },
+                )));
+            }
             let end = if bag + 1 < num_bags {
                 let end_f = offsets_vals[bag + 1];
                 if end_f < 0.0 || end_f != end_f.trunc() {
@@ -3289,13 +3296,25 @@ impl EmbeddingBag {
                         },
                     )));
                 }
-                (end_f as usize).min(n_indices)
+                let end = end_f as usize;
+                if end > n_indices {
+                    return Err(AutogradError::Dispatch(DispatchError::Key(
+                        DispatchKeyError::IncompatibleSet {
+                            reason: "EmbeddingBag: offset value out of range for indices",
+                        },
+                    )));
+                }
+                if end < start {
+                    return Err(AutogradError::Dispatch(DispatchError::Key(
+                        DispatchKeyError::IncompatibleSet {
+                            reason: "EmbeddingBag: offsets must be non-decreasing",
+                        },
+                    )));
+                }
+                end
             } else {
                 n_indices
             };
-            if start > n_indices {
-                start = n_indices;
-            }
             bag_ranges.push((start, end));
         }
 
@@ -34037,6 +34056,38 @@ mod tests {
             .expect_err("negative offset must fail");
         assert!(
             err.to_string().contains("non-negative"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn embedding_bag_rejects_malformed_offsets() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let eb = EmbeddingBag::new(&mut session, 5, 3, EmbeddingBagMode::Sum, None).unwrap();
+
+        let indices = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .unwrap();
+        let too_large = session.tensor_variable(vec![3.0], vec![1], false).unwrap();
+        let err = eb
+            .forward_with_offsets(&mut session, indices, too_large, None)
+            .expect_err("offset past indices length must fail");
+        assert!(
+            err.to_string().contains("out of range"),
+            "unexpected error: {err}"
+        );
+
+        let indices = session
+            .tensor_variable(vec![0.0, 1.0, 2.0], vec![3], false)
+            .unwrap();
+        let decreasing = session
+            .tensor_variable(vec![2.0, 1.0], vec![2], false)
+            .unwrap();
+        let err = eb
+            .forward_with_offsets(&mut session, indices, decreasing, None)
+            .expect_err("decreasing offsets must fail");
+        assert!(
+            err.to_string().contains("non-decreasing"),
             "unexpected error: {err}"
         );
     }
