@@ -22181,6 +22181,20 @@ mod tests {
     }
 
     #[test]
+    fn kl_div_loss_golden_matches_torch() {
+        // Differential golden vs torch.nn.functional.kl_div 2.12 (reduction=mean):
+        // input=log([0.5,0.3,0.2]) (log-probs), target=[0.4,0.4,0.2] -> 0.0086051362
+        // (mean of target*(log target - input)). frankentorch-uklsn.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let logp: Vec<f64> = [0.5, 0.3, 0.2].iter().map(|p: &f64| p.ln()).collect();
+        let i = s.tensor_variable(logp, vec![3], false).unwrap();
+        let t = s.tensor_variable(vec![0.4, 0.4, 0.2], vec![3], false).unwrap();
+        let out = KLDivLoss.forward(&mut s, i, t).unwrap();
+        let got = s.tensor_values(out).unwrap()[0];
+        assert!((got - 0.008_605_136_2).abs() < 1e-6, "kl_div loss {got} != 0.0086051362");
+    }
+
+    #[test]
     fn bce_loss_golden_matches_torch() {
         // Differential golden vs torch.nn.functional.binary_cross_entropy 2.12:
         // input(probs)=[0.6,0.4,0.8], target=[1,0,1] -> 0.4149315996
