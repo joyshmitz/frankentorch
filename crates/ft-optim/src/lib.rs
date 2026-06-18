@@ -4144,7 +4144,7 @@ impl ConstantLR {
         let initial_lr = optimizer.get_lr();
         Self {
             initial_lr,
-            factor,
+            factor: finite_non_negative_factor(factor),
             total_iters,
             last_epoch: -1,
             last_lr: initial_lr,
@@ -4193,7 +4193,7 @@ impl LRScheduler for ConstantLR {
         for (key, val) in &state.extra {
             match key.as_str() {
                 "initial_lr" => self.initial_lr = *val,
-                "factor" => self.factor = *val,
+                "factor" => self.factor = finite_non_negative_factor(*val),
                 "total_iters" => {
                     if let Some(total_iters) = decode_exact_usize_field(*val, 0) {
                         self.total_iters = total_iters;
@@ -4344,7 +4344,12 @@ impl CyclicLR {
 
     #[must_use]
     pub fn mode(mut self, mode: CyclicLRMode) -> Self {
-        self.mode = mode;
+        self.mode = match mode {
+            CyclicLRMode::ExpRange { gamma } => CyclicLRMode::ExpRange {
+                gamma: finite_non_negative_factor(gamma),
+            },
+            other => other,
+        };
         self
     }
 
@@ -11622,6 +11627,33 @@ mod tests {
     }
 
     #[test]
+    fn constant_lr_invalid_factor_is_clamped() {
+        for factor in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.25] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+            let mut opt = SGD::new(vec![x], 0.5);
+            let mut sched = ConstantLR::new(&opt, factor, 3);
+
+            sched.step(&mut opt, Some(0));
+            assert_eq!(opt.get_lr(), 0.0, "invalid factor {factor:?}");
+            assert!(opt.get_lr().is_finite(), "lr must remain finite");
+
+            sched.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![0.5],
+                extra: vec![
+                    ("initial_lr".to_owned(), 0.5),
+                    ("factor".to_owned(), factor),
+                    ("total_iters".to_owned(), 3.0),
+                ],
+            });
+            sched.step(&mut opt, Some(0));
+            assert_eq!(opt.get_lr(), 0.0, "loaded invalid factor {factor:?}");
+            assert!(opt.get_lr().is_finite(), "loaded lr must remain finite");
+        }
+    }
+
+    #[test]
     fn constant_lr_state_roundtrip() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
@@ -11929,6 +11961,26 @@ mod tests {
                     max_per_cycle[cycle]
                 );
             }
+        }
+    }
+
+    #[test]
+    fn cyclic_lr_exp_range_invalid_gamma_is_clamped() {
+        for gamma in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.5] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("variable");
+            let mut opt = SGD::new(vec![x], 0.1);
+            let mut scheduler = CyclicLR::new(&opt, 0.001, 0.01, 1)
+                .mode(CyclicLRMode::ExpRange { gamma });
+
+            scheduler.step(&mut opt, None);
+            scheduler.step(&mut opt, None);
+
+            let lr = opt.get_lr();
+            assert!((lr - 0.001).abs() < 1e-12, "invalid gamma {gamma:?}");
+            assert!(lr.is_finite(), "lr must stay finite for {gamma:?}");
         }
     }
 
