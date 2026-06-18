@@ -6152,6 +6152,32 @@ mod tests {
     }
 
     #[test]
+    fn optimizers_with_zero_gradient_leave_params_unchanged() {
+        // Metamorphic invariant (no torch goldens): with a genuine zero gradient
+        // (x*0) and default config (no weight decay), one step leaves params
+        // bit-unchanged for every optimizer. frankentorch-7byh1.
+        let run = |ctor: &dyn Fn(Vec<TensorNodeId>, f64) -> Box<dyn Optimizer>, name: &str| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let init = vec![1.5, -2.0, 3.25];
+            let x = s.tensor_variable(init.clone(), vec![3], true).unwrap();
+            let zero = s.full(vec![3], 0.0, false).unwrap();
+            let z = s.tensor_mul(x, zero).unwrap();
+            let loss = s.tensor_sum(z).unwrap();
+            let report = s.tensor_backward(loss).unwrap();
+            let mut opt = ctor(vec![x], 0.1);
+            opt.step(&mut s, &report).unwrap();
+            let after = s.tensor_values(x).unwrap();
+            for (k, (a, b)) in after.iter().zip(&init).enumerate() {
+                assert!((a - b).abs() < 1e-12, "{name} changed param[{k}]: {a} vs {b}");
+            }
+        };
+        run(&|p, lr| Box::new(SGD::new(p, lr)), "SGD");
+        run(&|p, lr| Box::new(Adam::new(p, lr)), "Adam");
+        run(&|p, lr| Box::new(RMSprop::new(p, lr)), "RMSprop");
+        run(&|p, lr| Box::new(Adagrad::new(p, lr)), "Adagrad");
+    }
+
+    #[test]
     fn sgd_basic_step_reduces_loss() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
 
