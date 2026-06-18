@@ -2389,7 +2389,7 @@ impl LRScheduler for StepLR {
         }
         for (key, val) in &state.extra {
             match key.as_str() {
-                "initial_lr" => self.initial_lr = *val,
+                "initial_lr" => self.initial_lr = finite_non_negative_factor(*val),
                 "step_size" => {
                     if let Some(step_size) = decode_exact_usize_field(*val, 1) {
                         self.step_size = step_size;
@@ -2533,7 +2533,7 @@ impl LRScheduler for MultiStepLR {
         let mut indexed_milestones = Vec::new();
         for (key, val) in &state.extra {
             match key.as_str() {
-                "initial_lr" => self.initial_lr = *val,
+                "initial_lr" => self.initial_lr = finite_non_negative_factor(*val),
                 "gamma" => self.gamma = finite_non_negative_factor(*val),
                 _ => {
                     if let Some(index) = key
@@ -2673,7 +2673,7 @@ impl LRScheduler for CosineAnnealingLR {
         }
         for (key, val) in &state.extra {
             match key.as_str() {
-                "initial_lr" => self.initial_lr = *val,
+                "initial_lr" => self.initial_lr = finite_non_negative_factor(*val),
                 "t_max" => {
                     if let Some(t_max) = decode_exact_usize_field(*val, 1) {
                         self.t_max = t_max;
@@ -2829,7 +2829,7 @@ impl LRScheduler for CosineAnnealingWarmRestarts {
         }
         for (key, val) in &state.extra {
             match key.as_str() {
-                "initial_lr" => self.initial_lr = *val,
+                "initial_lr" => self.initial_lr = finite_non_negative_factor(*val),
                 "t_0" => {
                     if let Some(t_0) = decode_exact_usize_field(*val, 1) {
                         self.t_0 = t_0;
@@ -2953,7 +2953,7 @@ impl LRScheduler for ExponentialLR {
         }
         for (key, val) in &state.extra {
             match key.as_str() {
-                "initial_lr" => self.initial_lr = *val,
+                "initial_lr" => self.initial_lr = finite_non_negative_factor(*val),
                 "gamma" => self.gamma = finite_non_negative_factor(*val),
                 _ => {}
             }
@@ -9623,6 +9623,121 @@ mod tests {
         });
         scheduler.step(&mut opt, Some(1));
         assert_eq!(opt.get_lr(), 0.0);
+    }
+
+    #[test]
+    fn cosine_and_decay_schedulers_clamp_loaded_invalid_initial_lr() {
+        for initial_lr in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("var");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut scheduler = StepLR::new(&opt, 1).gamma(0.5);
+            scheduler.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![1.0],
+                extra: vec![
+                    ("initial_lr".to_owned(), initial_lr),
+                    ("step_size".to_owned(), 1.0),
+                    ("gamma".to_owned(), 0.5),
+                ],
+            });
+            scheduler.step(&mut opt, Some(1));
+            assert_eq!(opt.get_lr(), 0.0, "StepLR initial_lr {initial_lr:?}");
+            assert!(opt.get_lr().is_finite());
+
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("var");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut scheduler = MultiStepLR::new(&opt, vec![1]).gamma(0.5);
+            scheduler.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![1.0],
+                extra: vec![
+                    ("initial_lr".to_owned(), initial_lr),
+                    ("gamma".to_owned(), 0.5),
+                    ("milestone_0".to_owned(), 1.0),
+                ],
+            });
+            scheduler.step(&mut opt, Some(1));
+            assert_eq!(
+                opt.get_lr(),
+                0.0,
+                "MultiStepLR initial_lr {initial_lr:?}"
+            );
+            assert!(opt.get_lr().is_finite());
+
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("var");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut scheduler = CosineAnnealingLR::new(&opt, 2);
+            scheduler.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![1.0],
+                extra: vec![
+                    ("initial_lr".to_owned(), initial_lr),
+                    ("t_max".to_owned(), 2.0),
+                    ("eta_min".to_owned(), 0.0),
+                ],
+            });
+            scheduler.step(&mut opt, Some(1));
+            assert_eq!(
+                opt.get_lr(),
+                0.0,
+                "CosineAnnealingLR initial_lr {initial_lr:?}"
+            );
+            assert!(opt.get_lr().is_finite());
+
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("var");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut scheduler = CosineAnnealingWarmRestarts::new(&opt, 2);
+            scheduler.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![1.0],
+                extra: vec![
+                    ("initial_lr".to_owned(), initial_lr),
+                    ("t_0".to_owned(), 2.0),
+                    ("t_mult".to_owned(), 1.0),
+                    ("eta_min".to_owned(), 0.0),
+                    ("t_cur".to_owned(), -1.0),
+                    ("t_i".to_owned(), 2.0),
+                ],
+            });
+            scheduler.step(&mut opt, Some(1));
+            assert_eq!(
+                opt.get_lr(),
+                0.0,
+                "CosineAnnealingWarmRestarts initial_lr {initial_lr:?}"
+            );
+            assert!(opt.get_lr().is_finite());
+
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("var");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut scheduler = ExponentialLR::new(&opt, 0.5);
+            scheduler.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![1.0],
+                extra: vec![
+                    ("initial_lr".to_owned(), initial_lr),
+                    ("gamma".to_owned(), 0.5),
+                ],
+            });
+            scheduler.step(&mut opt, Some(1));
+            assert_eq!(
+                opt.get_lr(),
+                0.0,
+                "ExponentialLR initial_lr {initial_lr:?}"
+            );
+            assert!(opt.get_lr().is_finite());
+        }
     }
 
     #[test]
