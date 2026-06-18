@@ -22181,6 +22181,19 @@ mod tests {
     }
 
     #[test]
+    fn hinge_embedding_loss_golden_matches_torch() {
+        // Differential golden vs torch.nn.HingeEmbeddingLoss(margin=1) 2.12:
+        // input=[0.5,2,0.3], target=[1,-1,-1] -> 0.4 (mean of: x if y=1 else
+        // max(0,margin-x)). frankentorch-n8vbg.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let i = s.tensor_variable(vec![0.5, 2.0, 0.3], vec![3], false).unwrap();
+        let t = s.tensor_variable(vec![1.0, -1.0, -1.0], vec![3], false).unwrap();
+        let out = HingeEmbeddingLoss::new(1.0).forward_hinge(&mut s, i, t).unwrap();
+        let got = s.tensor_values(out).unwrap()[0];
+        assert!((got - 0.4).abs() < 1e-12, "hinge loss {got} != 0.4");
+    }
+
+    #[test]
     fn kl_div_loss_golden_matches_torch() {
         // Differential golden vs torch.nn.functional.kl_div 2.12 (reduction=mean):
         // input=log([0.5,0.3,0.2]) (log-probs), target=[0.4,0.4,0.2] -> 0.0086051362
