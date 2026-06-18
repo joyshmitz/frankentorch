@@ -22181,6 +22181,21 @@ mod tests {
     }
 
     #[test]
+    fn triplet_margin_loss_golden_matches_torch() {
+        // Differential golden vs torch.nn.TripletMarginLoss(margin=1,p=2) 2.12:
+        // anchor=[[1,0]], pos=[[1,1]], neg=[[0,0]] -> ~1.0 (d_pos==d_neg=1 so
+        // loss=margin). torch=0.999998 (pairwise-dist eps=1e-6); ft may use eps=0.
+        // Pinned to 1.0 +/- 1e-5 (eps-tolerant). frankentorch-buluv.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 0.0], vec![1, 2], false).unwrap();
+        let p = s.tensor_variable(vec![1.0, 1.0], vec![1, 2], false).unwrap();
+        let n = s.tensor_variable(vec![0.0, 0.0], vec![1, 2], false).unwrap();
+        let out = TripletMarginLoss::new(1.0, 2.0).forward_triplet(&mut s, a, p, n).unwrap();
+        let got = s.tensor_values(out).unwrap()[0];
+        assert!((got - 1.0).abs() < 1e-5, "triplet_margin loss {got} != ~1.0");
+    }
+
+    #[test]
     fn cosine_embedding_loss_golden_matches_torch() {
         // Differential golden vs torch.nn.CosineEmbeddingLoss(margin=0) 2.12:
         // x1=[[1,0],[1,1]], x2=[[1,0],[0,1]], target=[1,-1] -> 0.3535533906
