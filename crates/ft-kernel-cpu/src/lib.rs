@@ -172,6 +172,40 @@ mod gemm {
         }
     }
 
+    /// `C[m,n] = A^T @ B` where `A` is row-major `[k, m]` and `B` is row-major
+    /// `[k, n]`. This is the transposed-left analogue of [`dgemm_bt`]: it reads
+    /// A through strides (`rsa=1, csa=m`) instead of materialising the `[m,k]`
+    /// transpose first. For each output element the K traversal matches the
+    /// materialise-transpose-then-`dgemm` path.
+    pub fn dgemm_tb(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], c: &mut [f64]) {
+        if m == 0 || n == 0 {
+            return;
+        }
+        let a = &a[..k * m];
+        let b = &b[..k * n];
+        let c = &mut c[..m * n];
+        // SAFETY: A is [k,m] and read as A^T via strides; B and C are contiguous
+        // row-major matrices with the exact dimensions passed to matrixmultiply.
+        unsafe {
+            dgemm_mm(
+                m,
+                k,
+                n,
+                1.0,
+                a.as_ptr(),
+                1,
+                m as isize,
+                b.as_ptr(),
+                n as isize,
+                1,
+                0.0,
+                c.as_mut_ptr(),
+                n as isize,
+                1,
+            );
+        }
+    }
+
     /// Fused trailing-update: `C_sub -= A · B^T`, accumulating straight into a
     /// STRIDED submatrix of `c` (start `c_off`, row stride `ldc`) via matrixmultiply
     /// with alpha=-1, beta=1 — no temp product buffer and no scalar subtract pass.
@@ -1040,6 +1074,35 @@ mod gemm {
             }
         } else {
             sgemm_bt_block(m, k, n, a, b, c);
+        }
+    }
+
+    /// f32 mirror of [`dgemm_tb`]: `C[m,n] = A^T @ B` with A stored as `[k,m]`.
+    pub fn sgemm_tb(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
+        if m == 0 || n == 0 {
+            return;
+        }
+        let a = &a[..k * m];
+        let b = &b[..k * n];
+        let c = &mut c[..m * n];
+        // SAFETY: see dgemm_tb; f32 version uses the same strided-A contract.
+        unsafe {
+            sgemm_mm(
+                m,
+                k,
+                n,
+                1.0,
+                a.as_ptr(),
+                1,
+                m as isize,
+                b.as_ptr(),
+                n as isize,
+                1,
+                0.0,
+                c.as_mut_ptr(),
+                n as isize,
+                1,
+            );
         }
     }
 
@@ -3692,27 +3755,15 @@ pub fn sdpa_backward_f64(
                     dr[j] = pr[j] * (dr[j] - dot);
                 }
             }
-            // dV = Pᵀ @ dOut  [seq_k, d_v]
-            let mut pt = vec![0.0f64; seq_k * seq_q];
-            for i in 0..seq_q {
-                for j in 0..seq_k {
-                    pt[j * seq_q + i] = p[i * seq_k + j];
-                }
-            }
-            gemm::dgemm(seq_k, seq_q, d_v, &pt, doh, dv_bh);
+            // dV = Pᵀ @ dOut  [seq_k, d_v], without materialising Pᵀ.
+            gemm::dgemm_tb(seq_k, seq_q, d_v, &p, doh, dv_bh);
             // dQ = scale · dU @ K  [seq_q, d_k]
             gemm::dgemm(seq_q, seq_k, d_k, &du, kh, dq_bh);
             for x in dq_bh.iter_mut() {
                 *x *= scale;
             }
-            // dK = scale · dUᵀ @ Q  [seq_k, d_k]
-            let mut dut = vec![0.0f64; seq_k * seq_q];
-            for i in 0..seq_q {
-                for j in 0..seq_k {
-                    dut[j * seq_q + i] = du[i * seq_k + j];
-                }
-            }
-            gemm::dgemm(seq_k, seq_q, d_k, &dut, qh, dk_bh);
+            // dK = scale · dUᵀ @ Q  [seq_k, d_k], without materialising dUᵀ.
+            gemm::dgemm_tb(seq_k, seq_q, d_k, &du, qh, dk_bh);
             for x in dk_bh.iter_mut() {
                 *x *= scale;
             }
@@ -3792,24 +3843,12 @@ pub fn sdpa_backward_f32(
                     dr[j] = pr[j] * (dr[j] - dot);
                 }
             }
-            let mut pt = vec![0.0f32; seq_k * seq_q];
-            for i in 0..seq_q {
-                for j in 0..seq_k {
-                    pt[j * seq_q + i] = p[i * seq_k + j];
-                }
-            }
-            gemm::sgemm(seq_k, seq_q, d_v, &pt, doh, dv_bh);
+            gemm::sgemm_tb(seq_k, seq_q, d_v, &p, doh, dv_bh);
             gemm::sgemm(seq_q, seq_k, d_k, &du, kh, dq_bh);
             for x in dq_bh.iter_mut() {
                 *x *= scale;
             }
-            let mut dut = vec![0.0f32; seq_k * seq_q];
-            for i in 0..seq_q {
-                for j in 0..seq_k {
-                    dut[j * seq_q + i] = du[i * seq_k + j];
-                }
-            }
-            gemm::sgemm(seq_k, seq_q, d_k, &dut, qh, dk_bh);
+            gemm::sgemm_tb(seq_k, seq_q, d_k, &du, qh, dk_bh);
             for x in dk_bh.iter_mut() {
                 *x *= scale;
             }
