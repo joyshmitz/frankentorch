@@ -22181,6 +22181,20 @@ mod tests {
     }
 
     #[test]
+    fn margin_ranking_loss_golden_matches_torch() {
+        // Differential golden vs torch.nn.MarginRankingLoss(margin=0) 2.12:
+        // x1=[1,2], x2=[2,1], target=[1,-1] -> 1.0 (mean of max(0,-y*(x1-x2)+margin)).
+        // frankentorch-f4h2o.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x1 = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let x2 = s.tensor_variable(vec![2.0, 1.0], vec![2], false).unwrap();
+        let y = s.tensor_variable(vec![1.0, -1.0], vec![2], false).unwrap();
+        let out = MarginRankingLoss::new(0.0).forward_triplet(&mut s, x1, x2, y).unwrap();
+        let got = s.tensor_values(out).unwrap()[0];
+        assert!((got - 1.0).abs() < 1e-12, "margin_ranking loss {got} != 1.0");
+    }
+
+    #[test]
     fn hinge_embedding_loss_golden_matches_torch() {
         // Differential golden vs torch.nn.HingeEmbeddingLoss(margin=1) 2.12:
         // input=[0.5,2,0.3], target=[1,-1,-1] -> 0.4 (mean of: x if y=1 else
