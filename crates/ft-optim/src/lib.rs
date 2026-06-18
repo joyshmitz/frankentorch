@@ -10965,6 +10965,61 @@ mod tests {
     }
 
     #[test]
+    fn rprop_sign_flip_shrinks_step_and_skips_update() {
+        // PyTorch Rprop contract: if grad[t] * grad[t-1] < 0, shrink the
+        // per-element step, skip that parameter update, and clear prev_grad so
+        // the next same-sign gradient uses the reduced step without another
+        // eta_minus hit. This exercises the real optimizer step path with
+        // controlled persistent gradients.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 10.0], vec![2], true)
+            .expect("variable");
+        let loss = session.tensor_sum(x).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let mut opt = Rprop::new(vec![x], 0.1).etas(0.5, 1.2);
+
+        macro_rules! apply {
+            ($grad:expr) => {{
+                session
+                    .tensor_set_accumulated_gradient(x, $grad)
+                    .expect("set accumulated gradient");
+                opt.step(&mut session, &report).expect("rprop step");
+                session.tensor_values(x).expect("values")
+            }};
+        }
+        let close = |got: &[f64], want: &[f64], what: &str| {
+            for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+                assert!((g - w).abs() < 1e-12, "{what}[{i}] got {g}, want {w}");
+            }
+        };
+
+        close(&apply!(vec![1.0, -1.0]), &[0.9, 10.1], "step1");
+        close(&apply!(vec![1.0, -1.0]), &[0.78, 10.22], "step2");
+        let before_flip = session.tensor_values(x).expect("values before flip");
+        close(
+            &apply!(vec![-1.0, 1.0]),
+            &before_flip,
+            "sign-flip skip",
+        );
+        close(
+            opt.step_sizes[0].as_ref().expect("step sizes"),
+            &[0.06, 0.06],
+            "shrunk step sizes",
+        );
+        close(
+            opt.prev_grad[0].as_ref().expect("prev grad"),
+            &[0.0, 0.0],
+            "cleared prev grad",
+        );
+        close(
+            &apply!(vec![-1.0, 1.0]),
+            &[0.84, 10.16],
+            "post-flip reduced step",
+        );
+    }
+
+    #[test]
     fn rprop_invalid_etas_fails() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session
