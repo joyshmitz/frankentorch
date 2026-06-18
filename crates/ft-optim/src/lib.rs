@@ -6152,6 +6152,26 @@ mod tests {
     }
 
     #[test]
+    fn linear_lr_schedule_golden_matches_torch() {
+        // Differential golden vs torch.optim.lr_scheduler.LinearLR 2.12: base_lr=1,
+        // start_factor=0.5, end_factor=1.0, total_iters=4 ->
+        // [0.5,0.625,0.75,0.875,1.0,1.0] (linear ramp then clamp). frankentorch-t4r4z.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let opt = SGD::new(vec![x], 1.0);
+        let want = [0.5, 0.625, 0.75, 0.875, 1.0, 1.0];
+        for (e, w) in want.iter().enumerate() {
+            let sch = LinearLR::new(&opt)
+                .start_factor(0.5)
+                .end_factor(1.0)
+                .total_iters(4)
+                .last_epoch(e as i64);
+            let lr = sch.get_lr()[0];
+            assert!((lr - w).abs() < 1e-12, "LinearLR epoch {e} lr={lr} != {w}");
+        }
+    }
+
+    #[test]
     fn multistep_lr_schedule_golden_matches_torch() {
         // Differential golden vs torch.optim.lr_scheduler.MultiStepLR 2.12:
         // base_lr=1, milestones=[2,4], gamma=0.5 -> [1,1,0.5,0.5,0.25,0.25] over
