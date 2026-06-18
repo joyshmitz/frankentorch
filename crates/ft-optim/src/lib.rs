@@ -6330,6 +6330,25 @@ mod tests {
     }
 
     #[test]
+    fn adam_two_step_loop_golden_matches_torch() {
+        // Integration golden vs torch.optim.Adam 2.12: x=[2], loss=x^2, TWO steps
+        // with zero_grad -> x==1.800166486116. Validates Adam's step-counter /
+        // bias-correction (1-beta^t) advancing + m/v buffers persisting. frankentorch-ykwgj.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![2.0], vec![1], true).unwrap();
+        let mut opt = Adam::new(vec![x], 0.1);
+        for _ in 0..2 {
+            s.tensor_zero_grad(x).unwrap();
+            let sq = s.tensor_mul(x, x).unwrap();
+            let loss = s.tensor_sum(sq).unwrap();
+            let report = s.tensor_backward(loss).unwrap();
+            opt.step(&mut s, &report).unwrap();
+        }
+        let after = s.tensor_values(x).unwrap();
+        assert!((after[0] - 1.800_166_486_116).abs() < 1e-9, "adam 2-step {} != 1.8001664861", after[0]);
+    }
+
+    #[test]
     fn sgd_momentum_two_step_loop_golden_matches_torch() {
         // Integration golden vs torch.optim.SGD(momentum=0.9) 2.12: x=[2], loss=x^2,
         // TWO steps with zero_grad between -> x==0.92 (step1 buf=4 x=1.6; step2
