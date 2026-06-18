@@ -3697,7 +3697,7 @@ impl LRScheduler for ChainedScheduler {
         }
         for (key, val) in &state.extra {
             if key == "base_lr" {
-                self.base_lr = *val;
+                self.base_lr = finite_non_negative_factor(*val);
             }
         }
     }
@@ -11081,6 +11081,36 @@ mod tests {
         assert_eq!(chained2.state_dict(), state);
         assert_eq!(chained2.get_last_lr(), chained.get_last_lr());
         assert_eq!(chained2.get_lr(), chained.get_lr());
+    }
+
+    #[test]
+    fn chained_scheduler_loaded_invalid_base_lr_is_clamped() {
+        for base_lr in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("var");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut chained = ChainedScheduler::new(
+                &opt,
+                vec![
+                    Box::new(StepLR::new(&opt, 1).gamma(0.5)),
+                    Box::new(ExponentialLR::new(&opt, 0.5)),
+                ],
+            );
+
+            chained.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![1.0],
+                extra: vec![("base_lr".to_owned(), base_lr)],
+            });
+            chained.step(&mut opt, Some(1));
+
+            let lr = opt.get_lr();
+            assert_eq!(lr, 0.0, "invalid base_lr {base_lr:?}");
+            assert!(lr.is_finite(), "loaded base_lr must keep lr finite");
+            assert!(lr >= 0.0, "loaded base_lr must keep lr non-negative");
+        }
     }
 
     #[test]
