@@ -15705,6 +15705,12 @@ impl CosineEmbeddingLoss {
         x2: TensorNodeId,
         target: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        if !self.margin.is_finite() {
+            return Err(incompatible_error(
+                "CosineEmbeddingLoss: margin must be finite",
+            ));
+        }
+
         session.cosine_embedding_loss(x1, x2, target, self.margin)
     }
 }
@@ -29203,6 +29209,30 @@ mod tests {
         // First pair: cos_sim=1, loss=0; Second: cos_sim=-1, loss=max(0,-1-0)=0
         // Total mean = 0.0
         assert!(vals[0].abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_embedding_loss_rejects_non_finite_margin() {
+        for margin in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let loss_fn = CosineEmbeddingLoss::new(margin);
+            let x1 = session
+                .tensor_variable(vec![1.0, 0.0], vec![1, 2], false)
+                .expect("x1");
+            let x2 = session
+                .tensor_variable(vec![0.0, 1.0], vec![1, 2], false)
+                .expect("x2");
+            let target = session
+                .tensor_variable(vec![-1.0], vec![1], false)
+                .expect("target");
+            let err = loss_fn
+                .forward_triplet(&mut session, x1, x2, target)
+                .expect_err("non-finite margin must fail closed");
+            assert!(
+                format!("{err:?}").contains("margin must be finite"),
+                "unexpected non-finite margin error for {margin}: {err:?}"
+            );
+        }
     }
 
     // ── named_parameters / named_children / named_modules tests ───────
