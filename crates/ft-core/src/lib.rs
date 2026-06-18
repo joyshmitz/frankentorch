@@ -1469,6 +1469,22 @@ impl DenseTensor {
         }
     }
 
+    fn contiguous_complex_values_as_complex128(&self) -> Result<Vec<Complex128>, DenseTensorError> {
+        if !self.meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let start = self.meta.storage_offset();
+        let end = Self::storage_span_required_len(&self.meta)?;
+        match &self.storage {
+            TensorStorage::Complex64(v) => Ok(v[start..end]
+                .iter()
+                .map(|z| Complex128::new(f64::from(z.re), f64::from(z.im)))
+                .collect()),
+            TensorStorage::Complex128(v) => Ok(v[start..end].to_vec()),
+            _ => Err(DenseTensorError::UnsupportedDType(self.meta.dtype())),
+        }
+    }
+
     pub fn dequantized_values_as_f64(&self) -> Result<Vec<f64>, DenseTensorError> {
         if !self.meta.is_contiguous() {
             return Err(DenseTensorError::UnsupportedLayout);
@@ -1608,6 +1624,16 @@ impl DenseTensor {
                 as_f64().into_iter().map(|value| value as f32).collect()
             }
         };
+        let as_complex128 = || -> Result<Vec<Complex128>, DenseTensorError> {
+            if self.meta.dtype().is_complex() {
+                self.contiguous_complex_values_as_complex128()
+            } else {
+                Ok(as_f64()
+                    .into_iter()
+                    .map(|r| Complex128::new(r, 0.0))
+                    .collect())
+            }
+        };
         let new_storage = match dtype {
             DType::F64 => TensorStorage::F64(Arc::new(as_f64())),
             DType::F32 => TensorStorage::F32(Arc::new(as_f32())),
@@ -1620,17 +1646,24 @@ impl DenseTensor {
                 TensorStorage::BF16(Arc::new(vals))
             }
             DType::Complex64 => {
-                let vals: Vec<Complex64> = as_f32()
-                    .into_iter()
-                    .map(|r| Complex64::new(r, 0.0))
-                    .collect();
+                let vals: Vec<Complex64> = if self.meta.dtype().is_complex() {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+                    {
+                        as_complex128()?
+                            .into_iter()
+                            .map(|z| Complex64::new(z.re as f32, z.im as f32))
+                            .collect()
+                    }
+                } else {
+                    as_f32()
+                        .into_iter()
+                        .map(|r| Complex64::new(r, 0.0))
+                        .collect()
+                };
                 TensorStorage::Complex64(Arc::new(vals))
             }
             DType::Complex128 => {
-                let vals: Vec<Complex128> = as_f64()
-                    .into_iter()
-                    .map(|r| Complex128::new(r, 0.0))
-                    .collect();
+                let vals: Vec<Complex128> = as_complex128()?;
                 TensorStorage::Complex128(Arc::new(vals))
             }
             _ => return Err(DenseTensorError::UnsupportedDType(dtype)),
@@ -4542,6 +4575,60 @@ mod tests {
                 assert_eq!(values, vec![(1.5, 0.0), (2.5, 0.0)]);
             }
             other => panic!("expected Complex128 storage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dense_tensor_to_dtype_preserves_complex64_imaginary_parts() {
+        let meta =
+            TensorMeta::from_shape(vec![2], DType::Complex64, Device::Cpu).with_storage_offset(1);
+        let storage = TensorStorage::Complex64(Arc::new(vec![
+            Complex64::new(9.0, 9.0),
+            Complex64::new(1.25, -2.5),
+            Complex64::new(-3.5, 4.75),
+        ]));
+        let tensor = DenseTensor::from_typed_storage(meta, storage).expect("offset c64 tensor");
+
+        let cast = tensor
+            .to_dtype(DType::Complex128)
+            .expect("cast c64 to c128");
+
+        assert_eq!(cast.meta().dtype(), DType::Complex128);
+        assert_eq!(cast.meta().storage_offset(), 0);
+        match cast.typed_storage() {
+            TensorStorage::Complex128(values) => {
+                let values: Vec<(f64, f64)> =
+                    values.iter().map(|value| (value.re, value.im)).collect();
+                assert_eq!(values, vec![(1.25, -2.5), (-3.5, 4.75)]);
+            }
+            other => panic!("expected Complex128 storage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dense_tensor_to_dtype_preserves_complex128_imaginary_parts() {
+        let meta =
+            TensorMeta::from_shape(vec![2], DType::Complex128, Device::Cpu).with_storage_offset(1);
+        let storage = TensorStorage::Complex128(Arc::new(vec![
+            Complex128::new(9.0, 9.0),
+            Complex128::new(1.25, -2.5),
+            Complex128::new(-3.5, 4.75),
+        ]));
+        let tensor = DenseTensor::from_typed_storage(meta, storage).expect("offset c128 tensor");
+
+        let cast = tensor
+            .to_dtype(DType::Complex64)
+            .expect("cast c128 to c64");
+
+        assert_eq!(cast.meta().dtype(), DType::Complex64);
+        assert_eq!(cast.meta().storage_offset(), 0);
+        match cast.typed_storage() {
+            TensorStorage::Complex64(values) => {
+                let values: Vec<(f32, f32)> =
+                    values.iter().map(|value| (value.re, value.im)).collect();
+                assert_eq!(values, vec![(1.25, -2.5), (-3.5, 4.75)]);
+            }
+            other => panic!("expected Complex64 storage, got {other:?}"),
         }
     }
 
