@@ -24644,6 +24644,20 @@ mod tests {
     }
 
     #[test]
+    fn mha_golden_tolerance_rejects_shape_drift() {
+        let produced = "shape=[1, 2, 1]\nvalues=[1.0000000000004, -2.0000000000004]\n";
+        let golden = "shape=[1, 1, 2]\nvalues=[1.0, -2.0]\n";
+
+        let result =
+            std::panic::catch_unwind(|| assert_golden_within_tol(produced, golden, 1e-12));
+
+        assert!(
+            result.is_err(),
+            "MHA fixture tolerance must not hide shape drift"
+        );
+    }
+
+    #[test]
     fn mha_self_flat_reuse_golden_output_matches_fixture() {
         assert_golden_within_tol(
             &mha_self_flat_reuse_golden_summary(),
