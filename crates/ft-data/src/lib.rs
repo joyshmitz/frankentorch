@@ -2125,6 +2125,21 @@ mod tests {
     }
 
     #[test]
+    fn dataloader_drop_last_preserves_custom_index_prefix() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ds = make_dataset(4, 1);
+        let config = DataLoaderConfig::new(2).with_drop_last(true);
+        let mut loader = DataLoader::with_indices(&ds, vec![3, 2, 1, 0, 3], config);
+
+        let mut targets = Vec::new();
+        while let Some(batch) = loader.next_batch(&mut session).unwrap() {
+            targets.extend(session.tensor_values(batch.target().unwrap()).unwrap());
+        }
+
+        assert_eq!(targets, vec![3.0, 2.0, 1.0, 0.0]);
+    }
+
+    #[test]
     fn dataloader_rejects_out_of_range_sampler_index() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let ds = make_dataset(2, 1);
