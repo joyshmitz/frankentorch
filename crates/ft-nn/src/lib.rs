@@ -22181,6 +22181,22 @@ mod tests {
     }
 
     #[test]
+    fn flatten_module_golden_matches_torch() {
+        // Differential golden vs torch.nn.Flatten 2.12: input arange24 [2,3,4],
+        // Flatten(start_dim=1,end_dim=2) -> shape [2,12], values unchanged.
+        // frankentorch-xwj0y.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable((0..24).map(f64::from).collect(), vec![2, 3, 4], false)
+            .unwrap();
+        let out = Flatten::new(1, 2).forward(&mut s, x).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![2, 12], "flatten shape");
+        for (i, v) in s.tensor_values(out).unwrap().iter().enumerate() {
+            assert!((v - i as f64).abs() < 1e-12, "flatten value {v} != {i}");
+        }
+    }
+
+    #[test]
     fn triplet_margin_loss_golden_matches_torch() {
         // Differential golden vs torch.nn.TripletMarginLoss(margin=1,p=2) 2.12:
         // anchor=[[1,0]], pos=[[1,1]], neg=[[0,0]] -> ~1.0 (d_pos==d_neg=1 so
