@@ -3256,6 +3256,14 @@ impl EmbeddingBag {
         let n_indices = indices_vals.len();
         let num_emb = self.num_embeddings;
 
+        if per_sample_weights.is_some() && !matches!(self.mode, EmbeddingBagMode::Sum) {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "EmbeddingBag: per_sample_weights is only supported in sum mode",
+                },
+            )));
+        }
+
         if let Some(w) = per_sample_weights {
             let psw_shape = session.tensor_shape(w)?;
             let psw_numel = checked_shape_numel(&psw_shape, "EmbeddingBag: psw shape overflow")?;
@@ -34249,6 +34257,28 @@ mod tests {
             err.to_string().contains("per_sample_weights"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn embedding_bag_rejects_per_sample_weights_for_non_sum_modes() {
+        for mode in [EmbeddingBagMode::Mean, EmbeddingBagMode::Max] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let eb = EmbeddingBag::new(&mut session, 4, 2, mode, None).unwrap();
+            let indices = session
+                .tensor_variable(vec![0.0, 1.0], vec![2], false)
+                .unwrap();
+            let offsets = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
+            let psw = session
+                .tensor_variable(vec![1.0, 2.0], vec![2], false)
+                .unwrap();
+            let err = eb
+                .forward_with_offsets(&mut session, indices, offsets, Some(psw))
+                .expect_err("per_sample_weights must fail outside sum mode");
+            assert!(
+                err.to_string().contains("only supported in sum mode"),
+                "unexpected error for {mode:?}: {err}"
+            );
+        }
     }
 
     #[test]
