@@ -3741,6 +3741,96 @@ mod tests {
         );
     }
 
+    proptest! {
+        // Metamorphic/property coverage for the freshly-churned sparse COO path
+        // (frankentorch-b2yob). (1) to_dense scatter-adds and SUMS duplicate
+        // coordinates bit-exactly (torch non-coalesced parity); (2) coalesced
+        // construction accepts exactly the strictly lex-sorted-unique inputs.
+        #[test]
+        fn prop_coo_to_dense_scatter_adds_and_sums_duplicates(
+            rows in 1usize..=4,
+            cols in 1usize..=4,
+            raw in prop::collection::vec((0usize..16, 0usize..16, -100.0f64..100.0f64), 1..=12),
+        ) {
+            let nnz = raw.len();
+            let mut row_idx: Vec<i64> = Vec::with_capacity(nnz);
+            let mut col_idx: Vec<i64> = Vec::with_capacity(nnz);
+            let mut vals: Vec<f64> = Vec::with_capacity(nnz);
+            let mut expected = vec![0.0f64; rows * cols];
+            for (r, c, v) in &raw {
+                let rr = r % rows;
+                let cc = c % cols;
+                row_idx.push(rr as i64);
+                col_idx.push(cc as i64);
+                vals.push(*v);
+                // Independent scatter-add in the SAME nnz order to_dense uses, so
+                // the float summation is bit-for-bit comparable.
+                expected[rr * cols + cc] += *v;
+            }
+            let mut flat = row_idx;
+            flat.extend(col_idx.iter().copied());
+            let indices = DenseI64Tensor::from_contiguous_values(flat, vec![2, nnz], Device::Cpu)
+                .expect("indices");
+            let values = DenseTensor::from_contiguous_values(vals, vec![nnz], Device::Cpu)
+                .expect("values");
+            // coalesced=false: duplicate coordinates are allowed and must be summed.
+            let coo = SparseCOOTensor::new(indices, values, vec![rows, cols], false)
+                .expect("coo construct");
+            let dense = coo.to_dense().expect("to_dense");
+            let got = dense.contiguous_values_as_f64().expect("dense values");
+            for k in 0..rows * cols {
+                prop_assert_eq!(got[k].to_bits(), expected[k].to_bits());
+            }
+            let seed = det_seed(&[rows, cols, nnz]);
+            let log = build_property_log(
+                "prop_coo_to_dense_scatter_adds_and_sums_duplicates",
+                "strict",
+                seed,
+                seed,
+                det_seed(&[got.len()]),
+                "coo_to_dense_scatter_sum_ok",
+            );
+            assert_log_contract(&log);
+        }
+
+        #[test]
+        fn prop_coalesced_coo_accepts_iff_strictly_sorted_unique(
+            rows in 1usize..=4,
+            cols in 1usize..=4,
+            raw in prop::collection::vec((0usize..8, 0usize..8), 1..=8),
+        ) {
+            let nnz = raw.len();
+            let coords: Vec<(i64, i64)> = raw
+                .iter()
+                .map(|(r, c)| ((r % rows) as i64, (c % cols) as i64))
+                .collect();
+            // Tuple Ord is lexicographic on (row, col) — exactly the dim-0-then-dim-1
+            // order the coalesced validator enforces.
+            let strictly_sorted_unique = (1..nnz).all(|i| coords[i - 1] < coords[i]);
+            let mut flat: Vec<i64> = coords.iter().map(|(r, _)| *r).collect();
+            flat.extend(coords.iter().map(|(_, c)| *c));
+            let indices = DenseI64Tensor::from_contiguous_values(flat, vec![2, nnz], Device::Cpu)
+                .expect("indices");
+            let values =
+                DenseTensor::from_contiguous_values(vec![1.0f64; nnz], vec![nnz], Device::Cpu)
+                    .expect("values");
+            let result = SparseCOOTensor::new(indices, values, vec![rows, cols], true);
+            // Coordinates are in-bounds and shapes are consistent, so the ONLY
+            // construction failure reason is the coalesced invariant.
+            prop_assert_eq!(result.is_ok(), strictly_sorted_unique);
+            let seed = det_seed(&[rows, cols, nnz]);
+            let log = build_property_log(
+                "prop_coalesced_coo_accepts_iff_strictly_sorted_unique",
+                "strict",
+                seed,
+                seed,
+                det_seed(&[usize::from(strictly_sorted_unique)]),
+                "coalesced_coo_validation_characterized",
+            );
+            assert_log_contract(&log);
+        }
+    }
+
     #[test]
     fn tensor_meta_with_integer_dtypes() {
         let meta_i64 = TensorMeta::from_shape(vec![2, 3], DType::I64, Device::Cpu);
