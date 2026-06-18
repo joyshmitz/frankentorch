@@ -1,8 +1,9 @@
-# frankentorch-kgs4 SDPA scaled GEMM alpha code-first attempt
+# frankentorch-kgs4.113 SDPA scaled GEMM alpha code-first attempt
 
 Date: 2026-06-18
-Agent: IvoryDeer / cod-a
+Agent: IvoryDeer / cod-b
 Status: code-first, batch-test pending
+Bead: frankentorch-kgs4.113
 
 ## Lever
 
@@ -36,7 +37,7 @@ contract without turning the batch suite into another benchmark.
 | Per-call packed f64 `dgemm_bt` panel | `artifacts/perf/frankentorch-kgs4-next/kgs4_53_packed_bt_panel_rejected.md` | Same-worker regressions / mixed results. | Rejected; do not retry per-call BT packing. |
 | Per-call packed f32 `sgemm_bt` panel | `artifacts/perf/frankentorch-nfvtp/rejected_sgemm_bt_packed_panel.md` | Regressed f32 linear BT shapes. | Rejected; do not retry per-call BT packing. |
 | Persistent linear weight cache | `artifacts/perf/frankentorch-kgs4.56/rejected_persistent_linear_weight_cache.md` | Existing rejection artifact. | Rejected; do not route SDPA through persistent weight cache. |
-| SDPA dQ/dK GEMM alpha scaling | This attempt | Local cargo check only by instruction; Criterion/conformance batch pending. | Pending measurement; revert if SDPA grad or conformance regresses. |
+| SDPA dQ/dK GEMM alpha scaling | `frankentorch-kgs4.113` | Local cargo check only by instruction; Criterion/conformance batch pending. | Pending measurement; revert if SDPA grad or conformance regresses. |
 
 ## Required batch follow-up
 
