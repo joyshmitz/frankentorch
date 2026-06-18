@@ -3733,6 +3733,7 @@ impl OneCycleLR {
     /// Create a new `OneCycleLR` scheduler.
     pub fn new(optimizer: &dyn Optimizer, max_lr: f64, total_steps: usize) -> Self {
         let total_steps = total_steps.max(1);
+        let max_lr = finite_non_negative_factor(max_lr);
         let div_factor = 25.0;
         let final_div_factor = 1e4;
         let initial_lr = max_lr / div_factor;
@@ -4007,7 +4008,7 @@ impl LRScheduler for OneCycleLR {
 
         for (key, val) in &state.extra {
             match key.as_str() {
-                "max_lr" => self.max_lr = *val,
+                "max_lr" => self.max_lr = finite_non_negative_factor(*val),
                 "total_steps" => {
                     if let Some(total_steps) = decode_exact_usize_field(*val, 1) {
                         self.total_steps = total_steps;
@@ -11219,6 +11220,53 @@ mod tests {
             scheduler2.get_last_momentum(),
             scheduler.get_last_momentum()
         );
+    }
+
+    #[test]
+    fn one_cycle_lr_invalid_max_lr_is_clamped() {
+        for max_lr in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("var");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut scheduler = OneCycleLR::new(&opt, max_lr, 10)
+                .anneal_strategy_linear()
+                .cycle_momentum(false);
+
+            scheduler.step(&mut opt, Some(0));
+            assert_eq!(opt.get_lr(), 0.0, "initial invalid max_lr {max_lr:?}");
+            assert!(opt.get_lr().is_finite(), "initial lr must remain finite");
+            assert!(opt.get_lr() >= 0.0, "initial lr must remain non-negative");
+
+            scheduler.step(&mut opt, Some(2));
+            assert_eq!(opt.get_lr(), 0.0, "peak invalid max_lr {max_lr:?}");
+            assert!(opt.get_lr().is_finite(), "peak lr must remain finite");
+            assert!(opt.get_lr() >= 0.0, "peak lr must remain non-negative");
+
+            scheduler.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![0.0],
+                extra: vec![
+                    ("max_lr".to_owned(), max_lr),
+                    ("total_steps".to_owned(), 10.0),
+                    ("pct_start".to_owned(), 0.3),
+                    ("anneal_strategy".to_owned(), 1.0),
+                    ("cycle_momentum".to_owned(), 0.0),
+                    ("base_momentum".to_owned(), 0.85),
+                    ("max_momentum".to_owned(), 0.95),
+                    ("div_factor".to_owned(), 25.0),
+                    ("final_div_factor".to_owned(), 1e4),
+                    ("three_phase".to_owned(), 0.0),
+                    ("last_momentum".to_owned(), f64::NAN),
+                    ("verbose".to_owned(), 0.0),
+                ],
+            });
+            scheduler.step(&mut opt, Some(2));
+            assert_eq!(opt.get_lr(), 0.0, "loaded invalid max_lr {max_lr:?}");
+            assert!(opt.get_lr().is_finite(), "loaded lr must remain finite");
+            assert!(opt.get_lr() >= 0.0, "loaded lr must remain non-negative");
+        }
     }
 
     #[test]
