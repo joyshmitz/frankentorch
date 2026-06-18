@@ -3318,6 +3318,13 @@ impl EmbeddingBag {
                     },
                 )));
             }
+            if bag == 0 && start != 0 {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: "EmbeddingBag: first offset must be zero",
+                    },
+                )));
+            }
             let end = if bag + 1 < num_bags {
                 let end_f = offsets_vals[bag + 1];
                 if end_f < 0.0 || end_f != end_f.trunc() {
@@ -34394,6 +34401,18 @@ mod tests {
             .expect_err("decreasing offsets must fail");
         assert!(
             err.to_string().contains("non-decreasing"),
+            "unexpected error: {err}"
+        );
+
+        let indices = session
+            .tensor_variable(vec![0.0, 1.0, 2.0], vec![3], false)
+            .unwrap();
+        let nonzero_first = session.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let err = eb
+            .forward_with_offsets(&mut session, indices, nonzero_first, None)
+            .expect_err("first offset must be zero");
+        assert!(
+            err.to_string().contains("first offset must be zero"),
             "unexpected error: {err}"
         );
     }
