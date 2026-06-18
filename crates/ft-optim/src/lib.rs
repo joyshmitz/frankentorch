@@ -11707,6 +11707,71 @@ mod tests {
     }
 
     #[test]
+    fn grad_scaler_step_unscales_accumulated_persistent_gradients() {
+        let targets = [5.0, -3.0];
+
+        let mut s1 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w1 = s1.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let mut last_report1 = None;
+        for target_value in targets {
+            let target = s1.tensor_variable(vec![target_value], vec![1], false).unwrap();
+            let loss = s1.mse_loss(w1, target).unwrap();
+            last_report1 = Some(s1.tensor_backward(loss).unwrap());
+        }
+        let unscaled_report = last_report1.expect("at least one unscaled backward");
+        let unscaled_accumulated_grad = s1
+            .tensor_accumulated_gradient(w1)
+            .unwrap()
+            .expect("unscaled accumulated gradient");
+        let mut opt1 = SGD::new(vec![w1], 0.1);
+        opt1.step(&mut s1, &unscaled_report).unwrap();
+        let unscaled_step_value = s1.tensor_values(w1).unwrap();
+
+        let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w2 = s2.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let mut scaler = GradScaler::with_config(8.0, 2.0, 0.5, 100);
+        let mut last_report2 = None;
+        for target_value in targets {
+            let target = s2.tensor_variable(vec![target_value], vec![1], false).unwrap();
+            let loss = s2.mse_loss(w2, target).unwrap();
+            let scaled_loss = scaler.scale_loss(&mut s2, loss).unwrap();
+            last_report2 = Some(s2.tensor_backward(scaled_loss).unwrap());
+        }
+        let scaled_report = last_report2.expect("at least one scaled backward");
+        let scaled_accumulated_grad = s2
+            .tensor_accumulated_gradient(w2)
+            .unwrap()
+            .expect("scaled accumulated gradient");
+        for (unscaled, scaled) in unscaled_accumulated_grad
+            .iter()
+            .zip(scaled_accumulated_grad.iter())
+        {
+            assert!(
+                (scaled - unscaled * 8.0).abs() < 1e-8,
+                "accumulated scaled grad should be 8x unscaled: unscaled={unscaled} scaled={scaled}"
+            );
+        }
+
+        let mut opt2 = SGD::new(vec![w2], 0.1);
+        let applied = scaler.step(&mut s2, &mut opt2, &scaled_report).unwrap();
+        assert!(applied, "finite accumulated gradients should apply");
+        assert_eq!(
+            s2.tensor_values(w2).unwrap(),
+            unscaled_step_value,
+            "scaled accumulated step should match the unscaled accumulated step"
+        );
+
+        let persistent_grad = s2
+            .tensor_accumulated_gradient(w2)
+            .unwrap()
+            .expect("scaled parameter gradient should remain allocated");
+        assert_eq!(
+            persistent_grad, unscaled_accumulated_grad,
+            "GradScaler.step should unscale the full accumulated persistent gradient"
+        );
+    }
+
+    #[test]
     fn grad_scaler_skips_step_on_inf_gradient() {
         // Inject inf into gradients by using a large scale * a poorly-conditioned loss
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
