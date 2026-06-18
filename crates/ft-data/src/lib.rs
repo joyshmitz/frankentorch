@@ -1300,17 +1300,23 @@ impl Transform for LambdaTransform {
 }
 
 /// Scale all values in a named tensor by a constant factor.
+#[derive(Debug)]
 pub struct ScaleTransform {
     tensor_name: String,
     factor: f64,
 }
 
 impl ScaleTransform {
-    pub fn new(tensor_name: &str, factor: f64) -> Self {
-        Self {
+    pub fn new(tensor_name: &str, factor: f64) -> Result<Self, AutogradError> {
+        if !factor.is_finite() {
+            return Err(transform_config_error(
+                "ScaleTransform requires finite factor",
+            ));
+        }
+        Ok(Self {
             tensor_name: tensor_name.to_string(),
             factor,
-        }
+        })
     }
 }
 
@@ -2206,9 +2212,28 @@ mod tests {
     #[test]
     fn scale_transform() {
         let item = DataItem::single("input", vec![1.0, 2.0, 3.0], vec![3]);
-        let t = ScaleTransform::new("input", 2.0);
+        let t = ScaleTransform::new("input", 2.0).expect("finite scale");
         let result = t.apply(item);
         assert_eq!(result.tensors[0].1, vec![2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn scale_transform_rejects_non_finite_factor() {
+        for factor in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = ScaleTransform::new("input", factor).expect_err("non-finite factor");
+            assert!(matches!(
+                err,
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet { .. }
+                ))
+            ));
+            if let AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet { reason },
+            )) = err
+            {
+                assert_eq!(reason, "ScaleTransform requires finite factor");
+            }
+        }
     }
 
     #[test]
@@ -2230,8 +2255,8 @@ mod tests {
     fn compose_transforms() {
         let item = DataItem::single("input", vec![1.0, 2.0], vec![2]);
         let t = Compose::new(vec![
-            Box::new(ScaleTransform::new("input", 10.0)),
-            Box::new(ScaleTransform::new("input", 0.5)),
+            Box::new(ScaleTransform::new("input", 10.0).expect("finite scale")),
+            Box::new(ScaleTransform::new("input", 0.5).expect("finite scale")),
         ]);
         let result = t.apply(item);
         // 1*10*0.5=5, 2*10*0.5=10
@@ -2244,7 +2269,10 @@ mod tests {
             DataItem::single("input", vec![1.0, 2.0], vec![2]),
             DataItem::single("input", vec![3.0, 4.0], vec![2]),
         ]);
-        let tds = TransformDataset::new(ds, Box::new(ScaleTransform::new("input", 3.0)));
+        let tds = TransformDataset::new(
+            ds,
+            Box::new(ScaleTransform::new("input", 3.0).expect("finite scale")),
+        );
         assert_eq!(tds.len(), 2);
         let item0 = tds.get(0);
         assert_eq!(item0.tensors[0].1, vec![3.0, 6.0]);
