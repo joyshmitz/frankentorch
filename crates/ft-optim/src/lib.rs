@@ -6152,6 +6152,25 @@ mod tests {
     }
 
     #[test]
+    fn adamw_first_step_golden_matches_torch() {
+        // Differential golden vs torch.optim.AdamW 2.12: x=[2,-3], lr=0.1, default
+        // wd=0.01, loss=sum(x^2); one step == [1.89800000025,-2.897000000167]
+        // (Adam update + decoupled -lr*wd*param). frankentorch-3rvg0.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![2.0, -3.0], vec![2], true).unwrap();
+        let sq = s.tensor_mul(x, x).unwrap();
+        let loss = s.tensor_sum(sq).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let mut opt = AdamW::new(vec![x], 0.1);
+        opt.step(&mut s, &report).unwrap();
+        let after = s.tensor_values(x).unwrap();
+        let want = [1.898_000_000_25, -2.897_000_000_167];
+        for (g, w) in after.iter().zip(want.iter()) {
+            assert!((g - w).abs() < 1e-9, "adamw step {g} != {w}");
+        }
+    }
+
+    #[test]
     fn adam_first_step_golden_matches_torch() {
         // Differential golden vs torch.optim.Adam 2.12: x=[2,-3], lr=0.1,
         // loss=sum(x^2) (grad=[4,-6]); one Adam step (defaults) ==
