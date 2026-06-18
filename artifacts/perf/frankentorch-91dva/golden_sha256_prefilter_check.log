@@ -1,0 +1,7 @@
+artifacts/perf/frankentorch-91dva/test_rank_deficient_fast_path_prefilter.log: OK
+artifacts/perf/frankentorch-91dva/test_svd_filter_prefilter.log: OK
+artifacts/perf/frankentorch-91dva/cargo_check_ft_kernel_cpu_release_prefilter.log: OK
+artifacts/perf/frankentorch-91dva/cargo_clippy_ft_kernel_cpu_prefilter.log: OK
+artifacts/perf/frankentorch-91dva/baseline_clean_head_plus_eigfix_svd_256_ovha.log: OK
+artifacts/perf/frankentorch-91dva/after_svd_256_prefilter_ovha.log: OK
+artifacts/perf/frankentorch-91dva/git_diff_check_prefilter.log: OK

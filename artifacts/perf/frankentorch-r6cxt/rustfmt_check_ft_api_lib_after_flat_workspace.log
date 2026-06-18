@@ -1,0 +1,6 @@
+error: let chains are only allowed in Rust 2024 or later
+    --> /data/projects/frankentorch/crates/ft-api/src/lib.rs:7236:12
+     |
+7236 |         if let Some(weight_id) = weight
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+

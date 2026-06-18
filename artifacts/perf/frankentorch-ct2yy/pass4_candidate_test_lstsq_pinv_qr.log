@@ -1,0 +1,6 @@
+[RCH] local (no admissible workers: critical_pressure=1,insufficient_slots=1)
+error: unexpected argument 'pinv_qr' found
+
+Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
+
+For more information, try '--help'.

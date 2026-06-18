@@ -1,0 +1,46 @@
+[RCH] local (no admissible workers: critical_pressure=2,active_project_exclusion=1)
+    Checking either v1.15.0
+    Checking plotters-backend v0.3.7
+    Checking ciborium-io v0.2.2
+    Checking anstyle v1.0.14
+    Checking clap_lex v1.1.0
+    Checking rawpointer v0.2.1
+    Checking cast v0.3.0
+    Checking same-file v1.0.6
+    Checking regex-automata v0.4.14
+    Checking similar v2.7.0
+    Checking oorandom v11.1.5
+    Checking anes v0.1.6
+    Checking libm v0.2.16
+    Checking serde_json v1.0.149
+    Checking is-terminal v0.4.17
+    Checking console v0.16.3
+    Checking tempfile v3.27.0
+    Checking num-complex v0.4.6
+    Checking bytemuck v1.25.0
+    Checking serde v1.0.228
+    Checking ppv-lite86 v0.2.21
+    Checking matrixmultiply v0.3.10
+    Checking walkdir v2.5.0
+    Checking clap_builder v4.6.0
+    Checking plotters-svg v0.3.7
+    Checking itertools v0.10.5
+    Checking rayon v1.12.0
+    Checking half v2.7.1
+    Checking safe_arch v0.7.4
+    Checking rusty-fork v0.3.1
+    Checking plotters v0.3.7
+    Checking rand_chacha v0.9.0
+    Checking insta v1.47.2
+    Checking wide v0.7.33
+    Checking ciborium-ll v0.2.2
+    Checking ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+    Checking proptest v1.11.0
+    Checking ciborium v0.2.2
+    Checking tinytemplate v1.2.1
+    Checking criterion-plot v0.5.0
+    Checking regex v1.12.3
+    Checking clap v4.6.1
+    Checking criterion v0.5.1
+    Checking ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.38s

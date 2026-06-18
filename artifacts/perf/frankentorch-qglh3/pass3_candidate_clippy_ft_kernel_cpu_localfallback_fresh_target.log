@@ -1,0 +1,29 @@
+[RCH] local (no admissible workers: critical_pressure=1,active_project_exclusion=1)
+    Checking ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+    Checking ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+error: manual implementation of `.is_multiple_of()`
+     --> crates/ft-kernel-cpu/src/lib.rs:12032:24
+      |
+12032 |                     && its % 4 == 0
+      |                        ^^^^^^^^^^^^ help: replace with: `its.is_multiple_of(4)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+      = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+
+error: the loop variable `j` is only used to index `z`
+     --> crates/ft-kernel-cpu/src/lib.rs:12317:14
+      |
+12317 |     for j in 0..AED_WIN {
+      |              ^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+      = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator
+      |
+12317 -     for j in 0..AED_WIN {
+12317 +     for <item> in z.iter().take(AED_WIN) {
+      |
+
+error: could not compile `ft-kernel-cpu` (lib) due to 2 previous errors

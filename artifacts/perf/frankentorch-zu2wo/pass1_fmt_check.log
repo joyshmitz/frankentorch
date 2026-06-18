@@ -1,0 +1,14 @@
+  [2m2026-06-13T01:33:05.982120Z[0m [33m WARN[0m [1;33mrch::hook[0m[33m: [33mexec called with non-compilation command: cargo fmt -p ft-kernel-cpu --check[0m
+    [2;3mat[0m rch/src/hook.rs:402 [2;3mon[0m ThreadId(1)
+
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:12904:
+             while col_block_start <= step.jmax {
+                 let col_block_end = (col_block_start + TILE).min(step.jmax + 1);
+                 for i in col_block_start..col_block_end {
+[31m-                    let mut p2 = step.xr * scratch[i * n + step.k]
+[m[31m-                        + step.yr * scratch[i * n + (step.k + 1)];
+[m[32m+                    let mut p2 =
+[m[32m+                        step.xr * scratch[i * n + step.k] + step.yr * scratch[i * n + (step.k + 1)];
+[m                     if step.notlast {
+                         p2 += step.zr * scratch[i * n + (step.k + 2)];
+                         scratch[i * n + (step.k + 2)] -= p2 * step.r_s;

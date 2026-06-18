@@ -1,0 +1,33 @@
+   Compiling ft-core v0.1.0 (/data/projects/.scratch/frankentorch-c31ar-baseline-local/crates/ft-core)
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/.scratch/frankentorch-c31ar-baseline-local/crates/ft-kernel-cpu)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 13.95s
+     Running benches/linalg_bench.rs (/data/tmp/cargo-target/release/deps/linalg_bench-aa9fc2ba4861f31f)
+Gnuplot not found, using plotters backend
+Benchmarking svd_f64_256x256_wellcond
+Benchmarking svd_f64_256x256_wellcond: Warming up for 1.0000 s
+Benchmarking svd_f64_256x256_wellcond: Collecting 10 samples in estimated 4.6405 s (20 iterations)
+Benchmarking svd_f64_256x256_wellcond: Analyzing
+svd_f64_256x256_wellcond
+                        time:   [212.66 ms 224.82 ms 234.07 ms]
+                        change: [-15.762% -9.9518% -5.1208%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low severe
+  1 (10.00%) low mild
+
+Benchmarking svdvals_f64_256x128
+Benchmarking svdvals_f64_256x128: Warming up for 1.0000 s
+Benchmarking svdvals_f64_256x128: Collecting 10 samples in estimated 3.3055 s (495 iterations)
+Benchmarking svdvals_f64_256x128: Analyzing
+svdvals_f64_256x128     time:   [6.2704 ms 6.6110 ms 6.9792 ms]
+                        change: [+6.6411% +10.784% +14.813%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking svdvals_f64_384x128
+Benchmarking svdvals_f64_384x128: Warming up for 1.0000 s
+Benchmarking svdvals_f64_384x128: Collecting 10 samples in estimated 3.3541 s (330 iterations)
+Benchmarking svdvals_f64_384x128: Analyzing
+svdvals_f64_384x128     time:   [9.9191 ms 10.005 ms 10.099 ms]
+                        change: [+0.2806% +2.3974% +4.5814%] (p = 0.05 < 0.05)
+                        Change within noise threshold.
+

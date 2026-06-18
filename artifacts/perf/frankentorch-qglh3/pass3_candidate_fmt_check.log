@@ -1,0 +1,10 @@
+Diff in /data/projects/frankentorch/crates/ft-kernel-cpu/src/lib.rs:12030:
+                 if !want_vectors
+                     && its != 0
+                     && its % 4 == 0
+[31m-                    && let Some(next_en) = eig_try_aed_deflate_suffix(h, &mut eigenvalues, n, l, en_u, anorm)
+[m[32m+                    && let Some(next_en) =
+[m[32m+                        eig_try_aed_deflate_suffix(h, &mut eigenvalues, n, l, en_u, anorm)
+[m                 {
+                     en = next_en;
+                     break;

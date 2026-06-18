@@ -1,0 +1,7 @@
+Script started on 2026-06-09 10:30:26-04:00 [COMMAND="rch exec -- cargo clippy -p ft-kernel-cpu --all-targets -- -D warnings" <not executed on terminal>]
+[RCH] local (no admissible workers: critical_pressure=2,active_project_exclusion=1)
+    Blocking waiting for file lock on build directory
+    Checking ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.84s
+
+Script done on 2026-06-09 10:30:37-04:00 [COMMAND_EXIT_CODE="0"]

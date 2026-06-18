@@ -1,0 +1,17 @@
+[RCH] local (no admissible workers: critical_pressure=1,insufficient_slots=2)
+    Blocking waiting for file lock on build directory
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+error[E0425]: cannot find function `svd_gemm_left_reconstruction_fast_path` in module `super`
+     --> crates/ft-kernel-cpu/src/lib.rs:22135:27
+      |
+22135 |         let fast = super::svd_gemm_left_reconstruction_fast_path(&a, n, n, false)
+      |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `svd_gemm_left_reconstruction_fast_path` in module `super`
+     --> crates/ft-kernel-cpu/src/lib.rs:22152:20
+      |
+22152 |             super::svd_gemm_left_reconstruction_fast_path(&a, n, n, false)
+      |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `super`
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `ft-kernel-cpu` (lib test) due to 2 previous errors

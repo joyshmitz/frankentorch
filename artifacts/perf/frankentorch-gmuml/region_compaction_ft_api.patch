@@ -1,0 +1,99 @@
+diff --git a/crates/ft-api/src/lib.rs b/crates/ft-api/src/lib.rs
+index d404aec8..04f59352 100644
+--- a/crates/ft-api/src/lib.rs
++++ b/crates/ft-api/src/lib.rs
+@@ -373,6 +373,31 @@ impl FrankenTorchSession {
+         self.tensor_tape.clear_graph();
+     }
+ 
++    fn compact_nograd_tensor_since(
++        &mut self,
++        boundary: usize,
++        output: TensorNodeId,
++    ) -> Result<TensorNodeId, AutogradError> {
++        if output.0 < boundary || self.tensor_requires_grad(output)? {
++            return Ok(output);
++        }
++
++        let shape = self.tensor_shape(output)?;
++        match self.tensor_dtype(output)? {
++            DType::F64 => {
++                let values = self.tensor_values(output)?;
++                self.truncate_autograd_graph(boundary);
++                self.tensor_variable(values, shape, false)
++            }
++            DType::F32 => {
++                let values = self.tensor_values_f32(output)?;
++                self.truncate_autograd_graph(boundary);
++                self.tensor_variable_f32(values, shape, false)
++            }
++            _ => Ok(output),
++        }
++    }
++
+     /// Enter a no_grad context: disable gradient tracking for subsequent operations.
+     pub fn no_grad_enter(&mut self) {
+         self.grad_enabled_stack.push(false);
+@@ -16989,12 +17014,14 @@ impl FrankenTorchSession {
+         // conv1d [N, C, L] is conv2d [N, C, 1, L] with a height-1 kernel. Route
+         // through the fully-fused conv2d path (no-grad im2col + grad col2im) instead
+         // of the per-output narrow/cat/bmm composed path — inheriting both wins.
++        let boundary = self.autograd_graph_node_count();
+         let input_4d = self.tensor_reshape(input, vec![batch_size, in_channels, 1, input_len])?;
+         let weight_4d =
+             self.tensor_reshape(weight, vec![out_channels, in_channels, 1, kernel_size])?;
+         let output_4d =
+             self.functional_conv2d(input_4d, weight_4d, bias, (1, stride), (0, padding))?;
+-        self.tensor_reshape(output_4d, vec![batch_size, out_channels, output_len])
++        let output = self.tensor_reshape(output_4d, vec![batch_size, out_channels, output_len])?;
++        self.compact_nograd_tensor_since(boundary, output)
+     }
+ 
+     /// Apply a 2D convolution.
+@@ -95579,6 +95606,46 @@ mod tests {
+         assert_eq!(vals, vec![-1.0, -1.0, -1.0]);
+     }
+ 
++    #[test]
++    fn functional_conv1d_nograd_compacts_intermediates_bit_exact() {
++        let input_values: Vec<f64> = (0..30).map(|i| (i as f64 - 11.0) * 0.125).collect();
++        let weight_values: Vec<f64> = (0..12).map(|i| (i as f64 - 5.0) * 0.2).collect();
++        let bias_values = vec![0.25, -0.5];
++
++        let mut compact = FrankenTorchSession::new(ExecutionMode::Strict);
++        let compact_input = compact
++            .tensor_variable(input_values.clone(), vec![2, 3, 5], false)
++            .unwrap();
++        let compact_weight = compact
++            .tensor_variable(weight_values.clone(), vec![2, 3, 2], false)
++            .unwrap();
++        let compact_bias = compact
++            .tensor_variable(bias_values.clone(), vec![2], false)
++            .unwrap();
++        let boundary = compact.autograd_graph_node_count();
++        let compact_out = compact
++            .functional_conv1d(compact_input, compact_weight, Some(compact_bias), 1, 1)
++            .unwrap();
++        let compact_values = compact.tensor_values(compact_out).unwrap();
++        assert_eq!(compact.tensor_shape(compact_out).unwrap(), vec![2, 2, 6]);
++        assert!(!compact.tensor_requires_grad(compact_out).unwrap());
++        assert_eq!(compact.autograd_graph_node_count(), boundary + 1);
++
++        let mut reference = FrankenTorchSession::new(ExecutionMode::Strict);
++        let reference_input = reference
++            .tensor_variable(input_values, vec![2, 3, 5], true)
++            .unwrap();
++        let reference_weight = reference
++            .tensor_variable(weight_values, vec![2, 3, 2], true)
++            .unwrap();
++        let reference_bias = reference.tensor_variable(bias_values, vec![2], true).unwrap();
++        let reference_out = reference
++            .functional_conv1d(reference_input, reference_weight, Some(reference_bias), 1, 1)
++            .unwrap();
++        assert!(reference.tensor_requires_grad(reference_out).unwrap());
++        assert_eq!(compact_values, reference.tensor_values(reference_out).unwrap());
++    }
++
+     #[test]
+     fn functional_conv_unbatched_input_matches_torch() {
+         // torch F.conv{1,2,3}d accept an unbatched input ([C_in, ...]) and return

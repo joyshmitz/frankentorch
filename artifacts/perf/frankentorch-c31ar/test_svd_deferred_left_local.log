@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (/data/tmp/cargo-target/debug/deps/ft_kernel_cpu-d26c108ecd1e4673)
+
+running 3 tests
+test tests::svd_deferred_left_rejects_rank_deficient_square ... ok
+test tests::svd_deferred_left_thread_count_bit_exact ... ok
+test tests::svd_deferred_left_full_rank_square_contract_96 ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 416 filtered out; finished in 0.09s
+

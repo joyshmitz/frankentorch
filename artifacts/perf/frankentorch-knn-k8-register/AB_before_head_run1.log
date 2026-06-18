@@ -1,0 +1,8 @@
+  [2m2026-06-08T18:04:07.351077Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mExecuting command remotely: cargo bench -p ft-api --bench ops_bench -- knn_search/8192x512_k8 --warm-up-time 1 --measurement-time 5 --sample-size 20[0m
+Benchmarking knn_search/8192x512_k8
+Benchmarking knn_search/8192x512_k8: Warming up for 1.0000 s
+Benchmarking knn_search/8192x512_k8: Collecting 20 samples in estimated 5.1870 s (2730 iterations)
+Benchmarking knn_search/8192x512_k8: Analyzing
+knn_search/8192x512_k8  time:   [1.8072 ms 1.8560 ms 1.9055 ms]
+                        thrpt:  [2.2011 Gelem/s 2.2598 Gelem/s 2.3209 Gelem/s]
+[RCH] remote vmi1156319 (220.1s)

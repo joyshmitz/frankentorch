@@ -1,0 +1,109 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling libc v0.2.185
+   Compiling cfg-if v1.0.4
+   Compiling autocfg v1.5.0
+   Compiling zerocopy v0.8.48
+   Compiling getrandom v0.3.4
+   Compiling crossbeam-utils v0.8.21
+   Compiling serde_core v1.0.228
+   Compiling rustix v1.1.4
+   Compiling rayon-core v1.13.0
+   Compiling once_cell v1.21.4
+   Compiling either v1.15.0
+   Compiling serde v1.0.228
+   Compiling bitflags v2.11.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling zmij v1.0.21
+   Compiling serde_json v1.0.149
+   Compiling regex-syntax v0.8.10
+   Compiling fastrand v2.4.1
+   Compiling libm v0.2.16
+   Compiling anstyle v1.0.14
+   Compiling memchr v2.8.0
+   Compiling itoa v1.0.18
+   Compiling clap_lex v1.1.0
+   Compiling ciborium-io v0.2.2
+   Compiling plotters-backend v0.3.7
+   Compiling fnv v1.0.7
+   Compiling rawpointer v0.2.1
+   Compiling same-file v1.0.6
+   Compiling bit-vec v0.8.0
+   Compiling quick-error v1.2.3
+   Compiling cast v0.3.0
+   Compiling anes v0.1.6
+   Compiling similar v2.7.0
+   Compiling oorandom v11.1.5
+   Compiling unarray v0.1.4
+   Compiling itertools v0.10.5
+   Compiling clap_builder v4.6.0
+   Compiling walkdir v2.5.0
+   Compiling num-traits v0.2.19
+   Compiling matrixmultiply v0.3.10
+   Compiling bit-set v0.8.0
+   Compiling plotters-svg v0.3.7
+   Compiling crossbeam-epoch v0.9.18
+   Compiling syn v2.0.117
+   Compiling crossbeam-deque v0.8.6
+   Compiling num-complex v0.4.6
+   Compiling plotters v0.3.7
+   Compiling wait-timeout v0.2.1
+   Compiling is-terminal v0.4.17
+   Compiling console v0.16.3
+   Compiling criterion-plot v0.5.0
+   Compiling rand_core v0.9.5
+   Compiling rand_xorshift v0.4.0
+   Compiling rand v0.9.4
+   Compiling rayon v1.12.0
+   Compiling clap v4.6.1
+   Compiling regex-automata v0.4.14
+   Compiling tempfile v3.27.0
+   Compiling rusty-fork v0.3.1
+   Compiling insta v1.47.2
+   Compiling zerocopy-derive v0.8.48
+   Compiling bytemuck_derive v1.10.2
+   Compiling serde_derive v1.0.228
+   Compiling regex v1.12.3
+   Compiling bytemuck v1.25.0
+   Compiling safe_arch v0.7.4
+   Compiling wide v0.7.33
+   Compiling tinytemplate v1.2.1
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling ciborium-ll v0.2.2
+   Compiling ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+   Compiling rand_chacha v0.9.0
+   Compiling ciborium v0.2.2
+   Compiling proptest v1.11.0
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling criterion v0.5.1
+    Finished `bench` profile [optimized + debuginfo] target(s) in 34.77s
+     Running benches/linalg_bench.rs (/data/tmp/cargo-target/release/deps/linalg_bench-aa9fc2ba4861f31f)
+Gnuplot not found, using plotters backend
+Benchmarking svd_f64_256x256_wellcond
+Benchmarking svd_f64_256x256_wellcond: Warming up for 1.0000 s
+Benchmarking svd_f64_256x256_wellcond: Collecting 10 samples in estimated 4.8890 s (20 iterations)
+Benchmarking svd_f64_256x256_wellcond: Analyzing
+svd_f64_256x256_wellcond
+                        time:   [242.26 ms 245.42 ms 248.71 ms]
+                        change: [-25.550% -23.558% -21.742%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking svdvals_f64_256x128
+Benchmarking svdvals_f64_256x128: Warming up for 1.0000 s
+Benchmarking svdvals_f64_256x128: Collecting 10 samples in estimated 3.2456 s (550 iterations)
+Benchmarking svdvals_f64_256x128: Analyzing
+svdvals_f64_256x128     time:   [5.8480 ms 5.9495 ms 6.0555 ms]
+                        change: [-7.1819% -5.6303% -4.2660%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking svdvals_f64_384x128
+Benchmarking svdvals_f64_384x128: Warming up for 1.0000 s
+Benchmarking svdvals_f64_384x128: Collecting 10 samples in estimated 3.5758 s (330 iterations)
+Benchmarking svdvals_f64_384x128: Analyzing
+svdvals_f64_384x128     time:   [10.136 ms 10.216 ms 10.315 ms]
+                        change: [-21.499% -14.088% -6.7896%] (p = 0.00 < 0.05)
+                        Performance has improved.
+

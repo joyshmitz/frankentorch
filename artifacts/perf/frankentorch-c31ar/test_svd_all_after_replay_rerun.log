@@ -1,0 +1,26 @@
+[RCH] local (no admissible workers: critical_pressure=1,insufficient_slots=2)
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.63s
+     Running unittests src/lib.rs (/data/tmp/cargo-target/debug/deps/ft_kernel_cpu-d26c108ecd1e4673)
+
+running 17 tests
+test tests::svd_diagonal_sorted ... ok
+test tests::svd_identity_2x2 ... ok
+test tests::svd_rank_deficient_reconstructs ... ok
+test tests::svd_ill_conditioned_hilbert ... ok
+test tests::svd_reconstruction_3x3 ... ok
+test tests::svd_rank_deficient_square_fast_path_skips_well_conditioned ... ok
+test tests::svdvals_matches_full_svd ... ok
+test tests::svd_wide_2x3 ... ok
+test tests::svd_tall_3x2 ... ok
+test tests::svd_tall_orthonormal_and_reconstructs_40x24 ... ok
+test tests::prop_svd_reconstruction_within_tolerance ... ok
+test tests::svdvals_matches_full_svd_tall_and_wide ... ok
+test tests::svd_lowrank_recovers_exact_low_rank ... ok
+test tests::prop_svd_singular_values_are_nonnegative ... ok
+test tests::svd_shifted_sweep_replay_matches_inline_bit_exact ... ok
+test tests::svd_shifted_sweep_replay_thread_count_bit_exact ... ok
+test tests::svd_rank_deficient_square_fast_path_contract_128 ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 401 filtered out; finished in 0.37s
+

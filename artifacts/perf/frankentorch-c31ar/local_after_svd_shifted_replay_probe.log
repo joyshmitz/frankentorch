@@ -1,0 +1,29 @@
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 14.49s
+     Running benches/linalg_bench.rs (/data/tmp/cargo-target/release/deps/linalg_bench-aa9fc2ba4861f31f)
+Gnuplot not found, using plotters backend
+Benchmarking svd_f64_256x256_wellcond
+Benchmarking svd_f64_256x256_wellcond: Warming up for 1.0000 s
+Benchmarking svd_f64_256x256_wellcond: Collecting 10 samples in estimated 4.9042 s (20 iterations)
+Benchmarking svd_f64_256x256_wellcond: Analyzing
+svd_f64_256x256_wellcond
+                        time:   [240.94 ms 249.67 ms 257.64 ms]
+                        change: [-1.8620% +1.7317% +5.2168%] (p = 0.38 > 0.05)
+                        No change in performance detected.
+
+Benchmarking svdvals_f64_256x128
+Benchmarking svdvals_f64_256x128: Warming up for 1.0000 s
+Benchmarking svdvals_f64_256x128: Collecting 10 samples in estimated 3.3330 s (550 iterations)
+Benchmarking svdvals_f64_256x128: Analyzing
+svdvals_f64_256x128     time:   [5.9014 ms 6.0140 ms 6.1368 ms]
+                        change: [-1.6765% +0.2976% +2.4283%] (p = 0.79 > 0.05)
+                        No change in performance detected.
+
+Benchmarking svdvals_f64_384x128
+Benchmarking svdvals_f64_384x128: Warming up for 1.0000 s
+Benchmarking svdvals_f64_384x128: Collecting 10 samples in estimated 3.2030 s (330 iterations)
+Benchmarking svdvals_f64_384x128: Analyzing
+svdvals_f64_384x128     time:   [9.6675 ms 9.7618 ms 9.9025 ms]
+                        change: [-6.7075% -4.9589% -3.0379%] (p = 0.00 < 0.05)
+                        Performance has improved.
+

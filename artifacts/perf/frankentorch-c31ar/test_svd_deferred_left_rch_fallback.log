@@ -1,0 +1,18 @@
+[RCH] local (no admissible workers: critical_pressure=1,insufficient_slots=2)
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+error: this file contains an unclosed delimiter
+     --> crates/ft-kernel-cpu/src/lib.rs:23836:3
+      |
+11239 | ) -> Result<(Vec<f64>, Vec<f64>), KernelError> {
+      |                                                - unclosed delimiter
+...
+11419 |                 for i in l..=k {
+      |                                - this delimiter might not be properly closed...
+...
+11439 |             }
+      |             - ...as it matches this but it has different indentation
+...
+23836 | }
+      |  ^
+
+error: could not compile `ft-kernel-cpu` (lib test) due to 1 previous error

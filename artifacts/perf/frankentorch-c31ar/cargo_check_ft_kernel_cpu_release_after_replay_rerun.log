@@ -1,0 +1,4 @@
+[RCH] local (no admissible workers: critical_pressure=1,insufficient_slots=2)
+    Blocking waiting for file lock on package cache
+    Checking ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+    Finished `release` profile [optimized] target(s) in 2.02s

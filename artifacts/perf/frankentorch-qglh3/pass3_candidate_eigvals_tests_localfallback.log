@@ -1,0 +1,39 @@
+[RCH] local (no admissible workers: critical_pressure=1,active_project_exclusion=1)
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling syn v2.0.117
+   Compiling libc v0.2.185
+   Compiling autocfg v1.5.0
+   Compiling zerocopy v0.8.48
+   Compiling getrandom v0.3.4
+   Compiling zerocopy-derive v0.8.48
+error[E0514]: found crate `proc_macro2` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.48/src/derive/from_bytes.rs:1:5
+  |
+1 | use proc_macro2::{Span, TokenStream};
+  |     ^^^^^^^^^^^
+  |
+  = note: the following crate versions were found:
+          crate `proc_macro2` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/tmp/cargo-target/debug/deps/libproc_macro2-1f96d84585032bd9.rlib
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0463]: can't find crate for `syn`
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.48/src/derive/from_bytes.rs:2:5
+  |
+2 | use syn::{
+  |     ^^^ can't find crate
+
+error[E0514]: found crate `quote` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.48/src/derive/into_bytes.rs:2:5
+  |
+2 | use quote::quote;
+  |     ^^^^^
+  |
+  = note: the following crate versions were found:
+          crate `quote` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/tmp/cargo-target/debug/deps/libquote-679ab2ecde270353.rlib
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+Some errors have detailed explanations: E0463, E0514.
+For more information about an error, try `rustc --explain E0463`.
+error: could not compile `zerocopy-derive` (lib) due to 3 previous errors

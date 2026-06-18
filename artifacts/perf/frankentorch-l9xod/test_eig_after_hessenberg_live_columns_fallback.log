@@ -1,0 +1,16 @@
+Script started on 2026-06-09 10:29:59-04:00 [COMMAND="rch exec -- cargo test -p ft-kernel-cpu eig_ -- --nocapture" <not executed on terminal>]
+[RCH] local (no admissible workers: critical_pressure=2,insufficient_slots=1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (/data/tmp/cargo-target/debug/deps/ft_kernel_cpu-d26c108ecd1e4673)
+
+running 5 tests
+test tests::eig_identity_2x2 ... ok
+test tests::eig_diagonal_3x3 ... ok
+test tests::eig_rotation_has_complex_eigenvalues ... ok
+test tests::eig_eigenvectors_satisfy_av_lambda_v ... ok
+test tests::eig_parallel_schur_vector_update_matches_single_thread_bit_exact ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 417 filtered out; finished in 0.05s
+
+
+Script done on 2026-06-09 10:29:59-04:00 [COMMAND_EXIT_CODE="0"]

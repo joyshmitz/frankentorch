@@ -1,0 +1,15 @@
+Script started on 2026-06-09 10:30:07-04:00 [COMMAND="rch exec -- cargo run -p ft-kernel-cpu --release --example eigvals_golden" <not executed on terminal>]
+[RCH] local (no admissible workers: critical_pressure=2,insufficient_slots=1)
+    Finished `release` profile [optimized] target(s) in 0.12s
+     Running `/data/tmp/cargo-target/release/examples/eigvals_golden`
+frankentorch-l9xod eigvals_golden n=64
+eigvals_digest=0xbc0583d464b1a211
+eig_digest=0xbc0583d464b1a211
+frankentorch-l9xod eigvals_golden n=128
+eigvals_digest=0xcf8084e9cc30d867
+eig_digest=0xcf8084e9cc30d867
+frankentorch-l9xod eigvals_golden n=256
+eigvals_digest=0x188d322a66b49c0f
+eig_digest=0x188d322a66b49c0f
+
+Script done on 2026-06-09 10:30:08-04:00 [COMMAND_EXIT_CODE="0"]

@@ -1,0 +1,10 @@
+  [2m2026-06-08T17:58:11.991308Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mStarting remote compilation pipeline for frankentorch (hash: 78ab156102a58c4c)[0m
+  [2m2026-06-08T17:58:55.460503Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mExecuting command remotely: cargo bench -p ft-api --bench ops_bench -- knn_search/8192x512_k8 --warm-up-time 1 --measurement-time 5 --sample-size 20[0m
+  [2m2026-06-08T17:58:55.460553Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRewriting CARGO_TARGET_DIR for remote execution (worker-scoped path): /data/tmp/cargo-target -> /data/projects/frankentorch/.rch-target-vmi1156319-job-29879239876542466-1780941493865712352-0[0m
+Benchmarking knn_search/8192x512_k8
+Benchmarking knn_search/8192x512_k8: Warming up for 1.0000 s
+Benchmarking knn_search/8192x512_k8: Collecting 20 samples in estimated 5.0123 s (2520 iterations)
+Benchmarking knn_search/8192x512_k8: Analyzing
+knn_search/8192x512_k8  time:   [1.9760 ms 2.0953 ms 2.2571 ms]
+                        thrpt:  [1.8582 Gelem/s 2.0018 Gelem/s 2.1226 Gelem/s]
+[RCH] remote vmi1156319 (273.4s)

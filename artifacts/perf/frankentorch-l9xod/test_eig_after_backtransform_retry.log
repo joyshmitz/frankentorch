@@ -1,0 +1,5 @@
+Script started on 2026-06-09 10:18:07-04:00 [COMMAND="env RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p ft-kernel-cpu eig_ -- --nocapture" <not executed on terminal>]
+[RCH] local (no admissible workers: critical_pressure=2,insufficient_slots=1)
+[RCH] remote required; refusing local fallback (no worker assigned)
+
+Script done on 2026-06-09 10:18:07-04:00 [COMMAND_EXIT_CODE="1"]

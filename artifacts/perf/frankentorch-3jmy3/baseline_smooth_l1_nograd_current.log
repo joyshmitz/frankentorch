@@ -1,0 +1,16 @@
+[RCH] local (no admissible workers: critical_pressure=2,insufficient_slots=1)
+    Blocking waiting for file lock on build directory
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 46.24s
+     Running benches/ops_bench.rs (/data/tmp/cargo-target/release/deps/ops_bench-f1f85e4b56fe7759)
+Gnuplot not found, using plotters backend
+Benchmarking smooth_l1/nograd_8m
+Benchmarking smooth_l1/nograd_8m: Warming up for 1.0000 s
+Benchmarking smooth_l1/nograd_8m: Collecting 20 samples in estimated 5.2942 s (1470 iterations)
+Benchmarking smooth_l1/nograd_8m: Analyzing
+smooth_l1/nograd_8m     time:   [3.7011 ms 3.7554 ms 3.8192 ms]
+Found 4 outliers among 20 measurements (20.00%)
+  1 (5.00%) low severe
+  2 (10.00%) low mild
+  1 (5.00%) high mild
+

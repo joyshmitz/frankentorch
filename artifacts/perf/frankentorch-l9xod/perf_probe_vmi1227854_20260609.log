@@ -1,0 +1,9 @@
+  [2m2026-06-09T14:07:46.524870Z[0m [34mDEBUG[0m [1;34mrch::verbose[0m[34m: [34mverbose output enabled, [1;34mmode[0m[34m: Plain, [1;34mformat[0m[34m: json[0m
+    [2;3mat[0m rch/src/main.rs:1722 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-09T14:07:46.524905Z[0m [33m WARN[0m [1;33mrch::hook[0m[33m: [33mexec called with non-compilation command: sh -lc 'printf "worker=$(hostname)\n"; printf "perf_event_paranoid="; cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || true; perf --version 2>/dev/null || true'[0m
+    [2;3mat[0m rch/src/hook.rs:402 [2;3mon[0m ThreadId(1)
+
+worker=thinkstation1
+perf_event_paranoid=1
+perf version 6.17.13

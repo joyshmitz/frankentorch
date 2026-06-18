@@ -1,0 +1,13 @@
+
+running 3 tests
+test tests::knn_search_zero_k_returns_empty_outputs ... ok
+test tests::knn_search_streaming_topk_matches_full_sort_reference_bit_exact ... ok
+test tests::knn_search_bench_scale_matches_full_sort_reference_bit_exact ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2023 filtered out; finished in 2.31s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+

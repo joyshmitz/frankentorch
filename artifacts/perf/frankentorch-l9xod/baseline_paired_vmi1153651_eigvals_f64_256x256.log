@@ -1,0 +1,18 @@
+Script started on 2026-06-09 10:43:53-04:00 [COMMAND="env RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1153651 rch exec -- cargo bench -j 1 -p ft-kernel-cpu --bench linalg_bench -- eigvals_f64_256x256" <not executed on terminal>]
+  [2m2026-06-09T14:43:53.519642Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSelected worker: vmi1153651 at root@38.242.134.66 (3 slots remaining after reservation, speed 50.0)[0m
+    [2;3mat[0m rch/src/hook.rs:514 [2;3mon[0m ThreadId(1)
+
+[*] Job j-29879662679163825 submitted to vmi1153651 (3 slots remaining, speed 50.0)
+  [2m2026-06-09T14:43:53.833542Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mStarting remote compilation pipeline for frankentorch (hash: 78ab156102a58c4c)[0m
+    [2;3mat[0m rch/src/hook.rs:5994 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-09T14:43:53.833577Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mPrepared dependency sync manifest for 13 roots[0m
+    [2;3mat[0m rch/src/hook.rs:6016 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-09T14:43:55.451913Z[0m [33m WARN[0m [1;33mrch::hook[0m[33m: [33mRemote execution failed: remote topology preflight failed on vmi1153651 (status Some(2)): stdout='' stderr='sh: 18: Syntax error: newline unexpected (expecting ")")', running locally[0m
+    [2;3mat[0m rch/src/hook.rs:658 [2;3mon[0m ThreadId(1)
+
+[RCH] local (remote execution failed)
+[RCH] remote required; refusing local fallback (remote execution failed)
+
+Script done on 2026-06-09 10:43:55-04:00 [COMMAND_EXIT_CODE="1"]

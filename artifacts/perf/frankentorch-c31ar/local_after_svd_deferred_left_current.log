@@ -1,0 +1,33 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.19s
+     Running benches/linalg_bench.rs (/data/tmp/cargo-target/release/deps/linalg_bench-aa9fc2ba4861f31f)
+Gnuplot not found, using plotters backend
+Benchmarking svd_f64_256x256_wellcond
+Benchmarking svd_f64_256x256_wellcond: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 7.1s or enable flat sampling.
+Benchmarking svd_f64_256x256_wellcond: Collecting 10 samples in estimated 7.0680 s (55 iterations)
+Benchmarking svd_f64_256x256_wellcond: Analyzing
+svd_f64_256x256_wellcond
+                        time:   [130.58 ms 135.73 ms 138.31 ms]
+                        change: [+7.4011% +12.255% +17.300%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking svdvals_f64_256x128
+Benchmarking svdvals_f64_256x128: Warming up for 1.0000 s
+Benchmarking svdvals_f64_256x128: Collecting 10 samples in estimated 5.1258 s (825 iterations)
+Benchmarking svdvals_f64_256x128: Analyzing
+svdvals_f64_256x128     time:   [5.9994 ms 6.0714 ms 6.1157 ms]
+                        change: [-17.761% -13.568% -9.9553%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking svdvals_f64_384x128
+Benchmarking svdvals_f64_384x128: Warming up for 1.0000 s
+Benchmarking svdvals_f64_384x128: Collecting 10 samples in estimated 5.0778 s (495 iterations)
+Benchmarking svdvals_f64_384x128: Analyzing
+svdvals_f64_384x128     time:   [10.168 ms 10.266 ms 10.368 ms]
+                        change: [-13.111% -9.7824% -6.8398%] (p = 0.00 < 0.05)
+                        Performance has improved.
+

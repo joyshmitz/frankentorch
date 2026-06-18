@@ -1,0 +1,5 @@
+Script started on 2026-06-09 10:05:49-04:00 [COMMAND="env RCH_REQUIRE_REMOTE=1 rch exec -- cargo bench -p ft-kernel-cpu --bench linalg_bench -- eig_f64_256x256 --noplot" <not executed on terminal>]
+[RCH] local (no admissible workers: critical_pressure=2,active_project_exclusion=1)
+[RCH] remote required; refusing local fallback (no worker assigned)
+
+Script done on 2026-06-09 10:05:49-04:00 [COMMAND_EXIT_CODE="1"]
