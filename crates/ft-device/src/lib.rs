@@ -332,6 +332,69 @@ mod tests {
     }
 
     #[test]
+    fn device_contract_is_exhaustive_over_devices_and_dtypes() {
+        let devices = [Device::Cpu, Device::Cuda];
+        let dtypes = [
+            DType::F64,
+            DType::F32,
+            DType::F16,
+            DType::BF16,
+            DType::QInt8,
+            DType::QUInt8,
+            DType::I64,
+            DType::I32,
+            DType::Bool,
+            DType::Complex64,
+            DType::Complex128,
+        ];
+
+        for &dtype in &dtypes {
+            for &expected in &devices {
+                let guard = DeviceGuard::new(expected);
+                for &actual in &devices {
+                    let tensor = ScalarTensor::new(1.0, dtype, actual);
+                    let result = guard.ensure_tensor_device(&tensor);
+                    if expected == actual {
+                        assert_eq!(result, Ok(()), "guard={expected:?} dtype={dtype:?}");
+                    } else {
+                        let expected_error = DeviceError::Mismatch { expected, actual };
+                        assert_eq!(
+                            result,
+                            Err(expected_error),
+                            "guard={expected:?} tensor={actual:?} dtype={dtype:?}"
+                        );
+                    }
+                }
+            }
+
+            for &lhs_device in &devices {
+                for &rhs_device in &devices {
+                    let lhs = ScalarTensor::new(1.0, dtype, lhs_device);
+                    let rhs = ScalarTensor::new(2.0, dtype, rhs_device);
+                    let result = ensure_same_device(&lhs, &rhs);
+                    if lhs_device == rhs_device {
+                        assert_eq!(
+                            result,
+                            Ok(lhs_device),
+                            "lhs={lhs_device:?} rhs={rhs_device:?} dtype={dtype:?}"
+                        );
+                    } else {
+                        let expected_error = DeviceError::Mismatch {
+                            expected: lhs_device,
+                            actual: rhs_device,
+                        };
+                        assert_eq!(
+                            result,
+                            Err(expected_error),
+                            "lhs={lhs_device:?} rhs={rhs_device:?} dtype={dtype:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn device_guard_golden_summary_matches_fixture() {
         let cpu_guard = DeviceGuard::new(Device::Cpu);
         let cuda_guard = DeviceGuard::new(Device::Cuda);
