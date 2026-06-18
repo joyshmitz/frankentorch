@@ -2326,6 +2326,26 @@ mod tests {
     }
 
     #[test]
+    fn random_split_preserves_zero_length_subset_positions() {
+        let ds = make_dataset(6, 1);
+        let splits = random_split(ds, &[0, 2, 0, 4, 0], 7);
+
+        assert_eq!(splits.len(), 5);
+        assert!(splits[0].is_empty(), "leading zero-length split");
+        assert_eq!(splits[1].len(), 2);
+        assert!(splits[2].is_empty(), "middle zero-length split");
+        assert_eq!(splits[3].len(), 4);
+        assert!(splits[4].is_empty(), "trailing zero-length split");
+
+        let mut covered = Vec::new();
+        for split in &splits {
+            covered.extend_from_slice(split.indices());
+        }
+        covered.sort_unstable();
+        assert_eq!(covered, (0..6).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn random_split_no_overlap() {
         let ds = make_dataset(20, 1);
         let splits = random_split(ds, &[10, 10], 123);
