@@ -1395,7 +1395,14 @@ impl<D: Dataset> Dataset for Subset<D> {
 /// The underlying dataset is shared via `Arc` (no data cloning).
 pub fn random_split<D: Dataset>(dataset: D, lengths: &[usize], seed: u64) -> Vec<Subset<D>> {
     let n = dataset.len();
-    let total: usize = lengths.iter().sum();
+    let total = lengths
+        .iter()
+        .try_fold(0usize, |total, &len| total.checked_add(len));
+    assert!(
+        total.is_some(),
+        "random_split: sum of lengths overflows usize and must equal dataset size ({n})"
+    );
+    let total = total.unwrap_or(usize::MAX);
     assert_eq!(
         total, n,
         "random_split: sum of lengths ({total}) must equal dataset size ({n})",
@@ -2356,6 +2363,13 @@ mod tests {
     fn random_split_rejects_too_small() {
         let ds = make_dataset(5, 1);
         random_split(ds, &[2, 2], 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "sum of lengths overflows usize")]
+    fn random_split_rejects_overflowing_lengths() {
+        let ds = make_dataset(1, 1);
+        random_split(ds, &[usize::MAX, 1], 0);
     }
 
     // ── frankentorch-4i2: Sampler builder and edge case tests ──────────
