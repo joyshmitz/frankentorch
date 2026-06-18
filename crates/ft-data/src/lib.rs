@@ -2464,6 +2464,7 @@ mod tests {
         let config = DataLoaderConfig::new(2);
         let mut loader = DataLoader::new(&ds, config);
 
+        let mut first_error = None;
         for attempt in 0..2 {
             let message = loader
                 .next_batch(&mut session)
@@ -2474,6 +2475,14 @@ mod tests {
                 message.contains("values length does not match declared tensor shape"),
                 "attempt {attempt} unexpectedly advanced past malformed batch: {message}"
             );
+            if let Some(first) = &first_error {
+                assert_eq!(
+                    &message, first,
+                    "attempt {attempt} failed on a different batch after collate error"
+                );
+            } else {
+                first_error = Some(message);
+            }
         }
     }
 
