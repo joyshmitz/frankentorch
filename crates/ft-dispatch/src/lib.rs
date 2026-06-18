@@ -8786,14 +8786,14 @@ mod tests {
 
         assert_eq!(out.decision.kernel, "cpu::cumprod_tensor_contiguous_f32");
         assert!(!out.decision.fallback_used);
-        match out.storage {
-            TensorStorage::F32(values) => {
-                let expected = [2.0_f32, 6.0, f32::INFINITY, f32::NEG_INFINITY];
-                for (idx, (got, want)) in values.iter().zip(expected).enumerate() {
-                    assert_eq!(got.to_bits(), want.to_bits(), "f32 cumprod @{idx}");
-                }
-            }
-            other => panic!("expected f32 scan storage, got {:?}", other.dtype()),
+        assert_eq!(out.storage.dtype(), DType::F32);
+        let TensorStorage::F32(values) = out.storage else {
+            return;
+        };
+
+        let expected = [2.0_f32, 6.0, f32::INFINITY, f32::NEG_INFINITY];
+        for (idx, (got, want)) in values.iter().zip(expected).enumerate() {
+            assert_eq!(got.to_bits(), want.to_bits(), "f32 cumprod @{idx}");
         }
     }
 
@@ -9220,6 +9220,49 @@ mod tests {
         assert_eq!(ComparisonOp::from_schema_base("le"), Some(ComparisonOp::Le));
         assert_eq!(ComparisonOp::from_schema_base("ge"), Some(ComparisonOp::Ge));
         assert_eq!(ComparisonOp::from_schema_base("xyz"), None);
+    }
+
+    #[test]
+    fn schema_registry_covers_all_current_binary_op_bases() {
+        let cases = [
+            ("aten::add.Tensor", "add_Tensor", BinaryOp::Add),
+            ("aten::sub.Tensor", "sub_Tensor", BinaryOp::Sub),
+            ("aten::div.Tensor", "div_Tensor", BinaryOp::Div),
+            ("aten::mul.Tensor", "mul_Tensor", BinaryOp::Mul),
+            ("aten::matmul.Tensor", "matmul_Tensor", BinaryOp::MatMul),
+            ("aten::min.Tensor", "min_Tensor", BinaryOp::Min),
+            ("aten::max.Tensor", "max_Tensor", BinaryOp::Max),
+            ("aten::dot.Tensor", "dot_Tensor", BinaryOp::Dot),
+            ("aten::outer.Tensor", "outer_Tensor", BinaryOp::Outer),
+            ("aten::bmm.Tensor", "bmm_Tensor", BinaryOp::Bmm),
+            ("aten::atan2.Tensor", "atan2_Tensor", BinaryOp::Atan2),
+            ("aten::fmod.Tensor", "fmod_Tensor", BinaryOp::Fmod),
+            (
+                "aten::remainder.Tensor",
+                "remainder_Tensor",
+                BinaryOp::Remainder,
+            ),
+        ];
+        let keyset =
+            schema_dispatch_keyset_from_tags(&["CPU", "AutogradCPU"]).expect("valid keyset");
+        let mut registry = SchemaRegistry::new();
+
+        for (schema_name, expected_normalized, expected_op) in cases {
+            let parsed = parse_schema_or_name(schema_name).expect("schema name parses");
+            let normalized = registry
+                .register(&parsed, keyset)
+                .expect("binary op schema should register");
+            let entry = registry
+                .lookup(&normalized)
+                .expect("registered binary schema should be indexed");
+
+            assert_eq!(normalized, expected_normalized);
+            assert_eq!(
+                entry.op, expected_op,
+                "binary base {schema_name} mapped incorrectly"
+            );
+            assert_eq!(entry.keyset.bits(), keyset.bits());
+        }
     }
 
     // ── bd-2rfh: SchemaRegistry len/is_empty/iter ──
