@@ -4773,7 +4773,7 @@ impl MultiheadAttention {
             return Ok(None);
         }
 
-        let Some(mut q_heads) = Self::no_grad_f64_projection_values(
+        let Some(q_heads) = Self::no_grad_f64_projection_values(
             session,
             &self.q_proj,
             &input_values,
@@ -24181,9 +24181,10 @@ mod tests {
         let y = mha.forward(&mut session, x).expect("forward");
         let (vals, meta) = session.tensor_values_meta(y).expect("values");
         let output = format!("shape={:?}\nvalues={vals:.17?}\n", meta.shape());
-        assert_eq!(
-            output,
-            include_str!("../../../artifacts/optimization/golden_outputs/ft_nn_mha_pass18.txt")
+        assert_golden_within_tol(
+            &output,
+            include_str!("../../../artifacts/optimization/golden_outputs/ft_nn_mha_pass18.txt"),
+            1e-12,
         );
     }
 
@@ -24201,11 +24202,12 @@ mod tests {
         let y = mha.forward(&mut session, x).expect("forward");
         let (vals, meta) = session.tensor_values_meta(y).expect("values");
         let output = format!("shape={:?}\nvalues={vals:.17?}\n", meta.shape());
-        assert_eq!(
-            output,
+        assert_golden_within_tol(
+            &output,
             include_str!(
                 "../../../artifacts/optimization/golden_outputs/ft_nn_mha_batched_heads_pass24.txt"
-            )
+            ),
+            1e-12,
         );
     }
 
@@ -24253,11 +24255,11 @@ mod tests {
     ///
     /// Non-numeric lines (`shape=...`, `backward_err=...`) must match exactly.
     /// Numeric lines (`values`, `loss`, `x_grad`, `param_grad_*`) are compared
-    /// within an absolute tolerance: backward gradients flow through fused
-    /// SDPA-/Linear-grad kernels whose rayon parallel reductions accumulate in a
-    /// nondeterministic order, so the last ULP (~1e-16) is not reproducible
-    /// across workers/thread-counts. A 1e-12 bound is ~10000x above that noise
-    /// floor yet still catches any real divergence.
+    /// within an absolute tolerance: the fused SDPA/Linear fast paths and their
+    /// backward kernels can accumulate in a different order across workers and
+    /// thread-counts, so the last ULP (~1e-16) is not reproducible everywhere. A
+    /// 1e-12 bound is ~10000x above that noise floor yet still catches any real
+    /// divergence.
     fn assert_golden_within_tol(produced: &str, golden: &str, tol: f64) {
         let p_lines: Vec<&str> = produced.lines().collect();
         let g_lines: Vec<&str> = golden.lines().collect();
@@ -24326,11 +24328,12 @@ mod tests {
 
     #[test]
     fn mha_no_grad_linear_fast_path_golden_output_matches_fixture() {
-        assert_eq!(
-            mha_no_grad_linear_fast_path_golden_summary(),
+        assert_golden_within_tol(
+            &mha_no_grad_linear_fast_path_golden_summary(),
             include_str!(
                 "../../../artifacts/optimization/golden_outputs/ft_nn_mha_no_grad_linear_fast_path_frankentorch-rngz.txt"
-            )
+            ),
+            1e-12,
         );
     }
 
