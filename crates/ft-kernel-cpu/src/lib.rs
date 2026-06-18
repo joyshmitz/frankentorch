@@ -4161,6 +4161,63 @@ pub fn layer_norm_backward_f64(
     eps: f64,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let inv_n = 1.0 / norm_size as f64;
+    if dy.par_iter().all(|&v| v.to_bits() == 1.0f64.to_bits()) {
+        let mut dx = vec![0.0f64; batch * norm_size];
+        dx.par_chunks_mut(norm_size)
+            .enumerate()
+            .for_each(|(r, dxrow)| {
+                let xrow = &x[r * norm_size..r * norm_size + norm_size];
+                let mut sum = 0.0f64;
+                for &v in xrow {
+                    sum += v;
+                }
+                let mean = sum * inv_n;
+                let mut vsum = 0.0f64;
+                for &v in xrow {
+                    let d = v - mean;
+                    vsum += d * d;
+                }
+                let rstd = 1.0 / (vsum * inv_n + eps).sqrt();
+                let mut c1 = 0.0f64;
+                let mut c2 = 0.0f64;
+                for j in 0..norm_size {
+                    let xhat = (xrow[j] - mean) * rstd;
+                    let dxhat = 1.0f64 * weight[j];
+                    c1 += dxhat;
+                    c2 += dxhat * xhat;
+                }
+                for j in 0..norm_size {
+                    let xhat = (xrow[j] - mean) * rstd;
+                    let dxhat = 1.0f64 * weight[j];
+                    dxrow[j] = rstd * (dxhat - (c1 + xhat * c2) * inv_n);
+                }
+            });
+        let mut dweight = vec![0.0f64; norm_size];
+        for r in 0..batch {
+            let xrow = &x[r * norm_size..r * norm_size + norm_size];
+            let mut sum = 0.0f64;
+            for &v in xrow {
+                sum += v;
+            }
+            let mean = sum * inv_n;
+            let mut vsum = 0.0f64;
+            for &v in xrow {
+                let d = v - mean;
+                vsum += d * d;
+            }
+            let rstd = 1.0 / (vsum * inv_n + eps).sqrt();
+            for j in 0..norm_size {
+                let xhat = (xrow[j] - mean) * rstd;
+                dweight[j] += 1.0f64 * xhat;
+            }
+        }
+        let mut dbias_value = 0.0f64;
+        for _ in 0..batch {
+            dbias_value += 1.0f64;
+        }
+        let dbias = vec![dbias_value; norm_size];
+        return (dx, dweight, dbias);
+    }
     let mut dx = vec![0.0f64; batch * norm_size];
     dx.par_chunks_mut(norm_size)
         .enumerate()
@@ -4232,6 +4289,63 @@ pub fn layer_norm_backward_f32(
     eps: f32,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
     let inv_n = 1.0f32 / norm_size as f32;
+    if dy.par_iter().all(|&v| v.to_bits() == 1.0f32.to_bits()) {
+        let mut dx = vec![0.0f32; batch * norm_size];
+        dx.par_chunks_mut(norm_size)
+            .enumerate()
+            .for_each(|(r, dxrow)| {
+                let xrow = &x[r * norm_size..r * norm_size + norm_size];
+                let mut sum = 0.0f32;
+                for &v in xrow {
+                    sum += v;
+                }
+                let mean = sum * inv_n;
+                let mut vsum = 0.0f32;
+                for &v in xrow {
+                    let d = v - mean;
+                    vsum += d * d;
+                }
+                let rstd = 1.0f32 / (vsum * inv_n + eps).sqrt();
+                let mut c1 = 0.0f32;
+                let mut c2 = 0.0f32;
+                for j in 0..norm_size {
+                    let xhat = (xrow[j] - mean) * rstd;
+                    let dxhat = 1.0f32 * weight[j];
+                    c1 += dxhat;
+                    c2 += dxhat * xhat;
+                }
+                for j in 0..norm_size {
+                    let xhat = (xrow[j] - mean) * rstd;
+                    let dxhat = 1.0f32 * weight[j];
+                    dxrow[j] = rstd * (dxhat - (c1 + xhat * c2) * inv_n);
+                }
+            });
+        let mut dweight = vec![0.0f32; norm_size];
+        for r in 0..batch {
+            let xrow = &x[r * norm_size..r * norm_size + norm_size];
+            let mut sum = 0.0f32;
+            for &v in xrow {
+                sum += v;
+            }
+            let mean = sum * inv_n;
+            let mut vsum = 0.0f32;
+            for &v in xrow {
+                let d = v - mean;
+                vsum += d * d;
+            }
+            let rstd = 1.0f32 / (vsum * inv_n + eps).sqrt();
+            for j in 0..norm_size {
+                let xhat = (xrow[j] - mean) * rstd;
+                dweight[j] += 1.0f32 * xhat;
+            }
+        }
+        let mut dbias_value = 0.0f32;
+        for _ in 0..batch {
+            dbias_value += 1.0f32;
+        }
+        let dbias = vec![dbias_value; norm_size];
+        return (dx, dweight, dbias);
+    }
     let mut dx = vec![0.0f32; batch * norm_size];
     dx.par_chunks_mut(norm_size)
         .enumerate()
@@ -35981,6 +36095,145 @@ mod tests {
         let result = mean_tensor_contiguous_f64(&vals, &meta).unwrap();
 
         assert!(result.is_nan(), "mean of empty tensor should be NaN (0/0)");
+    }
+
+    #[test]
+    fn layer_norm_f64_unit_dy_matches_general_reference_bits() {
+        let (batch, norm_size) = (5usize, 7usize);
+        let eps = 1e-5;
+        let x: Vec<f64> = (0..batch * norm_size)
+            .map(|i| ((i % 23) as f64 - 11.0) * 0.03125 + (i as f64) * 0.00091)
+            .collect();
+        let dy = vec![1.0f64; x.len()];
+        let weight: Vec<f64> = (0..norm_size)
+            .map(|j| 0.75 + (j % 5) as f64 * 0.046875)
+            .collect();
+        let inv_n = 1.0 / norm_size as f64;
+
+        let mut ref_dx = vec![0.0f64; x.len()];
+        let mut ref_dw = vec![0.0f64; norm_size];
+        let mut ref_db = vec![0.0f64; norm_size];
+        for r in 0..batch {
+            let base = r * norm_size;
+            let xrow = &x[base..base + norm_size];
+            let dyrow = &dy[base..base + norm_size];
+            let dxrow = &mut ref_dx[base..base + norm_size];
+            let mut sum = 0.0f64;
+            for &v in xrow {
+                sum += v;
+            }
+            let mean = sum * inv_n;
+            let mut vsum = 0.0f64;
+            for &v in xrow {
+                let d = v - mean;
+                vsum += d * d;
+            }
+            let rstd = 1.0 / (vsum * inv_n + eps).sqrt();
+            let mut c1 = 0.0f64;
+            let mut c2 = 0.0f64;
+            for j in 0..norm_size {
+                let xhat = (xrow[j] - mean) * rstd;
+                let dxhat = dyrow[j] * weight[j];
+                c1 += dxhat;
+                c2 += dxhat * xhat;
+            }
+            for j in 0..norm_size {
+                let xhat = (xrow[j] - mean) * rstd;
+                let dxhat = dyrow[j] * weight[j];
+                dxrow[j] = rstd * (dxhat - (c1 + xhat * c2) * inv_n);
+                ref_dw[j] += dyrow[j] * xhat;
+                ref_db[j] += dyrow[j];
+            }
+        }
+
+        let (dx, dw, db) = crate::layer_norm_backward_f64(
+            &dy, &x, &weight, batch, norm_size, eps,
+        );
+        for (got, expected) in dx.iter().zip(ref_dx.iter()) {
+            assert_eq!(got.to_bits(), expected.to_bits(), "dx mismatch");
+        }
+        for (got, expected) in dw.iter().zip(ref_dw.iter()) {
+            assert_eq!(got.to_bits(), expected.to_bits(), "dweight mismatch");
+        }
+        for (got, expected) in db.iter().zip(ref_db.iter()) {
+            assert_eq!(got.to_bits(), expected.to_bits(), "dbias mismatch");
+        }
+    }
+
+    #[test]
+    fn layer_norm_f32_unit_dy_matches_general_reference_bits() {
+        for (batch, norm_size) in [(5usize, 7usize), (3usize, 16usize)] {
+            let eps = 1e-5f32;
+            let x: Vec<f32> = (0..batch * norm_size)
+                .map(|i| ((i % 23) as f32 - 11.0) * 0.03125 + (i as f32) * 0.00091)
+                .collect();
+            let dy = vec![1.0f32; x.len()];
+            let weight: Vec<f32> = (0..norm_size)
+                .map(|j| 0.75 + (j % 5) as f32 * 0.046875)
+                .collect();
+            let inv_n = 1.0f32 / norm_size as f32;
+
+            let mut ref_dx = vec![0.0f32; x.len()];
+            let mut ref_dw = vec![0.0f32; norm_size];
+            let mut ref_db = vec![0.0f32; norm_size];
+            for r in 0..batch {
+                let base = r * norm_size;
+                let xrow = &x[base..base + norm_size];
+                let dyrow = &dy[base..base + norm_size];
+                let dxrow = &mut ref_dx[base..base + norm_size];
+                let mut sum = 0.0f32;
+                for &v in xrow {
+                    sum += v;
+                }
+                let mean = sum * inv_n;
+                let mut vsum = 0.0f32;
+                for &v in xrow {
+                    let d = v - mean;
+                    vsum += d * d;
+                }
+                let rstd = 1.0f32 / (vsum * inv_n + eps).sqrt();
+                let mut c1 = 0.0f32;
+                let mut c2 = 0.0f32;
+                for j in 0..norm_size {
+                    let xhat = (xrow[j] - mean) * rstd;
+                    let dxhat = dyrow[j] * weight[j];
+                    c1 += dxhat;
+                    c2 += dxhat * xhat;
+                }
+                for j in 0..norm_size {
+                    let xhat = (xrow[j] - mean) * rstd;
+                    let dxhat = dyrow[j] * weight[j];
+                    dxrow[j] = rstd * (dxhat - (c1 + xhat * c2) * inv_n);
+                    ref_dw[j] += dyrow[j] * xhat;
+                    ref_db[j] += dyrow[j];
+                }
+            }
+
+            let (dx, dw, db) = crate::layer_norm_backward_f32(
+                &dy, &x, &weight, batch, norm_size, eps,
+            );
+            for (got, expected) in dx.iter().zip(ref_dx.iter()) {
+                assert_eq!(
+                    got.to_bits(),
+                    expected.to_bits(),
+                    "dx mismatch for norm_size={norm_size}"
+                );
+            }
+            for (got, expected) in dw.iter().zip(ref_dw.iter()) {
+                assert_eq!(
+                    got.to_bits(),
+                    expected.to_bits(),
+                    "dweight mismatch for norm_size={norm_size}"
+                );
+            }
+            for (got, expected) in db.iter().zip(ref_db.iter()) {
+                assert_eq!(
+                    got.to_bits(),
+                    expected.to_bits(),
+                    "dbias mismatch for norm_size={norm_size}"
+                );
+            }
+        }
     }
 
     #[test]
