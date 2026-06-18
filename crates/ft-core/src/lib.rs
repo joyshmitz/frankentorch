@@ -4524,6 +4524,28 @@ mod tests {
     }
 
     #[test]
+    fn dense_tensor_to_dtype_compacts_offset_complex_view() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu).with_storage_offset(1);
+        let storage = TensorStorage::F64(Arc::new(vec![9.0, 1.5, 2.5, 8.0]));
+        let tensor = DenseTensor::from_typed_storage(meta, storage).expect("offset f64 tensor");
+
+        let cast = tensor
+            .to_dtype(DType::Complex128)
+            .expect("cast offset f64");
+
+        assert_eq!(cast.meta().dtype(), DType::Complex128);
+        assert_eq!(cast.meta().storage_offset(), 0);
+        match cast.typed_storage() {
+            TensorStorage::Complex128(values) => {
+                let values: Vec<(f64, f64)> =
+                    values.iter().map(|value| (value.re, value.im)).collect();
+                assert_eq!(values, vec![(1.5, 0.0), (2.5, 0.0)]);
+            }
+            other => panic!("expected Complex128 storage, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn dense_tensor_to_dtype_same_is_clone() {
         let dt = DenseTensor::from_contiguous_values(vec![1.0, 2.0], vec![2], Device::Cpu)
             .expect("create tensor");
