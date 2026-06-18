@@ -6495,8 +6495,7 @@ impl Module for LogSigmoid {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let sig = session.tensor_sigmoid(input)?;
-        session.tensor_log(sig)
+        session.tensor_logsigmoid(input)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -36035,7 +36034,9 @@ mod tests {
     fn log_sigmoid_module() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let m = LogSigmoid;
-        let input = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let input = session
+            .tensor_variable(vec![0.0, -1000.0], vec![2], false)
+            .unwrap();
         let out = m.forward(&mut session, input).unwrap();
         let vals = session.tensor_values(out).unwrap();
         // log(sigmoid(0)) = log(0.5) ≈ -0.6931
@@ -36043,6 +36044,16 @@ mod tests {
             (vals[0] - 0.5_f64.ln()).abs() < 1e-6,
             "log_sigmoid(0) should be ln(0.5), got {}",
             vals[0]
+        );
+        assert!(
+            vals[1].is_finite(),
+            "log_sigmoid(-1000) must stay finite, got {}",
+            vals[1]
+        );
+        assert!(
+            (vals[1] - (-1000.0)).abs() < 1e-8,
+            "log_sigmoid(-1000) should be close to -1000, got {}",
+            vals[1]
         );
     }
 
