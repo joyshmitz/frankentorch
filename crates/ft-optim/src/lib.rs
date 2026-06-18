@@ -11812,6 +11812,70 @@ mod tests {
         assert_eq!(scaler.steps_since_growth, 0, "growth counter should reset");
     }
 
+    #[test]
+    fn grad_scaler_scale_schedule_grows_via_real_steps() {
+        // Drive the growth schedule through REAL step()+update() calls (not by
+        // manually setting the counter). With growth_interval=3 the scale must
+        // hold for two clean steps then double on the third, and again on the
+        // sixth — verifying step() increments steps_since_growth and update()
+        // grows at the right cadence. frankentorch-uh7gd.
+        let mut scaler = GradScaler::with_config(1.0, 2.0, 0.5, 3);
+        let clean_step = |scaler: &mut GradScaler| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let w = s.tensor_variable(vec![2.0], vec![1], true).unwrap();
+            let target = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+            let mut opt = SGD::new(vec![w], 0.01);
+            let loss = s.mse_loss(w, target).unwrap();
+            let scaled = scaler.scale_loss(&mut s, loss).unwrap();
+            let report = s.tensor_backward(scaled).unwrap();
+            let applied = scaler.step(&mut s, &mut opt, &report).unwrap();
+            assert!(applied, "finite-gradient step must be applied");
+            assert!(!scaler.last_step_was_skipped());
+            scaler.update();
+        };
+        let expected = [1.0, 1.0, 2.0, 2.0, 2.0, 4.0];
+        for (i, want) in expected.iter().enumerate() {
+            clean_step(&mut scaler);
+            assert_eq!(
+                scaler.get_scale(),
+                *want,
+                "scale after {} clean step(s) should be {want}",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn grad_scaler_overflow_backs_off_and_resets_growth_counter() {
+        // Overflow must back off by EXACTLY backoff_factor and cancel any pending
+        // growth progress (steps_since_growth -> 0), matching torch's
+        // growth-tracker-reset-on-inf contract. frankentorch-uh7gd.
+        let mut scaler = GradScaler::with_config(1e300, 2.0, 0.5, 3);
+        // Pretend two clean steps already accumulated toward the next growth.
+        scaler.steps_since_growth = 2;
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w = s.tensor_variable(vec![f64::MAX / 2.0], vec![1], true).unwrap();
+        let target = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let mut opt = SGD::new(vec![w], 0.1);
+        let loss = s.mse_loss(w, target).unwrap();
+        let scaled = scaler.scale_loss(&mut s, loss).unwrap();
+        let report = s.tensor_backward(scaled).unwrap();
+
+        let applied = scaler.step(&mut s, &mut opt, &report).unwrap();
+        assert!(!applied, "overflowing gradient must skip the step");
+        assert!(scaler.last_step_was_skipped());
+        assert_eq!(
+            scaler.get_scale(),
+            1e300 * 0.5,
+            "scale must back off by exactly backoff_factor"
+        );
+        assert_eq!(
+            scaler.steps_since_growth, 0,
+            "overflow must reset the pending growth counter"
+        );
+    }
+
     // ── Muon optimizer + Newton-Schulz helpers (frankentorch-ulg7) ──────────
 
     fn frob_norm(v: &[f64]) -> f64 {
