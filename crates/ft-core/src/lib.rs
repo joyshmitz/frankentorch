@@ -3279,6 +3279,29 @@ mod tests {
     }
 
     #[test]
+    fn dense_quantized_offset_view_preserves_metadata() {
+        let meta = TensorMeta::quantized_from_shape_and_strides(
+            vec![2],
+            vec![1],
+            1,
+            DType::QInt8,
+            Device::Cpu,
+            0.5,
+            -2,
+        )
+        .unwrap();
+        let tensor = DenseTensor::from_storage_qint8(meta, vec![99, 0, 2]).unwrap();
+
+        let view = tensor.view(vec![1, 2]).unwrap();
+
+        assert_eq!(view.storage_id(), tensor.storage_id());
+        assert_eq!(view.meta().storage_offset(), 1);
+        assert!(view.meta().quantization().is_some());
+        assert_eq!(view.contiguous_values_qint8().unwrap(), &[0, 2]);
+        assert_eq!(view.dequantized_values_as_f64().unwrap(), &[1.0, 2.0]);
+    }
+
+    #[test]
     fn sparse_coo_to_dense_rejects_shape_overflow() {
         let coords = vec![vec![0, 0]];
         let sparse = SparseCOOTensor::from_coords(
