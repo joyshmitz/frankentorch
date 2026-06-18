@@ -27821,6 +27821,23 @@ mod tests {
     }
 
     #[test]
+    fn cdist_forward_f64_pairwise_l2_matches_torch_golden() {
+        let x1 = vec![0.0, 0.0, 3.0, 4.0];
+        let x2 = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+
+        let out = super::cdist_forward_f64(&x1, &x2, 1, 2, 3, 2, 2.0);
+        let want = [0.0, 1.0, 1.0, 5.0, 20.0_f64.sqrt(), 18.0_f64.sqrt()];
+
+        assert_eq!(out.len(), want.len());
+        for (idx, (got, expected)) in out.iter().zip(want).enumerate() {
+            assert!(
+                (*got - expected).abs() < 1e-12,
+                "cdist L2 output[{idx}] = {got}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn matmul_tensor_contiguous_rejects_rank_mismatch() {
         let lhs_meta = TensorMeta::from_shape(vec![6], DType::F64, Device::Cpu);
         let rhs_meta = TensorMeta::from_shape(vec![3, 2], DType::F64, Device::Cpu);
