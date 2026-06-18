@@ -6036,10 +6036,10 @@ impl Module for CELU {
         //                  = grad_out * exp(x/alpha)         ← analytic
         // The continuity at x=0 is preserved because both branches
         // give the same derivative there.
-        if self.alpha == 0.0 {
+        if !self.alpha.is_finite() || self.alpha == 0.0 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
-                    reason: "CELU: alpha must be non-zero",
+                    reason: "CELU: alpha must be finite and non-zero",
                 },
             )));
         }
@@ -33489,6 +33489,25 @@ mod tests {
             msg.contains("alpha"),
             "rejection message should mention alpha, got {msg}"
         );
+    }
+
+    #[test]
+    fn celu_rejects_non_finite_alpha() {
+        for alpha in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let celu = CELU::new(alpha);
+            let input = session
+                .tensor_variable(vec![1.0, -1.0], vec![2], false)
+                .unwrap();
+            let err = celu
+                .forward(&mut session, input)
+                .expect_err("CELU::forward must reject non-finite alpha");
+            let msg = format!("{err:?}");
+            assert!(
+                msg.contains("alpha"),
+                "rejection message should mention alpha, got {msg}"
+            );
+        }
     }
 
     #[test]
