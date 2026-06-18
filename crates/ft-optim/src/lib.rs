@@ -4061,7 +4061,7 @@ impl PolynomialLR {
         Self {
             initial_lr,
             total_iters,
-            power,
+            power: finite_non_negative_factor(power),
             last_epoch: -1,
             last_lr: initial_lr,
         }
@@ -4115,7 +4115,7 @@ impl LRScheduler for PolynomialLR {
                         self.total_iters = total_iters;
                     }
                 }
-                "power" => self.power = *val,
+                "power" => self.power = finite_non_negative_factor(*val),
                 _ => {}
             }
         }
@@ -11684,6 +11684,35 @@ mod tests {
         // Step 5: lr = 1.0 * (1 - 5/10)^2 = 0.25
         sched.step(&mut opt, Some(5));
         assert!((opt.get_lr() - 0.25).abs() < 1e-10);
+    }
+
+    #[test]
+    fn polynomial_lr_invalid_power_is_clamped() {
+        for power in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+            let mut opt = SGD::new(vec![x], 0.5);
+            let mut sched = PolynomialLR::new(&opt, 10, power);
+
+            sched.step(&mut opt, Some(5));
+            assert_eq!(opt.get_lr(), 0.5, "invalid power {power:?}");
+            assert!(opt.get_lr().is_finite(), "lr must remain finite");
+            assert!(opt.get_lr() >= 0.0, "lr must remain non-negative");
+
+            sched.load_state_dict(SchedulerState {
+                last_epoch: -1,
+                last_lrs: vec![0.5],
+                extra: vec![
+                    ("initial_lr".to_owned(), 0.5),
+                    ("total_iters".to_owned(), 10.0),
+                    ("power".to_owned(), power),
+                ],
+            });
+            sched.step(&mut opt, Some(5));
+            assert_eq!(opt.get_lr(), 0.5, "loaded invalid power {power:?}");
+            assert!(opt.get_lr().is_finite(), "loaded lr must remain finite");
+            assert!(opt.get_lr() >= 0.0, "loaded lr must remain non-negative");
+        }
     }
 
     #[test]
