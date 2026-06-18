@@ -3248,6 +3248,22 @@ impl EmbeddingBag {
         offsets: TensorNodeId,
         per_sample_weights: Option<TensorNodeId>,
     ) -> Result<TensorNodeId, AutogradError> {
+        let indices_shape = session.tensor_shape(indices)?;
+        if indices_shape.len() != 1 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "EmbeddingBag: indices must be 1D",
+                },
+            )));
+        }
+        let offsets_shape = session.tensor_shape(offsets)?;
+        if offsets_shape.len() != 1 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "EmbeddingBag: offsets must be 1D",
+                },
+            )));
+        }
         let indices_vals = session.tensor_values(indices)?;
         let offsets_vals = session.tensor_values(offsets)?;
 
@@ -3266,6 +3282,13 @@ impl EmbeddingBag {
 
         if let Some(w) = per_sample_weights {
             let psw_shape = session.tensor_shape(w)?;
+            if psw_shape.len() != 1 {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: "EmbeddingBag: per_sample_weights must be 1D",
+                    },
+                )));
+            }
             let psw_numel = checked_shape_numel(&psw_shape, "EmbeddingBag: psw shape overflow")?;
             if psw_numel != n_indices {
                 return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -34279,6 +34302,53 @@ mod tests {
                 "unexpected error for {mode:?}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn embedding_bag_rejects_non_1d_inputs() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let eb = EmbeddingBag::new(&mut session, 4, 2, EmbeddingBagMode::Sum, None).unwrap();
+
+        let indices_2d = session
+            .tensor_variable(vec![0.0, 1.0], vec![1, 2], false)
+            .unwrap();
+        let offsets = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let err = eb
+            .forward_with_offsets(&mut session, indices_2d, offsets, None)
+            .expect_err("rank-2 indices must fail");
+        assert!(
+            err.to_string().contains("indices must be 1D"),
+            "unexpected error: {err}"
+        );
+
+        let indices = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .unwrap();
+        let offsets_2d = session
+            .tensor_variable(vec![0.0], vec![1, 1], false)
+            .unwrap();
+        let err = eb
+            .forward_with_offsets(&mut session, indices, offsets_2d, None)
+            .expect_err("rank-2 offsets must fail");
+        assert!(
+            err.to_string().contains("offsets must be 1D"),
+            "unexpected error: {err}"
+        );
+
+        let indices = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .unwrap();
+        let offsets = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let psw_2d = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
+            .unwrap();
+        let err = eb
+            .forward_with_offsets(&mut session, indices, offsets, Some(psw_2d))
+            .expect_err("rank-2 per_sample_weights must fail");
+        assert!(
+            err.to_string().contains("per_sample_weights must be 1D"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
