@@ -22181,6 +22181,24 @@ mod tests {
     }
 
     #[test]
+    fn pixel_unshuffle_module_golden_matches_torch() {
+        // Differential golden vs torch.nn.PixelUnshuffle(2) 2.12: input arange16
+        // [1,1,4,4] -> [1,4,2,2] = inverse of pixel-shuffle. frankentorch-4q9ni.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable((0..16).map(f64::from).collect(), vec![1, 1, 4, 4], false)
+            .unwrap();
+        let out = PixelUnshuffle::new(2).forward(&mut s, x).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![1, 4, 2, 2], "pixel_unshuffle shape");
+        let want = [
+            0.0, 2.0, 8.0, 10.0, 1.0, 3.0, 9.0, 11.0, 4.0, 6.0, 12.0, 14.0, 5.0, 7.0, 13.0, 15.0,
+        ];
+        for (g, w) in s.tensor_values(out).unwrap().iter().zip(want.iter()) {
+            assert!((g - w).abs() < 1e-12, "pixel_unshuffle {g} != {w}");
+        }
+    }
+
+    #[test]
     fn pixel_shuffle_module_golden_matches_torch() {
         // Differential golden vs torch.nn.PixelShuffle(2) 2.12: input arange16
         // [1,4,2,2] -> [1,1,4,4] = the (C*r2,H,W)->(C,H*r,W*r) rearrange.
