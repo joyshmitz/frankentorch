@@ -2175,6 +2175,26 @@ mod tests {
     }
 
     #[test]
+    fn dataloader_sampler_index_error_does_not_advance_position() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ds = make_dataset(2, 1);
+        let config = DataLoaderConfig::new(2);
+        let mut loader = DataLoader::with_indices(&ds, vec![0, 2], config);
+
+        for attempt in 0..2 {
+            let message = loader
+                .next_batch(&mut session)
+                .err()
+                .map(|err| err.to_string())
+                .unwrap_or_default();
+            assert!(
+                message.contains("sampler index out of range"),
+                "attempt {attempt} unexpectedly advanced past malformed sampler batch: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn dataloader_with_subset_sampler_train_val_split() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let ds = make_dataset(10, 1);
