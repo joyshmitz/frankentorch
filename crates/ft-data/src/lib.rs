@@ -1983,6 +1983,79 @@ mod tests {
     }
 
     #[test]
+    fn sequential_sampler_is_identity_range_exhaustive() {
+        // frankentorch-f2emq: SequentialSampler must yield exactly 0..n in order.
+        for n in 0..=20usize {
+            let s = SequentialSampler::new(n);
+            assert_eq!(s.len(), n);
+            assert_eq!(s.indices(), (0..n).collect::<Vec<_>>(), "n={n}");
+        }
+    }
+
+    #[test]
+    fn random_sampler_no_replacement_is_permutation_exhaustive() {
+        // frankentorch-f2emq: default RandomSampler (no replacement, num_samples==n)
+        // must produce a permutation of 0..n for every n and seed — exactly n
+        // indices, each in [0,n) exactly once.
+        for n in 0..=20usize {
+            for &seed in &[0u64, 1, 42, 0xCAFE_BABE_1234_5678, u64::MAX] {
+                let s = RandomSampler::new(n).with_seed(seed);
+                assert_eq!(s.len(), n, "len n={n} seed={seed}");
+                let mut idx = s.indices();
+                assert_eq!(idx.len(), n, "count n={n} seed={seed}");
+                idx.sort_unstable();
+                assert_eq!(
+                    idx,
+                    (0..n).collect::<Vec<_>>(),
+                    "must be a permutation of 0..{n} (seed={seed})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn batch_sampler_partition_invariants_exhaustive() {
+        // frankentorch-f2emq: exhaustively verify BatchSampler.batches() over the
+        // small (n, batch_size, drop_last) space — partition prefix, batch sizes,
+        // drop_last remainder, and len()/batches() agreement.
+        for n in 0..=12usize {
+            let indices: Vec<usize> = (0..n).collect();
+            for batch_size in 1..=14usize {
+                for &drop_last in &[false, true] {
+                    let bs = BatchSampler::new(indices.clone(), batch_size, drop_last);
+                    let batches = bs.batches();
+                    let ctx = format!("n={n} bs={batch_size} drop={drop_last}");
+
+                    assert_eq!(batches.len(), bs.len(), "len() vs batches() {ctx}");
+                    assert!(batches.iter().all(|b| !b.is_empty()), "no empty batch {ctx}");
+
+                    // Concatenation is an order-preserving prefix of the input.
+                    let flat: Vec<usize> = batches.iter().flatten().copied().collect();
+                    let kept = if drop_last {
+                        (n / batch_size) * batch_size
+                    } else {
+                        n
+                    };
+                    assert_eq!(flat, indices[..kept], "partition prefix {ctx}");
+
+                    // Batch sizes: full everywhere under drop_last; otherwise full
+                    // except the last, which carries the remainder.
+                    for (i, b) in batches.iter().enumerate() {
+                        let is_last = i + 1 == batches.len();
+                        if drop_last || !is_last {
+                            assert_eq!(b.len(), batch_size, "full batch {i} {ctx}");
+                        } else {
+                            let rem = n % batch_size;
+                            let want = if rem == 0 { batch_size } else { rem };
+                            assert_eq!(b.len(), want, "last batch {ctx}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn dataloader_with_random_sampler_indices() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let ds = make_dataset(6, 2);
