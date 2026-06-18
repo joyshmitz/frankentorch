@@ -6411,6 +6411,20 @@ pub fn avg_pool2d_backward_f64(
     iw: usize,
     count_include_pad: bool,
 ) -> Vec<f64> {
+    if kh == 2
+        && kw == 2
+        && sh == 2
+        && sw == 2
+        && pad_h == 0
+        && pad_w == 0
+        && count_include_pad
+        && ph == ih
+        && pw == iw
+        && oh == ih / 2
+        && ow == iw / 2
+    {
+        return avg_pool2d_backward_2x2s2_f64(dout, batch, ch, ih, iw, oh, ow);
+    }
     let mut dp = vec![0.0f64; batch * ch * ph * pw];
     dp.par_chunks_mut(ph * pw)
         .enumerate()
@@ -6438,7 +6452,37 @@ pub fn avg_pool2d_backward_f64(
                     }
                 }
             }
-    });
+        });
+    dp
+}
+
+fn avg_pool2d_backward_2x2s2_f64(
+    dout: &[f64],
+    batch: usize,
+    ch: usize,
+    ih: usize,
+    iw: usize,
+    oh: usize,
+    ow: usize,
+) -> Vec<f64> {
+    let mut dp = vec![0.0f64; batch * ch * ih * iw];
+    dp.par_chunks_mut(ih * iw)
+        .enumerate()
+        .for_each(|(plane, drow)| {
+            let dbase = plane * oh * ow;
+            for oy in 0..oh {
+                let row0 = (oy * 2) * iw;
+                let row1 = row0 + iw;
+                for ox in 0..ow {
+                    let col0 = ox * 2;
+                    let g = dout[dbase + oy * ow + ox] / 4.0;
+                    drow[row0 + col0] += g;
+                    drow[row0 + col0 + 1] += g;
+                    drow[row1 + col0] += g;
+                    drow[row1 + col0 + 1] += g;
+                }
+            }
+        });
     dp
 }
 
@@ -25223,6 +25267,43 @@ mod tests {
             digest = digest.wrapping_mul(0x100000001b3);
         }
         assert_eq!(digest, 0x7af37c5e805fbec5, "avg_pool2d 2x2s2 golden digest");
+    }
+
+    #[test]
+    fn avg_pool2d_2x2s2_backward_matches_generic_bit_exact() {
+        let (batch, ch, ih, iw) = (2usize, 3usize, 6usize, 8usize);
+        let (oh, ow) = (ih / 2, iw / 2);
+        let dout: Vec<f64> = (0..batch * ch * oh * ow)
+            .map(|i| (((i * 43 + 5) % 211) as f64 - 101.0) * 0.015625)
+            .collect();
+
+        let got = super::avg_pool2d_backward_f64(
+            &dout, batch, ch, ih, iw, 2, 2, oh, ow, 2, 2, 0, 0, ih, iw, true,
+        );
+
+        let mut want = vec![0.0f64; batch * ch * ih * iw];
+        for plane in 0..batch * ch {
+            let dbase = plane * oh * ow;
+            let ibase = plane * ih * iw;
+            for oy in 0..oh {
+                let rs = oy * 2;
+                for ox in 0..ow {
+                    let cs = ox * 2;
+                    let g = dout[dbase + oy * ow + ox] / 4.0;
+                    for r in rs..rs + 2 {
+                        let irow = ibase + r * iw;
+                        for c in cs..cs + 2 {
+                            want[irow + c] += g;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            want.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
     }
 
     #[test]
