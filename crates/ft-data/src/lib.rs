@@ -2089,6 +2089,20 @@ mod tests {
     }
 
     #[test]
+    fn dataloader_with_indices_preserves_duplicates_and_order() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ds = make_dataset(3, 1);
+        let config = DataLoaderConfig::new(4);
+        let mut loader = DataLoader::with_indices(&ds, vec![2, 0, 2, 1], config);
+
+        let batch = loader.next_batch(&mut session).unwrap().unwrap();
+        let target = batch.target().unwrap();
+
+        assert_eq!(session.tensor_values(target).unwrap(), vec![2.0, 0.0, 2.0, 1.0]);
+        assert!(loader.next_batch(&mut session).unwrap().is_none());
+    }
+
+    #[test]
     fn dataloader_rejects_out_of_range_sampler_index() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let ds = make_dataset(2, 1);
