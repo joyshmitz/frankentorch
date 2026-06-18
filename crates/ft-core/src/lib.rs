@@ -1594,18 +1594,14 @@ impl DenseTensor {
         if self.meta.dtype() == dtype {
             return Ok(self.clone());
         }
-        let new_meta = self.meta.clone().with_dtype(dtype);
-        let dequantized = if self.meta.dtype().is_quantized() {
-            Some(self.dequantized_values_as_f64()?)
+        let new_meta =
+            TensorMeta::from_shape(self.meta.shape().to_vec(), dtype, self.meta.device());
+        let logical_f64 = if self.meta.dtype().is_quantized() {
+            self.dequantized_values_as_f64()?
         } else {
-            None
+            self.contiguous_values_as_f64()?
         };
-        let as_f64 = || -> Vec<f64> {
-            dequantized
-                .as_ref()
-                .cloned()
-                .unwrap_or_else(|| self.storage.to_f64_vec())
-        };
+        let as_f64 = || -> Vec<f64> { logical_f64.clone() };
         let as_f32 = || -> Vec<f32> {
             #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
             {
@@ -4370,6 +4366,29 @@ mod tests {
         let f64_dt = dt.to_dtype(DType::F64).expect("cast to f64");
         assert_eq!(f64_dt.meta().dtype(), DType::F64);
         assert_eq!(f64_dt.contiguous_values().unwrap(), &[1.5, 2.5]);
+    }
+
+    #[test]
+    fn dense_tensor_to_dtype_compacts_offset_quantized_view() {
+        let meta = TensorMeta::quantized_from_shape_and_strides(
+            vec![2],
+            vec![1],
+            1,
+            DType::QInt8,
+            Device::Cpu,
+            0.5,
+            -2,
+        )
+        .expect("offset quantized meta");
+        let tensor = DenseTensor::from_storage_qint8(meta, vec![99, 0, 2])
+            .expect("offset quantized tensor");
+
+        let cast = tensor.to_dtype(DType::F64).expect("cast offset qint8");
+
+        assert_eq!(cast.meta().dtype(), DType::F64);
+        assert_eq!(cast.meta().storage_offset(), 0);
+        assert_eq!(cast.typed_storage().as_f64().unwrap(), &[1.0, 2.0]);
+        assert_eq!(cast.contiguous_values().unwrap(), &[1.0, 2.0]);
     }
 
     #[test]
