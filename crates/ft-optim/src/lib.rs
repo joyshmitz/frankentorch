@@ -3178,7 +3178,7 @@ impl ReduceLROnPlateau {
     /// Set multiplicative reduction factor (default: 0.1).
     #[must_use]
     pub fn factor(mut self, factor: f64) -> Self {
-        self.factor = factor;
+        self.factor = finite_non_negative_factor(factor);
         self
     }
 
@@ -3192,7 +3192,7 @@ impl ReduceLROnPlateau {
     /// Set improvement threshold (default: 1e-4).
     #[must_use]
     pub fn threshold(mut self, threshold: f64) -> Self {
-        self.threshold = threshold;
+        self.threshold = finite_non_negative_factor(threshold);
         self
     }
 
@@ -3220,14 +3220,14 @@ impl ReduceLROnPlateau {
     /// Set minimum learning rate floor (default: 0.0).
     #[must_use]
     pub fn min_lr(mut self, min_lr: f64) -> Self {
-        self.min_lr = min_lr;
+        self.min_lr = finite_non_negative_factor(min_lr);
         self
     }
 
     /// Minimum required absolute lr delta for applying a reduction.
     #[must_use]
     pub fn eps(mut self, eps: f64) -> Self {
-        self.eps = eps;
+        self.eps = finite_non_negative_factor(eps);
         self
     }
 
@@ -3364,13 +3364,13 @@ impl LRScheduler for ReduceLROnPlateau {
                         PlateauMode::Min
                     };
                 }
-                "factor" => self.factor = *val,
+                "factor" => self.factor = finite_non_negative_factor(*val),
                 "patience" => {
                     if let Some(patience) = decode_exact_usize_field(*val, 0) {
                         self.patience = patience;
                     }
                 }
-                "threshold" => self.threshold = *val,
+                "threshold" => self.threshold = finite_non_negative_factor(*val),
                 "threshold_mode" => {
                     self.threshold_mode = if *val >= 0.5 {
                         ThresholdMode::Abs
@@ -3383,8 +3383,8 @@ impl LRScheduler for ReduceLROnPlateau {
                         self.cooldown = cooldown;
                     }
                 }
-                "min_lr" => self.min_lr = *val,
-                "eps" => self.eps = *val,
+                "min_lr" => self.min_lr = finite_non_negative_factor(*val),
+                "eps" => self.eps = finite_non_negative_factor(*val),
                 "best" => self.best = *val,
                 "num_bad_epochs" => {
                     if let Some(num_bad_epochs) = decode_exact_usize_field(*val, 0) {
@@ -10542,6 +10542,59 @@ mod tests {
         scheduler_noop.step_with_metric(&mut opt_noop, 1.0);
         scheduler_noop.step_with_metric(&mut opt_noop, 1.1);
         assert!((opt_noop.get_lr() - 0.7).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_on_plateau_invalid_scalars_are_clamped() {
+        for scalar in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.5] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session
+                .tensor_variable(vec![1.0], vec![1], true)
+                .expect("var");
+            let mut opt = SGD::new(vec![x], 1.0);
+            let mut scheduler = ReduceLROnPlateau::new(&opt)
+                .factor(scalar)
+                .threshold(scalar)
+                .min_lr(scalar)
+                .eps(scalar)
+                .patience(0);
+
+            scheduler.step_with_metric(&mut opt, 1.0);
+            scheduler.step_with_metric(&mut opt, 1.1);
+
+            let lr = opt.get_lr();
+            assert_eq!(lr, 0.0, "invalid scalar {scalar:?}");
+            assert!(lr.is_finite(), "lr must stay finite for {scalar:?}");
+            assert!(lr >= 0.0, "lr must stay non-negative for {scalar:?}");
+        }
+    }
+
+    #[test]
+    fn reduce_on_plateau_loaded_invalid_scalars_are_clamped() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = ReduceLROnPlateau::new(&opt).patience(0);
+        scheduler.load_state_dict(SchedulerState {
+            last_epoch: -1,
+            last_lrs: vec![1.0],
+            extra: vec![
+                ("factor".to_owned(), f64::INFINITY),
+                ("threshold".to_owned(), f64::NAN),
+                ("min_lr".to_owned(), -0.5),
+                ("eps".to_owned(), f64::NEG_INFINITY),
+            ],
+        });
+
+        scheduler.step_with_metric(&mut opt, 1.0);
+        scheduler.step_with_metric(&mut opt, 1.1);
+
+        let lr = opt.get_lr();
+        assert_eq!(lr, 0.0);
+        assert!(lr.is_finite(), "loaded invalid scalars must keep lr finite");
+        assert!(lr >= 0.0, "loaded invalid scalars must keep lr non-negative");
     }
 
     #[test]
