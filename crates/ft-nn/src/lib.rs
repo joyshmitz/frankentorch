@@ -3322,6 +3322,13 @@ impl EmbeddingBag {
         // out-of-range — even silently — because index_select would
         // catch it later but we want the same error message).
         for &iv in &indices_vals {
+            if iv < 0.0 || iv != iv.trunc() {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: "EmbeddingBag: index value must be a non-negative integer",
+                    },
+                )));
+            }
             let idx = iv as usize;
             if Some(idx) == self.padding_idx {
                 continue;
@@ -34044,6 +34051,26 @@ mod tests {
             err.to_string().contains("out of range"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn embedding_bag_rejects_non_integer_indices() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let eb = EmbeddingBag::new(&mut session, 3, 2, EmbeddingBagMode::Sum, None).unwrap();
+        let offsets = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
+
+        for bad in [-1.0, 1.5] {
+            let indices = session
+                .tensor_variable(vec![bad], vec![1], false)
+                .expect("indices");
+            let err = eb
+                .forward_with_offsets(&mut session, indices, offsets, None)
+                .expect_err("malformed index must fail");
+            assert!(
+                err.to_string().contains("non-negative integer"),
+                "bad index {bad} produced unexpected error: {err}"
+            );
+        }
     }
 
     #[test]
