@@ -22181,6 +22181,25 @@ mod tests {
     }
 
     #[test]
+    fn pixel_shuffle_module_golden_matches_torch() {
+        // Differential golden vs torch.nn.PixelShuffle(2) 2.12: input arange16
+        // [1,4,2,2] -> [1,1,4,4] = the (C*r2,H,W)->(C,H*r,W*r) rearrange.
+        // frankentorch-f5hw3.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable((0..16).map(f64::from).collect(), vec![1, 4, 2, 2], false)
+            .unwrap();
+        let out = PixelShuffle::new(2).forward(&mut s, x).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![1, 1, 4, 4], "pixel_shuffle shape");
+        let want = [
+            0.0, 4.0, 1.0, 5.0, 8.0, 12.0, 9.0, 13.0, 2.0, 6.0, 3.0, 7.0, 10.0, 14.0, 11.0, 15.0,
+        ];
+        for (g, w) in s.tensor_values(out).unwrap().iter().zip(want.iter()) {
+            assert!((g - w).abs() < 1e-12, "pixel_shuffle {g} != {w}");
+        }
+    }
+
+    #[test]
     fn flatten_module_golden_matches_torch() {
         // Differential golden vs torch.nn.Flatten 2.12: input arange24 [2,3,4],
         // Flatten(start_dim=1,end_dim=2) -> shape [2,12], values unchanged.
