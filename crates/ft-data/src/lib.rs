@@ -2486,6 +2486,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dataloader_zero_batch_size_never_touches_samples() {
+        struct CountingDataset {
+            len: usize,
+            get_calls: std::cell::Cell<usize>,
+        }
+
+        impl Dataset for CountingDataset {
+            fn len(&self) -> usize {
+                self.len
+            }
+
+            fn get(&self, index: usize) -> DataItem {
+                self.get_calls.set(self.get_calls.get() + 1);
+                DataItem::single("input", vec![index as f64], vec![1])
+            }
+        }
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ds = CountingDataset {
+            len: 3,
+            get_calls: std::cell::Cell::new(0),
+        };
+        let mut loader = DataLoader::new(&ds, DataLoaderConfig::new(0).with_shuffle(true)).seed(7);
+
+        assert_eq!(loader.num_batches(), 0);
+        assert!(loader.next_batch(&mut session).unwrap().is_none());
+        loader.reset();
+        assert!(loader.next_batch(&mut session).unwrap().is_none());
+        assert_eq!(ds.get_calls.get(), 0);
+
+        let custom_ds = CountingDataset {
+            len: 3,
+            get_calls: std::cell::Cell::new(0),
+        };
+        let mut custom_loader = DataLoader::with_indices(
+            &custom_ds,
+            vec![2, 0, 1],
+            DataLoaderConfig::new(0)
+                .with_shuffle(true)
+                .with_drop_last(true),
+        );
+
+        assert_eq!(custom_loader.num_batches(), 0);
+        assert!(custom_loader.next_batch(&mut session).unwrap().is_none());
+        custom_loader.reset();
+        assert!(custom_loader.next_batch(&mut session).unwrap().is_none());
+        assert_eq!(custom_ds.get_calls.get(), 0);
+    }
+
     // ── Subset and random_split tests ──────────────────────────────────
 
     #[test]
