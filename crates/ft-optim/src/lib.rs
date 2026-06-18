@@ -6051,14 +6051,23 @@ impl GradScaler {
             return Ok(true);
         }
 
-        // Check all gradients for inf/nan
+        let inv_scale = 1.0 / self.scale;
+        let mut unscaled_persistent_gradients = Vec::new();
         let mut found_overflow = false;
-        for (_, grad_opt) in report.tensor_gradients_iter() {
-            if let Some(grad) = grad_opt
-                && grad.iter().any(|&v| !v.is_finite())
-            {
-                found_overflow = true;
-                break;
+        for (node_idx, grad_opt) in report.tensor_gradients_iter() {
+            if grad_opt.is_none() {
+                continue;
+            }
+            let node = TensorNodeId(node_idx);
+            if let Some(mut gradient) = session.tensor_accumulated_gradient(node)? {
+                if gradient.iter().any(|&v| !v.is_finite()) {
+                    found_overflow = true;
+                    break;
+                }
+                for value in &mut gradient {
+                    *value *= inv_scale;
+                }
+                unscaled_persistent_gradients.push((node, gradient));
             }
         }
 
@@ -6071,8 +6080,12 @@ impl GradScaler {
             return Ok(false);
         }
 
-        // Unscale gradients before optimizer step. Build a scaled report.
-        let inv_scale = 1.0 / self.scale;
+        for (node, gradient) in unscaled_persistent_gradients {
+            session.tensor_set_accumulated_gradient(node, gradient)?;
+        }
+
+        // Keep report consumers consistent with the persistent tape consumed by
+        // the optimizers in this crate.
         let unscaled = report.scaled_clone(inv_scale);
         optimizer.step(session, &unscaled)?;
 
@@ -11637,6 +11650,9 @@ mod tests {
         let loss1 = s1.mse_loss(w1, target1).unwrap();
         let report1 = s1.tensor_backward(loss1).unwrap();
         let unscaled_grad = report1.gradient(w1).unwrap().to_vec();
+        let mut opt1 = SGD::new(vec![w1], 0.1);
+        opt1.step(&mut s1, &report1).unwrap();
+        let unscaled_step_value = s1.tensor_values(w1).unwrap();
 
         // Run 2: with scaler, scale loss by 4, run backward, then GradScaler.step
         // unscales internally — the resulting gradient applied to w should match unscaled_grad
@@ -11644,7 +11660,7 @@ mod tests {
         let w2 = s2.tensor_variable(vec![1.0], vec![1], true).unwrap();
         let target2 = s2.tensor_variable(vec![5.0], vec![1], false).unwrap();
         let loss2 = s2.mse_loss(w2, target2).unwrap();
-        let scaler = GradScaler::with_config(4.0, 2.0, 0.5, 100);
+        let mut scaler = GradScaler::with_config(4.0, 2.0, 0.5, 100);
         let scaled_loss = scaler.scale_loss(&mut s2, loss2).unwrap();
         let report2 = s2.tensor_backward(scaled_loss).unwrap();
 
@@ -11664,6 +11680,28 @@ mod tests {
             assert!(
                 (a - b).abs() < 1e-10,
                 "scaled_clone(0.25) should recover original gradient: original={a} cloned={b}"
+            );
+        }
+
+        let mut opt2 = SGD::new(vec![w2], 0.1);
+        let applied = scaler.step(&mut s2, &mut opt2, &report2).unwrap();
+        assert!(applied, "finite scaled gradients should apply the optimizer step");
+        assert!(!scaler.last_step_was_skipped());
+
+        let scaled_step_value = s2.tensor_values(w2).unwrap();
+        assert_eq!(
+            scaled_step_value, unscaled_step_value,
+            "GradScaler.step must unscale the persistent tape gradient before SGD reads it"
+        );
+
+        let persistent_grad = s2
+            .tensor_accumulated_gradient(w2)
+            .unwrap()
+            .expect("scaled parameter gradient should remain allocated");
+        for (a, b) in unscaled_grad.iter().zip(persistent_grad.iter()) {
+            assert!(
+                (a - b).abs() < 1e-10,
+                "persistent gradient should be unscaled before optimizer step: original={a} persistent={b}"
             );
         }
     }
