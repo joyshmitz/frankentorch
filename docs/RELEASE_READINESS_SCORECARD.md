@@ -36,6 +36,14 @@ contribution. The remaining ≥2x lever is a backward grad-buffer caching alloca
 (`frankentorch-cbe4t`). Gates: ft-autograd 476/0, conformance 199/0 + all sub-suites,
 clippy clean.
 
+Forward half (`frankentorch-0w3ns`): `apply_function` clones every input (33 MB on the
+`[8,64,8192]` lane) before the kernel; avg_pool1d/max_pool1d backwards never read the
+input, so both f64 forwards were routed through the zero-copy
+`tensor_apply_function_f64_borrowed_forward` (same accepted pattern as kgs4.119/132).
+Same-process A/B (clone+kernel vs borrow+kernel, m=4M): `5.89x` mean / `9.05x` min; the
+avg_pool1d forward phase fell ~20 ms → ~6.8 ms. Bit-exact, can't-regress. Gates: ft-api
+avg_pool1d 7/0 + max_pool1d 1/0, conformance 199/0 + all sub-suites, clippy clean.
+
 ## Current Gates
 
 | Gate | Scope | Result |
