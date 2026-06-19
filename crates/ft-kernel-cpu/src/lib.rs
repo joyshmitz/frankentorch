@@ -6562,6 +6562,66 @@ pub fn max_pool3d_forward_f64(
     out
 }
 
+/// Fused max-pool3d forward plus first-argmax sidecar (f64). The sidecar stores
+/// the plane-local input offset as `f64`, matching the 1-D/2-D pool context
+/// convention while avoiding a full saved input in autograd.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn max_pool3d_forward_with_indices_f64(
+    input: &[f64],
+    batch: usize,
+    ch: usize,
+    id: usize,
+    ih: usize,
+    iw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let mut out = vec![0.0f64; batch * ch * od * oh * ow];
+    let mut arg_offsets = vec![0.0f64; batch * ch * od * oh * ow];
+    out.par_chunks_mut(od * oh * ow)
+        .zip(arg_offsets.par_chunks_mut(od * oh * ow))
+        .enumerate()
+        .for_each(|(plane, (orow, arow))| {
+            let ibase = plane * id * ih * iw;
+            for oz in 0..od {
+                let bd = oz * sd;
+                for oy in 0..oh {
+                    let bh = oy * sh;
+                    for ox in 0..ow {
+                        let bw = ox * sw;
+                        let mut m = f64::NEG_INFINITY;
+                        let mut arg = 0usize;
+                        for kdd in 0..kd {
+                            let dz = (bd + kdd) * ih * iw;
+                            for kr in 0..kh {
+                                let loc = dz + (bh + kr) * iw + bw;
+                                for kc in 0..kw {
+                                    let v = input[ibase + loc + kc];
+                                    if v > m {
+                                        m = v;
+                                        arg = loc + kc;
+                                    }
+                                }
+                            }
+                        }
+                        let oidx = (oz * oh + oy) * ow + ox;
+                        orow[oidx] = m;
+                        arow[oidx] = arg as f64;
+                    }
+                }
+            }
+        });
+    (out, arg_offsets)
+}
+
 /// f32 mirror of [`max_pool3d_forward_f64`]: per output, the max over its
 /// `kd×kh×kw` window, one pass parallel over `(batch,ch)` volumes. Replaces the
 /// f32 op-graph (narrow/amax/cat) the f32 no-grad path fell through to.
@@ -6702,6 +6762,43 @@ fn max_pool3d_backward_2x2s2_f64(
                         }
 
                         drow[arg] += dout_plane[(oz * oh + oy) * ow + ox];
+                    }
+                }
+            }
+        });
+    din
+}
+
+/// Backward of [`max_pool3d_forward_with_indices_f64`]: scatter each output
+/// gradient to the saved first-argmax offset. Parallel and accumulation order
+/// match [`max_pool3d_backward_f64`].
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn max_pool3d_backward_from_indices_f64(
+    dout: &[f64],
+    arg_offsets: &[f64],
+    batch: usize,
+    ch: usize,
+    id: usize,
+    ih: usize,
+    iw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+) -> Vec<f64> {
+    let plane_len = id * ih * iw;
+    let out_plane_len = od * oh * ow;
+    let mut din = vec![0.0f64; batch * ch * plane_len];
+    din.par_chunks_mut(plane_len)
+        .enumerate()
+        .for_each(|(plane, drow)| {
+            let dbase = plane * out_plane_len;
+            for oz in 0..od {
+                for oy in 0..oh {
+                    for ox in 0..ow {
+                        let oidx = dbase + (oz * oh + oy) * ow + ox;
+                        let arg = arg_offsets[oidx] as usize;
+                        drow[arg] += dout[oidx];
                     }
                 }
             }
@@ -26125,6 +26222,55 @@ mod tests {
         assert_eq!(got[0].to_bits(), dout[0].to_bits(), "first tied argmax wins");
         assert_eq!(got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
             expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn max_pool3d_indices_scatter_matches_rescan_first_tie_bits() {
+        let (batch, ch, id, ih, iw) = (2usize, 2usize, 5usize, 4usize, 4usize);
+        let (kd, kh, kw, sd, sh, sw) = (3usize, 2usize, 2usize, 1usize, 2usize, 2usize);
+        let od = (id - kd) / sd + 1;
+        let oh = (ih - kh) / sh + 1;
+        let ow = (iw - kw) / sw + 1;
+        let mut input: Vec<f64> = (0..batch * ch * id * ih * iw)
+            .map(|i| ((i * 41 + 17) % 59) as f64 * 0.125 - 3.0)
+            .collect();
+        input[0] = 9.0;
+        input[1] = 9.0;
+        input[4] = 8.0;
+        input[16] = 7.0;
+        input[17] = 7.0;
+        let dout: Vec<f64> = (0..batch * ch * od * oh * ow)
+            .map(|i| ((i * 29 + 5) % 31) as f64 * 0.0625 - 0.75)
+            .collect();
+
+        let (sidecar_out, arg_offsets) = super::max_pool3d_forward_with_indices_f64(
+            &input, batch, ch, id, ih, iw, kd, kh, kw, od, oh, ow, sd, sh, sw,
+        );
+        let plain_out = super::max_pool3d_forward_f64(
+            &input, batch, ch, id, ih, iw, kd, kh, kw, od, oh, ow, sd, sh, sw,
+        );
+        let sidecar_grad = super::max_pool3d_backward_from_indices_f64(
+            &dout,
+            &arg_offsets,
+            batch,
+            ch,
+            id,
+            ih,
+            iw,
+            od,
+            oh,
+            ow,
+        );
+        let rescan_grad = super::max_pool3d_backward_f64(
+            &dout, &input, batch, ch, id, ih, iw, kd, kh, kw, od, oh, ow, sd, sh, sw,
+        );
+
+        for (i, (&g, &e)) in sidecar_out.iter().zip(plain_out.iter()).enumerate() {
+            assert_eq!(g.to_bits(), e.to_bits(), "max_pool3d sidecar out[{i}]");
+        }
+        for (i, (&g, &e)) in sidecar_grad.iter().zip(rescan_grad.iter()).enumerate() {
+            assert_eq!(g.to_bits(), e.to_bits(), "max_pool3d sidecar grad[{i}]");
+        }
     }
 
     #[test]
