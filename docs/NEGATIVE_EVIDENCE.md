@@ -4,6 +4,51 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-19 - frankentorch-kgs4.112 - AvgPool2d 2x2s2 backward verify and assignment reject
+
+- Lever under verification: existing code-first f64 `avg_pool2d_backward_f64`
+  2x2 stride-2, no-padding, `count_include_pad=true` specialization for the
+  `[N,C,H,W]=[8,64,64,64]` training-style `avg_pool2d/grad` row.
+- New attempted lever: replace the current non-overlap `+= g` scatter writes in
+  `avg_pool2d_backward_2x2s2_f64` with direct `= g` assignment writes.
+- Workload: `ops_bench` `avg_pool2d/grad` and
+  `gauntlet_avg_pool2d_grad`, deterministic f64 `[8,64,64,64]`, kernel
+  `2x2`, stride `2x2`, padding `0`, `count_include_pad=true`, forward
+  `functional_avg_pool2d`, scalar `sum`, backward.
+- Existing fast-path baseline: rch `hz2` median `58.600 ms` for
+  `avg_pool2d/grad`.
+- Direct-assignment candidate: same-worker rch `hz2` median `68.624 ms`;
+  Criterion change `[+4.6329% +13.137% +24.143%]`, `p=0.01`. Rejected and
+  reverted.
+- Generic-disabled routing row: rch `ovh-b` median `117.51 ms`. Treat this as
+  cross-worker routing evidence only, not as a same-worker keep/reject proof.
+- PyTorch head-to-head: local PyTorch `2.12.0+cpu` in
+  `/tmp/torchvenv/bin/python`; FrankenTorch median `16.627 ms`, PyTorch median
+  `3.6632 ms`; ratio vs PyTorch `4.54x` slower.
+- Remote PyTorch caveat: rch `hz2` built and ran the FrankenTorch gauntlet arm
+  at median `13.383 ms`, then failed the PyTorch arm because the worker did not
+  have `torch` installed. That row is build/FrankenTorch-only evidence.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Verdict: keep the already-present 2x2s2 specialization as verified existing
+  code; reject and revert the direct-assignment variant. No product source
+  change from this closeout.
+- Retry condition: do not retry direct assignment or another tiny local scatter
+  micro-branch for this f64 avg_pool2d 2x2s2 row. Revisit only if a fresh
+  profile isolates `avg_pool2d_backward_2x2s2_f64` as the dominant frame after
+  session/tape setup, allocation churn, scalar-sum backward, and tensor
+  materialization are separated. The remaining PyTorch gap should route to
+  end-to-end tape/allocation/sum-backward overhead, f32/native layout, or a
+  fused training primitive.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.112/gauntlet_20260619T174250Z/SCORECARD.md`
+  - `artifacts/perf/frankentorch-kgs4.112/gauntlet_20260619T174250Z/NEGATIVE_EVIDENCE_LEDGER.md`
+  - `artifacts/perf/frankentorch-kgs4.112/gauntlet_20260619T174250Z/baseline_rch_ops_avg_pool2d_grad.log`
+  - `artifacts/perf/frankentorch-kgs4.112/gauntlet_20260619T174250Z/candidate_rch_ops_avg_pool2d_grad.log`
+  - `artifacts/perf/frankentorch-kgs4.112/gauntlet_20260619T174250Z/generic_disabled_rch_ops_avg_pool2d_grad.log`
+  - `artifacts/perf/frankentorch-kgs4.112/gauntlet_20260619T174250Z/local_pytorch_gauntlet_avg_pool2d.log`
+  - `artifacts/perf/frankentorch-kgs4.112/gauntlet_20260619T174250Z/rch_pytorch_gauntlet_avg_pool2d.log`
+  - `artifacts/perf/frankentorch-kgs4.112/gauntlet_20260619T174250Z/test_ft_conformance.log`
+
 ## 2026-06-19 - frankentorch-kgs4.122 - AvgPool1d unit-dy fill
 
 - Lever: special-case f64 `avg_pool1d_backward_f64` for kernel `2`, stride `2`,
