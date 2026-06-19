@@ -456,3 +456,30 @@ is explicitly satisfied.
   - `artifacts/perf/frankentorch-nzqb9/gauntlet_20260619T1709Z/after_rch_max_pool3d_stage_custom_move.log`
   - `artifacts/perf/frankentorch-nzqb9/gauntlet_20260619T1709Z/after_rch_max_pool3d_custom_move.log`
   - `artifacts/perf/frankentorch-nzqb9/gauntlet_20260619T1709Z/local_pytorch_ratio_max_pool3d.log`
+
+## 2026-06-19 - frankentorch-x53r3 - WIN: row-blocked deferred-Givens replay (eigh + svd + eig vectors)
+
+- Classification: WIN (shipped 76993cd1 eigh/svd, 6e3b607b eig q_acc).
+- Lever: the deferred whole-stream Givens replay (eigh QL kgs4.73, SVD bidiagonal-QR
+  2ze7i, eig q_acc 9y5bi) logs the ordered rotation stream then replays it with
+  `z.par_chunks_mut(n).for_each(|row| for op in ops {..})`. The ops Vec is ~2*n^2
+  rotations (tens of MB at large n); the per-row form re-streams it from RAM once
+  PER ROW -> MEMORY-BANDWIDTH bound (~n x the Vec). Fix: group a small
+  cache-resident block of rows (8) per task and loop op-OUTER, so ops streams once
+  per BLOCK while the block stays in L1/L2. BIT-IDENTICAL (same ops, same order per
+  row; only loop nesting / row->task grouping changes).
+- Profile (eigh, n=1024, 10thr): reduce 444ms / form-Q 180ms / tql2-replay 1698ms
+  (=73% of cost; the replay was the wall, and it was bandwidth-bound not compute).
+- MEASURED same-worker same-process A/B (block=1 anchor vs block=8), eigh QL replay:
+  n=512 296.9->128.4ms 2.31x; n=1024 1995.5->556.4ms 3.59x. block>=16 falls off the
+  cache cliff (<=0.4x) so 8 is robustly below it.
+- Coverage: eigh_tql2_z_deferred (f64) + _f32 MEASURED via the A/B; SVD V/U replays
+  and eig q_acc replay are the BYTE-IDENTICAL mechanism (same code shape, same block)
+  -> perf inferred from the eigh A/B, correctness test-verified (501 / 500 green),
+  not independently benchmarked (geev is the smallest dense gap so its q_acc replay
+  is a small fraction). All bit-exact -> win-or-neutral, no regression risk.
+- LESSON: every prior "deferred whole-stream replay" win left a SECOND bandwidth
+  problem (re-streaming ops per row). Audit every
+  `par_chunks_mut(n).for_each(|row| for op in ops {..})` for this row-block fix.
+- Evidence: crates/ft-kernel-cpu/examples/{eigh_replay_block_ab,eigh_stage_profile_run}.rs;
+  doc-hidden eigh_tql2_replay_block_ab + eigh_stage_profile_f64.
