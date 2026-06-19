@@ -18865,32 +18865,48 @@ fn eig_francis_schur_traced<const WANT_VECTORS: bool, T: FrancisTraceSink>(
         // dispatch (vs O(sweeps)). frankentorch-9y5bi.
         if WANT_VECTORS && !sweep_rot.is_empty() {
             const EIG_QACC_PAR_WORK: u64 = 1 << 14;
+            // Row-BLOCKED, op-outer replay (frankentorch-x53r3): the whole-stream
+            // q_acc replay re-streamed the ops Vec from RAM once PER ROW
+            // (`par_chunks_mut(n)`) — bandwidth-bound at large n. Grouping a small
+            // cache-resident block of rows reads the stream once per BLOCK while the
+            // block stays in L1/L2. Bit-identical to the per-row replay (same ops,
+            // same order per row). Same lever as the eigh/svd QL replay block.
+            const EIG_QACC_REPLAY_BLOCK_ROWS: usize = 8;
             let work = (n as u64) * (sweep_rot.len() as u64);
             let rots: &[EigQaccOp] = &sweep_rot;
-            let apply = |row: &mut [f64]| {
+            let apply_block = |block: &mut [f64]| {
+                let nrows = block.len() / n;
                 for op in rots {
                     match *op {
                         EigQaccOp::Bulge(kk, xr, yr, zr, q_s, r_s, notlast) => {
-                            let mut p2 = xr * row[kk] + yr * row[kk + 1];
-                            if notlast {
-                                p2 += zr * row[kk + 2];
-                                row[kk + 2] -= p2 * r_s;
+                            for r in 0..nrows {
+                                let row = &mut block[r * n..r * n + n];
+                                let mut p2 = xr * row[kk] + yr * row[kk + 1];
+                                if notlast {
+                                    p2 += zr * row[kk + 2];
+                                    row[kk + 2] -= p2 * r_s;
+                                }
+                                row[kk + 1] -= p2 * q_s;
+                                row[kk] -= p2;
                             }
-                            row[kk + 1] -= p2 * q_s;
-                            row[kk] -= p2;
                         }
                         EigQaccOp::Givens(col, cq, cp) => {
-                            let z1 = row[col];
-                            row[col] = cq * z1 + cp * row[col + 1];
-                            row[col + 1] = cq * row[col + 1] - cp * z1;
+                            for r in 0..nrows {
+                                let row = &mut block[r * n..r * n + n];
+                                let z1 = row[col];
+                                row[col] = cq * z1 + cp * row[col + 1];
+                                row[col + 1] = cq * row[col + 1] - cp * z1;
+                            }
                         }
                     }
                 }
             };
             if work >= EIG_QACC_PAR_WORK {
-                q_acc.par_chunks_mut(n).for_each(apply);
+                q_acc
+                    .par_chunks_mut(EIG_QACC_REPLAY_BLOCK_ROWS * n)
+                    .for_each(apply_block);
             } else {
-                q_acc.chunks_mut(n).for_each(apply);
+                apply_block(q_acc);
             }
         }
     }
