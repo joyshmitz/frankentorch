@@ -372,3 +372,42 @@ is explicitly satisfied.
 - Evidence (reproducible harnesses, this commit):
   `crates/ft-kernel-cpu/examples/eig_random_gap.rs`,
   `crates/ft-kernel-cpu/examples/linalg_gap_sweep.rs`.
+
+## 2026-06-19 - frankentorch-nzqb9 - max_pool3d sum/backward local micro-levers
+
+- Context: follow-up from `frankentorch-kgs4.132`. The kept borrowed-forward
+  max_pool3d route narrowed the FrankenTorch internal row but still lost to
+  PyTorch. Current local PyTorch-enabled row at head: FrankenTorch `7.3569 ms`,
+  PyTorch `1.7639 ms`, ratio `4.17x` slower.
+- Rejected lever 1: scalar `Sum` backward direct accumulation. Same-worker rch
+  `hz2` stage `sum_only` was neutral, `997.97 us -> 998.70 us`, p=0.93; full
+  row on `hz2` was `6.4150 ms`. Reverted.
+- Rejected lever 2: power-of-two exact pairwise sum fast path. Correctness probe
+  passed while live, but same-worker rch `hz2` stage `sum_only` was neutral /
+  regressive, `997.97 us -> 1.0481 ms`, p=0.89. Reverted.
+- Rejected lever 3: CustomFunction single-contribution move into an empty grad
+  slot. Correctness probe for `-0.0` accumulation bits passed while live;
+  same-worker `backward_only` p50 moved `17.612 ms -> 12.411 ms`, but Criterion
+  reported no significant change, p=0.19, and the full row stayed neutral:
+  `6.4150 ms -> 6.1558 ms`, p=0.22. Reverted.
+- Remote PyTorch caveat: rch workers still lack `torch`, so remote PyTorch rows
+  fail with `ModuleNotFoundError`. Local PyTorch row is the ratio evidence;
+  remote rows are FT same-worker keep/reject evidence.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Verdict: no source kept. The durable result is negative evidence and routing.
+- Retry condition: do not retry local-only scalar-sum accumulation,
+  recursive-pairwise replacement, sidecar-only, borrowed-input-only, unit-dout
+  scatter, or single-contribution move variants for this workload. Revisit with
+  a broader lazy gradient storage/arena change that avoids initial zero
+  allocation and second full-size buffers across the whole tape, or a fused
+  `max_pool3d -> sum -> backward` primitive with fresh same-worker full-row
+  proof.
+- Evidence:
+  - `artifacts/perf/frankentorch-nzqb9/gauntlet_20260619T1709Z/SCORECARD.md`
+  - `artifacts/perf/frankentorch-nzqb9/gauntlet_20260619T1709Z/NEGATIVE_EVIDENCE_LEDGER.md`
+  - `artifacts/perf/frankentorch-nzqb9/gauntlet_20260619T1709Z/baseline_rch_max_pool3d_stage.log`
+  - `artifacts/perf/frankentorch-nzqb9/gauntlet_20260619T1709Z/after_rch_max_pool3d_stage.log`
+  - `artifacts/perf/frankentorch-nzqb9/gauntlet_20260619T1709Z/after_rch_max_pool3d_stage_sum_power2.log`
+  - `artifacts/perf/frankentorch-nzqb9/gauntlet_20260619T1709Z/after_rch_max_pool3d_stage_custom_move.log`
+  - `artifacts/perf/frankentorch-nzqb9/gauntlet_20260619T1709Z/after_rch_max_pool3d_custom_move.log`
+  - `artifacts/perf/frankentorch-nzqb9/gauntlet_20260619T1709Z/local_pytorch_ratio_max_pool3d.log`
