@@ -1,0 +1,20 @@
+# candidate repeat local PyTorch headline 2026-06-19T12:20:47Z
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.14s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-b/release/deps/pytorch_gauntlet_bench-5f2ebc2fd9ddf042)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 12.3s.
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu: Collecting 10 samples in estimated 12.291 s (10 iterations)
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu: Analyzing
+gauntlet_max_pool3d_grad/pytorch_2_12_cpu
+                        time:   [1.6107 ms 1.7762 ms 1.9680 ms]
+                        change: [-38.836% -20.219% +4.2530%] (p = 0.17 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high mild
+

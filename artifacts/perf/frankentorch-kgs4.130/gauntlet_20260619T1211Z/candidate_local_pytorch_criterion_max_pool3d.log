@@ -1,0 +1,87 @@
+# candidate local criterion max_pool3d with PyTorch 2026-06-19T12:18:36Z
+HEAD=761af2f2c516f32598d324fe7403c76d02aa7a46
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python
+   Compiling ft-autograd v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-kgs4-130-20260619T1209/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-kgs4-130-20260619T1209/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 43.05s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-b/release/deps/pytorch_gauntlet_bench-5f2ebc2fd9ddf042)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_max_pool3d_grad/frankentorch_kgs4_117
+Benchmarking gauntlet_max_pool3d_grad/frankentorch_kgs4_117: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad/frankentorch_kgs4_117: Collecting 10 samples in estimated 3.2506 s (220 iterations)
+Benchmarking gauntlet_max_pool3d_grad/frankentorch_kgs4_117: Analyzing
+gauntlet_max_pool3d_grad/frankentorch_kgs4_117
+                        time:   [14.555 ms 14.757 ms 14.949 ms]
+                        change: [-49.791% -48.143% -46.427%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 13.4s.
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu: Collecting 10 samples in estimated 13.388 s (10 iterations)
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu: Analyzing
+gauntlet_max_pool3d_grad/pytorch_2_12_cpu
+                        time:   [1.7705 ms 2.2263 ms 2.8644 ms]
+                        change: [-1.3583% +28.446% +74.129%] (p = 0.14 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor: Collecting 10 samples in estimated 3.0006 s (15k iterations)
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor: Analyzing
+gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor
+                        time:   [210.16 µs 215.00 µs 220.41 µs]
+                        change: [-17.018% -14.024% -10.716%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_forward_only
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_forward_only: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_forward_only: Collecting 10 samples in estimated 3.3480 s (440 iterations)
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_forward_only: Analyzing
+gauntlet_max_pool3d_grad_stage/frankentorch_forward_only
+                        time:   [3.5846 ms 3.6814 ms 3.8422 ms]
+                        change: [-30.302% -19.818% -7.5635%] (p = 0.01 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_sum_only
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_sum_only: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_sum_only: Collecting 10 samples in estimated 3.0775 s (385 iterations)
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_sum_only: Analyzing
+gauntlet_max_pool3d_grad_stage/frankentorch_sum_only
+                        time:   [987.37 µs 1.0657 ms 1.1119 ms]
+                        change: [-41.149% -23.360% -10.930%] (p = 0.01 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low severe
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_backward_only
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_backward_only: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_backward_only: Collecting 10 samples in estimated 3.5524 s (220 iterations)
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_backward_only: Analyzing
+gauntlet_max_pool3d_grad_stage/frankentorch_backward_only
+                        time:   [7.0913 ms 7.7376 ms 9.2858 ms]
+                        change: [-72.297% -64.605% -54.519%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices: Collecting 10 samples in estimated 3.0236 s (4455 iterations)
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices: Analyzing
+gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices
+                        time:   [663.91 µs 669.94 µs 674.86 µs]
+                        change: [+52.616% +59.334% +67.076%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices: Collecting 10 samples in estimated 3.0332 s (2035 iterations)
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices: Analyzing
+gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices
+                        time:   [1.4111 ms 1.4503 ms 1.4956 ms]
+                        change: [-12.746% +5.0812% +31.004%] (p = 0.64 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
