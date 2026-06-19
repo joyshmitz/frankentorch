@@ -225,4 +225,45 @@ fn main() {
         total as f64 / n as f64,
         total as f64 / n as f64 / 1000.0
     );
+
+    // ---- SAME-PROCESS A/B: forward input clone (old apply_function) vs borrow ----
+    // OLD apply_function does `contiguous_values_as_f64().to_vec()` (33MB clone of the
+    // input) before the kernel; the borrowed-forward path passes the live &[f64].
+    // Model: OLD = base.clone() + kernel; NEW = kernel(&base). Interleaved, min-of-window.
+    let mut fclone_best = u128::MAX;
+    let mut fborrow_best = u128::MAX;
+    let mut fclone_sum = 0u128;
+    let mut fborrow_sum = 0u128;
+    for _ in 0..(iters * 4) {
+        let a = Instant::now();
+        let cloned = base.clone();
+        let o = ft_kernel_cpu::avg_pool1d_forward_f64(&cloned, N, C, L, 2, output_len, 2);
+        std::hint::black_box(&o);
+        let e = a.elapsed().as_micros();
+        fclone_best = fclone_best.min(e);
+        fclone_sum += e;
+
+        let a = Instant::now();
+        let o = ft_kernel_cpu::avg_pool1d_forward_f64(&base, N, C, L, 2, output_len, 2);
+        std::hint::black_box(&o);
+        let e = a.elapsed().as_micros();
+        fborrow_best = fborrow_best.min(e);
+        fborrow_sum += e;
+    }
+    println!("  -- forward clone-vs-borrow A/B (same process) --");
+    println!(
+        "  OLD clone+k : min {:>8.1}  mean {:>8.1}",
+        fclone_best as f64,
+        fclone_sum as f64 / (iters * 4) as f64
+    );
+    println!(
+        "  NEW borrow+k: min {:>8.1}  mean {:>8.1}",
+        fborrow_best as f64,
+        fborrow_sum as f64 / (iters * 4) as f64
+    );
+    println!(
+        "  ratio(min)  : {:>6.2}x   ratio(mean): {:>6.2}x",
+        fclone_best as f64 / fborrow_best as f64,
+        fclone_sum as f64 / fborrow_sum as f64
+    );
 }

@@ -637,3 +637,21 @@ is explicitly satisfied.
 - Retry condition for the real ≥2x on these lanes: a backward grad-buffer scratch/
   caching allocator (gmuml-class) that reuses the per-backward multi-MB grad/contrib
   buffers across iterations instead of fresh-mmap+zero+page-fault each backward.
+
+## 2026-06-19f - frankentorch-0w3ns - WIN (shipped): borrow avg_pool1d/max_pool1d forward inputs (drop 33MB clone)
+
+- Forward half of the 96e5d root-cause: `apply_function` clones every input
+  (`contiguous_values_as_f64().to_vec()`, 33 MB on the [8,64,8192] lane) before the
+  kernel. avg_pool1d backward distributes `dout` uniformly; max_pool1d backward scatters
+  `dout` via saved argmax offsets — NEITHER reads the input. Routed both through the
+  existing zero-copy `tensor_apply_function_f64_borrowed_forward` (forward borrows
+  `&[f64]`, backward signature unchanged). Bit-exact (kernel sees identical values).
+  Same accepted pattern as kgs4.119 (conv3d) / kgs4.132 (max_pool3d).
+- MEASURED same-process A/B (OLD clone+kernel vs NEW borrow+kernel, m=4M, 32 reps, one
+  worker): **5.89x mean / 9.05x min** on the forward; the avg_pool1d forward phase in the
+  probe fell ~20ms -> ~6.8ms. Bit-exact, CAN'T-REGRESS (strictly removes a clone).
+- Gates GREEN: ft-api avg_pool1d 7/0 + max_pool1d 1/0, conformance 199/0 + all
+  sub-suites, clippy clean, fmt clean.
+- Scope note: avg_pool2d/3d use the create_graph apply_function variant (double-backward
+  / gradient-penalty, cqmed) which has no borrowed-forward equivalent yet — a borrowed-
+  forward+create_graph infra variant would extend this to them (future, larger).

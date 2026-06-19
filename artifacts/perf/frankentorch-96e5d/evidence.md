@@ -71,3 +71,29 @@ under peer load; parallel grabs idle channels). NOT shipped — would falsely re
 win. The genuine remaining ≥2x lever for these gauntlet lanes is a backward grad-buffer
 scratch/caching allocator (gmuml-class: eliminate the per-backward fresh multi-MB
 alloc+zero+page-fault storm), tracked separately.
+
+---
+
+## Follow-up frankentorch-0w3ns — borrow avg_pool1d / max_pool1d forward inputs
+
+The forward half of the same root-cause: `apply_function` clones every input via
+`contiguous_values_as_f64().to_vec()` (33 MB for the `[8,64,8192]` lane) before the
+kernel. avg_pool1d's backward distributes `dout` uniformly and max_pool1d's scatters
+`dout` via saved argmax offsets — neither reads the input. So both are routed through
+the existing zero-copy `tensor_apply_function_f64_borrowed_forward` (forward borrows
+`&[f64]`, backward unchanged). Bit-exact (kernel sees identical contiguous values).
+
+Same-process A/B (model: OLD = `base.clone()` + kernel, NEW = kernel(&base); m=4M,
+32 reps, one worker):
+
+```
+OLD clone+kernel : min 25937 µs / mean 35324 µs
+NEW borrow+kernel: min  2866 µs / mean  5993 µs
+ratio: 9.05x (min) / 5.89x (mean)
+```
+
+End-to-end the avg_pool1d forward phase dropped from ~20 ms (cloning) to ~6.8 ms
+(borrowed) in the phase probe. Bit-exact, can't-regress (strictly removes a clone).
+
+Gates: ft-api avg_pool1d 7/0, max_pool1d 1/0, conformance 199/0 + all sub-suites,
+clippy clean, fmt clean.
