@@ -548,3 +548,28 @@ is explicitly satisfied.
   has sequential-reflector + fine-grained-inner structure (needs compact-WY dormtr
   blocking — a rewrite).
 - Evidence: examples/{svd_replay_block_ab,eigh_replay_block_ab}.rs.
+
+## 2026-06-19c - frankentorch-x53r3 - REJECTED: parallelizing the eigh form-Q back-transform (eigh_tred2_backtransform)
+
+- Target: the SERIAL O(n^3) "form-Q" phase of eigh (eigh_tred2_backtransform) —
+  the only eigh phase that is compute-bound rather than bandwidth-bound (the reduce
+  is parallelization-hostile packed-triangular / dsytrd-blocking refuted t0b4l; the
+  tql2 replay is already row-blocked). Each reflector i does a gemv
+  (projections = q_i · Z[:i,:i]) then a ger (Z[:i,:i] -= projections ⊗ reflector).
+- Lever A (both steps parallel, gated i>=128): gemv parallel-over-j (bit-exact but
+  COLUMN-STRIDED reads of z) + ger parallel-over-rows. MEASURED same-worker A/B
+  (16thr, stage profiler, serial anchor): n=512 **0.46x**, n=1024 **0.66x**, n=2048
+  1.36x. Net REGRESSION at the common sizes (strided gemv thrashes cache).
+- Lever B (gemv serial cache-friendly + ger parallel-over-rows): WORSE — n=512
+  **0.22x**, n=1024 **0.39x**, n=2048 0.63x. The per-reflector `par_chunks_mut`
+  dispatches a rayon region PER REFLECTOR (~n times) — the classic fine-grained
+  per-iteration-dispatch pessimization (cf. eig q_acc 8837c4f9). The serial sweep is
+  already cache-optimal with zero dispatch.
+- Verdict: REJECTED and REVERTED (lib.rs restored bit-for-bit; toggle + example
+  removed). Do NOT re-attempt per-reflector parallelization of form-Q.
+- Retry condition: only the BLOCKED compact-WY back-transform (LAPACK dormtr —
+  accumulate NB reflectors into V/T, apply (I-VTV^T) to the WHOLE z via a handful of
+  GEMMs, ONE parallel region for many reflectors) can parallelize form-Q. That is a
+  multi-session rewrite (eigh vectors are tolerance-parity per qgce4, so the GEMM
+  reassociation is allowed). form-Q is ~15% of eigh and eigh is reduce-bandwidth-
+  capped, so even a perfect form-Q is ~1.1-1.15x on eigh total — low priority.
