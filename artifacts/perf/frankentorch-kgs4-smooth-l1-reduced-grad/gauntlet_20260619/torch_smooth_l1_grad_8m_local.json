@@ -1,0 +1,80 @@
+Downloading networkx (2.0MiB)
+Downloading sympy (6.0MiB)
+Downloading nvidia-nvshmem-cu13 (57.6MiB)
+Downloading nvidia-cublas (403.5MiB)
+Downloading nvidia-cusparselt-cu13 (162.3MiB)
+Downloading torch (507.6MiB)
+Downloading triton (188.6MiB)
+Downloading nvidia-cuda-runtime (2.1MiB)
+Downloading numpy (15.9MiB)
+Downloading nvidia-nccl-cu13 (196.4MiB)
+Downloading nvidia-cudnn-cu13 (349.2MiB)
+Downloading nvidia-nvjitlink (38.8MiB)
+Downloading cuda-bindings (6.2MiB)
+Downloading nvidia-cuda-nvrtc (86.0MiB)
+Downloading nvidia-cusparse (139.2MiB)
+Downloading nvidia-cufft (204.2MiB)
+Downloading nvidia-curand (56.8MiB)
+Downloading nvidia-cuda-cupti (10.2MiB)
+Downloading nvidia-cusolver (191.6MiB)
+Downloading nvidia-cufile (1.2MiB)
+ Downloaded nvidia-cufile
+ Downloaded networkx
+ Downloaded nvidia-cuda-runtime
+ Downloaded sympy
+ Downloaded cuda-bindings
+ Downloaded nvidia-cuda-cupti
+ Downloaded numpy
+ Downloaded nvidia-nvjitlink
+ Downloaded nvidia-curand
+ Downloaded nvidia-nvshmem-cu13
+ Downloaded nvidia-cuda-nvrtc
+ Downloaded nvidia-cusparse
+ Downloaded nvidia-cusparselt-cu13
+ Downloaded triton
+ Downloaded nvidia-cusolver
+ Downloaded nvidia-nccl-cu13
+ Downloaded nvidia-cufft
+ Downloaded nvidia-cudnn-cu13
+ Downloaded nvidia-cublas
+ Downloaded torch
+Installed 30 packages in 2.02s
+{
+  "benchmark": "torch_smooth_l1_grad_8m",
+  "beta": 1.0,
+  "checksum": 16.56485357441681,
+  "dtype": "float64",
+  "iters": 20,
+  "max_ms": 408.431395,
+  "mean_ms": 369.6748829,
+  "median_ms": 373.6131415,
+  "min_ms": 342.531375,
+  "n": 8388608,
+  "p95_ms": 390.094957,
+  "reduction": "mean",
+  "times_ms": [
+    371.399117,
+    355.039458,
+    375.086684,
+    349.572585,
+    390.094957,
+    379.389223,
+    363.88401,
+    349.579318,
+    349.72333,
+    381.479067,
+    360.644301,
+    342.531375,
+    348.53907,
+    408.431395,
+    376.782782,
+    387.670119,
+    382.77015,
+    373.636941,
+    373.654434,
+    373.589342
+  ],
+  "torch_num_threads": 32,
+  "torch_version": "2.12.1+cu130",
+  "warmups": 3
+}

@@ -4,6 +4,34 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-19 - frankentorch-kgs4.124 - SmoothL1 direct reduced grad
+
+- Lever: route same-shape f64 `tensor_smooth_l1_loss(..., reduction="mean")`
+  through a scalar reduced autograd op instead of materializing the full
+  per-element SmoothL1 output and uniform backward `dloss`.
+- Workload: `smooth_l1/grad_8m`, 8,388,608 f64 elements, mean reduction,
+  forward loss plus backward.
+- Reference: local PyTorch `2.12.1+cu130` CPU path, 32 compute threads.
+- Decisive internal A/B: same-worker `hz2` Criterion pre-lever median
+  `963.16 ms`; current median `757.63 ms`; FrankenTorch internal speedup
+  `1.27x`.
+- PyTorch head-to-head: local current FrankenTorch median `742.95 ms`;
+  local PyTorch median `373.61 ms`; FrankenTorch/PyTorch time ratio
+  `1.99x` slower.
+- Supplemental drift row: unpinned current FrankenTorch on `ovh-a` measured
+  `595.82 ms`; this row is routing evidence only because the pre-lever row
+  ran on `hz2`.
+- Verdict: kept as a measured FrankenTorch internal win, but not counted as
+  PyTorch dominance. No source revert. `frankentorch-kgs4.124` is closed.
+- Retry condition: do not retry scalar reduced-loss wrapper variants. The
+  follow-up `frankentorch-kgs4.128` must attack deeper tape, allocation,
+  loss-kernel, SIMD, or cache-layout cost until this row beats PyTorch.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4-smooth-l1-reduced-grad/gauntlet_20260619/prelever_81032a4d_criterion_smooth_l1_grad_8m.log`
+  - `artifacts/perf/frankentorch-kgs4-smooth-l1-reduced-grad/gauntlet_20260619/current_hz2_criterion_smooth_l1_grad_8m.log`
+  - `artifacts/perf/frankentorch-kgs4-smooth-l1-reduced-grad/gauntlet_20260619/current_local_criterion_smooth_l1_grad_8m.log`
+  - `artifacts/perf/frankentorch-kgs4-smooth-l1-reduced-grad/gauntlet_20260619/torch_smooth_l1_grad_8m_local.json`
+
 ## 2026-06-19 - frankentorch-kgs4.126 - max_pool1d unit-dout scatter
 
 - Lever: special-case `functional_max_pool1d` f64 backward when `dout` is exact
@@ -32,3 +60,16 @@ is explicitly satisfied.
   - `artifacts/perf/frankentorch-kgs4.126/gauntlet_20260619T0113Z/baseline_criterion.txt`
   - `artifacts/perf/frankentorch-kgs4.126/gauntlet_20260619T0113Z/env.txt`
   - `artifacts/perf/frankentorch-kgs4.126/gauntlet_20260619T0113Z/baseline_env.txt`
+
+## Historical SmoothL1/loss guardrails
+
+- Rejected: f32 SmoothL1 no-grad fused path in
+  `artifacts/perf/frankentorch-cs2d/rejected_f32_smooth_l1_fast_path.md`.
+  Do not retry without a fresh dtype audit and same-worker A/B.
+- Kept: f64 SmoothL1 no-grad pairwise reducer in
+  `artifacts/perf/frankentorch-ruby-smoothl1-f64-reduction/report.md`,
+  baseline `136.80 ms` to `97.302 ms`. Do not rework the no-grad reducer
+  family for the grad bead.
+- Rejected: direct reduced Gaussian NLL grad in `frankentorch-fdn1v`,
+  `829.27 ms` to `1.0274 s`. Do not generalize the SmoothL1 reduced-grad
+  lever to Gaussian NLL without new profile proof.

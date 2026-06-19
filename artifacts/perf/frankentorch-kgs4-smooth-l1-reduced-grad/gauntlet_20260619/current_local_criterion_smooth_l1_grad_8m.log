@@ -1,0 +1,75 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling autocfg v1.5.0
+   Compiling zerocopy v0.8.48
+   Compiling crossbeam-utils v0.8.21
+   Compiling cfg-if v1.0.4
+   Compiling either v1.15.0
+   Compiling rayon-core v1.13.0
+   Compiling serde_core v1.0.228
+   Compiling libm v0.2.16
+   Compiling serde v1.0.228
+   Compiling rawpointer v0.2.1
+   Compiling zmij v1.0.21
+   Compiling libc v0.2.185
+   Compiling serde_json v1.0.149
+   Compiling regex-syntax v0.8.10
+   Compiling clap_lex v1.1.0
+   Compiling plotters-backend v0.3.7
+   Compiling ciborium-io v0.2.2
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.0
+   Compiling anstyle v1.0.14
+   Compiling same-file v1.0.6
+   Compiling cast v0.3.0
+   Compiling once_cell v1.21.4
+   Compiling anes v0.1.6
+   Compiling oorandom v11.1.5
+   Compiling walkdir v2.5.0
+   Compiling itertools v0.10.5
+   Compiling clap_builder v4.6.0
+   Compiling num-traits v0.2.19
+   Compiling matrixmultiply v0.3.10
+   Compiling plotters-svg v0.3.7
+   Compiling crossbeam-epoch v0.9.18
+   Compiling syn v2.0.117
+   Compiling crossbeam-deque v0.8.6
+   Compiling num-complex v0.4.6
+   Compiling plotters v0.3.7
+   Compiling is-terminal v0.4.17
+   Compiling regex-automata v0.4.14
+   Compiling criterion-plot v0.5.0
+   Compiling rayon v1.12.0
+   Compiling clap v4.6.1
+   Compiling regex v1.12.3
+   Compiling bytemuck_derive v1.10.2
+   Compiling zerocopy-derive v0.8.48
+   Compiling serde_derive v1.0.228
+   Compiling bytemuck v1.25.0
+   Compiling safe_arch v0.7.4
+   Compiling wide v0.7.33
+   Compiling tinytemplate v1.2.1
+   Compiling half v2.7.1
+   Compiling ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+   Compiling ciborium-ll v0.2.2
+   Compiling ciborium v0.2.2
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-runtime v0.1.0 (/data/projects/frankentorch/crates/ft-runtime)
+   Compiling criterion v0.5.1
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 1m 05s
+     Running benches/ops_bench.rs (/data/projects/.rch-targets/frankentorch-cod-a/release/deps/ops_bench-8824b9e24f0b8087)
+Gnuplot not found, using plotters backend
+Benchmarking smooth_l1/grad_8m
+Benchmarking smooth_l1/grad_8m: Warming up for 2.0000 s
+Benchmarking smooth_l1/grad_8m: Collecting 10 samples in estimated 14.515 s (20 iterations)
+Benchmarking smooth_l1/grad_8m: Analyzing
+smooth_l1/grad_8m       time:   [735.23 ms 742.95 ms 752.84 ms]
+                        change: [-3.8261% -1.9380% +0.1888%] (p = 0.10 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
