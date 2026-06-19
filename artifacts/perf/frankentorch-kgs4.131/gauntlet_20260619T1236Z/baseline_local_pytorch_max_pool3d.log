@@ -1,0 +1,91 @@
+   Compiling ft-core v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-bold-verify-20260619T123530Z/crates/ft-core)
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-bold-verify-20260619T123530Z/crates/ft-kernel-cpu)
+   Compiling ft-runtime v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-bold-verify-20260619T123530Z/crates/ft-runtime)
+   Compiling ft-dispatch v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-bold-verify-20260619T123530Z/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-bold-verify-20260619T123530Z/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-bold-verify-20260619T123530Z/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 47.06s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-b/release/deps/pytorch_gauntlet_bench-5f2ebc2fd9ddf042)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_max_pool3d_grad/frankentorch_kgs4_117
+Benchmarking gauntlet_max_pool3d_grad/frankentorch_kgs4_117: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad/frankentorch_kgs4_117: Collecting 10 samples in estimated 3.3974 s (220 iterations)
+Benchmarking gauntlet_max_pool3d_grad/frankentorch_kgs4_117: Analyzing
+gauntlet_max_pool3d_grad/frankentorch_kgs4_117
+                        time:   [15.513 ms 15.718 ms 16.042 ms]
+                        change: [+2.7283% +4.6484% +6.6547%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 12.2s.
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu: Collecting 10 samples in estimated 12.161 s (10 iterations)
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu: Analyzing
+gauntlet_max_pool3d_grad/pytorch_2_12_cpu
+                        time:   [1.5737 ms 1.7717 ms 2.0288 ms]
+                        change: [-14.871% -0.2516% +16.698%] (p = 0.97 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor: Collecting 10 samples in estimated 3.0051 s (15k iterations)
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor: Analyzing
+gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor
+                        time:   [187.82 µs 201.30 µs 220.44 µs]
+                        change: [-12.169% -3.9734% +6.2649%] (p = 0.45 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_forward_only
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_forward_only: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_forward_only: Collecting 10 samples in estimated 3.0014 s (440 iterations)
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_forward_only: Analyzing
+gauntlet_max_pool3d_grad_stage/frankentorch_forward_only
+                        time:   [3.3412 ms 3.4920 ms 3.7021 ms]
+                        change: [-12.677% -4.7575% +5.0043%] (p = 0.35 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_sum_only
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_sum_only: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_sum_only: Collecting 10 samples in estimated 3.0831 s (385 iterations)
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_sum_only: Analyzing
+gauntlet_max_pool3d_grad_stage/frankentorch_sum_only
+                        time:   [934.27 µs 1.0237 ms 1.0730 ms]
+                        change: [-29.119% -5.6692% +26.826%] (p = 0.73 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low severe
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_backward_only
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_backward_only: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_backward_only: Collecting 10 samples in estimated 3.8322 s (220 iterations)
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_backward_only: Analyzing
+gauntlet_max_pool3d_grad_stage/frankentorch_backward_only
+                        time:   [7.4921 ms 7.7001 ms 8.1776 ms]
+                        change: [-23.753% -8.5085% +10.991%] (p = 0.40 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high mild
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices: Collecting 10 samples in estimated 3.0053 s (4400 iterations)
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices: Analyzing
+gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices
+                        time:   [697.17 µs 703.76 µs 712.19 µs]
+                        change: [+2.4109% +4.5109% +6.3521%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 10 measurements (30.00%)
+  1 (10.00%) low severe
+  1 (10.00%) low mild
+  1 (10.00%) high mild
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices: Warming up for 1.0000 s
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices: Collecting 10 samples in estimated 3.0353 s (1980 iterations)
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices: Analyzing
+gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices
+                        time:   [1.4919 ms 1.5096 ms 1.5231 ms]
+                        change: [-1.8156% +2.0211% +5.6018%] (p = 0.32 > 0.05)
+                        No change in performance detected.

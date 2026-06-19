@@ -14300,12 +14300,14 @@ impl TensorTape {
             grads[node_id.0] = incoming;
         }
 
+        // Move completed gradient buffers into the report instead of cloning
+        // every reachable gradient after the tape walk.
         let gradients: Vec<Option<Vec<f64>>> = grads
-            .iter()
+            .into_iter()
             .enumerate()
             .map(|(idx, grad)| {
                 if self.nodes[idx].requires_grad && reachable[idx] {
-                    Some(grad.clone())
+                    Some(grad)
                 } else {
                     None
                 }
