@@ -35,14 +35,20 @@ fn time_block(a: &[f64], n: usize, block: usize, it: usize) -> f64 {
 
 fn main() {
     println!("threads={}", rayon::current_num_threads());
-    for &n in &[512usize, 1024] {
+    for &n in &[512usize, 1024, 2048] {
         let a = lcg_sym(n);
-        let it = if n <= 512 { 5 } else { 3 };
+        let it = if n <= 512 {
+            5
+        } else if n <= 1024 {
+            3
+        } else {
+            1
+        };
         let anchor = time_block(&a, n, 1, it);
-        print!("n={n:5} anchor(block=1)={anchor:8.2}ms");
-        for &b in &[8usize, 16, 32, 64, 128, 256] {
+        print!("n={n:5} anchor(block=1)={anchor:9.2}ms");
+        for &b in &[2usize, 4, 8, 16] {
             let t = time_block(&a, n, b, it);
-            print!("  b={b}={t:7.2}({:.2}x)", anchor / t);
+            print!("  b={b}={t:8.2}({:.2}x)", anchor / t);
         }
         println!();
     }

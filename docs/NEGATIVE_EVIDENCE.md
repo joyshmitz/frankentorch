@@ -520,3 +520,31 @@ is explicitly satisfied.
   `par_chunks_mut(n).for_each(|row| for op in ops {..})` for this row-block fix.
 - Evidence: crates/ft-kernel-cpu/examples/{eigh_replay_block_ab,eigh_stage_profile_run}.rs;
   doc-hidden eigh_tql2_replay_block_ab + eigh_stage_profile_f64.
+
+## 2026-06-19b - frankentorch-x53r3 - CORRECTION: SVD row-block win is ~1.1-1.3x (not the inferred 2.3-3.6x)
+
+- Last session shipped the SVD/eig row-block as INFERRED from the eigh A/B. Now
+  MEASURED directly (same-worker same-process A/B via the doc-hidden
+  `set_svd_qr_replay_block_override` + `--example svd_replay_block_ab`, full
+  `svd_contiguous_f64`, block=1 per-row anchor):
+  - 16-thread worker: n=512 **1.08x**, n=1024 **1.24x**, n=2048 **1.30x** (block=8;
+    b=4 within noise, b=16 ~neutral). The win GROWS with n but is far smaller than
+    eigh because the SVD bidiagonal-QR replay is a SMALL fraction of full SVD —
+    the bidiagonalization (Householder, BLAS-2 parallel, bandwidth-bound) dominates.
+- eigh re-confirmed on the same 16-thr worker: n=512 1.36x / n=1024 2.62x / n=2048
+  3.36x at block=8 (vs 2.31-3.59x on a 10-thr worker last session — the row-block
+  SPEEDUP is WORKER-DEPENDENT: smaller on more threads, since the per-row anchor's
+  bandwidth pressure is already spread). b=16 ALWAYS regresses (0.55-0.64x); b=8 is
+  robust across n=512..2048 and never regresses (the cliff is ~L2-spill at b=16, not
+  b=8 — earlier n>=2048 regression worry for b=8 was unfounded).
+- Verdict: KEEP block=8 everywhere (eigh real & strong; svd real & small; both
+  bit-exact, no regression). Net win/loss/neutral this lever: eigh WIN (measured),
+  svd WIN (measured, small), eig q_acc neutral-or-small (geev smallest gap, not
+  separately benched — bit-exact so win-or-neutral).
+- NEXT real eigh/svd levers are all bandwidth-walled (reduce/bidiag: dsytrd-blocked
+  t0b4l + two-stage 5oqum refuted) or rewrites (D&C dstedc for eigh vectors; blocked
+  dgebrd / D&C dbdsdc for svd). The eigh form-Q back-transform (`eigh_tred2_backtransform`,
+  ~180ms@n1024, SERIAL unblocked) is the only remaining non-bandwidth eigh phase but
+  has sequential-reflector + fine-grained-inner structure (needs compact-WY dormtr
+  blocking — a rewrite).
+- Evidence: examples/{svd_replay_block_ab,eigh_replay_block_ab}.rs.

@@ -19457,6 +19457,22 @@ pub struct SvdResult {
     pub k: usize,
 }
 
+/// A/B override for the SVD bidiagonal-QR replay row-block (frankentorch-x53r3).
+/// `0` = production default (8). doc-hidden, NOT production dispatch — exists only
+/// so a same-worker A/B can confirm the row-block win against block=1 (per-row).
+static SVD_QR_REPLAY_BLOCK_OVERRIDE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[doc(hidden)]
+pub fn set_svd_qr_replay_block_override(b: usize) {
+    SVD_QR_REPLAY_BLOCK_OVERRIDE.store(b, std::sync::atomic::Ordering::Relaxed);
+}
+fn svd_qr_replay_block_rows() -> usize {
+    match SVD_QR_REPLAY_BLOCK_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => 8,
+        b => b,
+    }
+}
+
 /// Compute the SVD of an (m x n) matrix: A = U @ diag(S) @ Vh.
 ///
 /// Uses Golub-Kahan bidiagonalization followed by implicit QR shifts.
@@ -19902,10 +19918,10 @@ fn golub_reinsch_svd_impl(
     // Grouping a small cache-resident block of rows reads ops once per BLOCK while
     // the block stays in L1/L2. Bit-identical to the per-row replay (same ops, same
     // order per row). 8 rows matches the eigh-QL replay A/B optimum.
-    const SVD_QR_REPLAY_BLOCK_ROWS: usize = 8;
+    let svd_replay_block = svd_qr_replay_block_rows();
     if !v_ops.is_empty() {
         let ops = &v_ops;
-        let br = SVD_QR_REPLAY_BLOCK_ROWS;
+        let br = svd_replay_block;
         v.par_chunks_mut(br * n).for_each(|block| {
             let nrows = block.len() / n;
             for &op in ops {
@@ -19931,7 +19947,7 @@ fn golub_reinsch_svd_impl(
     // Replay the U (left-vector) rotation stream the same way over the m rows.
     if track_left && !u_ops.is_empty() {
         let ops = &u_ops;
-        let br = SVD_QR_REPLAY_BLOCK_ROWS;
+        let br = svd_replay_block;
         a.par_chunks_mut(br * n).for_each(|block| {
             let nrows = block.len() / n;
             for &(c0, c1, c, s) in ops {
