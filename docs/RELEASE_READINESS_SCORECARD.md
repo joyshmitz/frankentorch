@@ -6,12 +6,13 @@ Updated: 2026-06-19
 
 | Bead | Workload | Result vs PyTorch | Before/after verdict | Release action |
 |---|---:|---:|---:|---|
+| `frankentorch-kgs4.121` | linear f64 train step `[32,512] -> 2048` | `2.45x` slower | API-local internal keep; `29.606 ms` -> `22.775 ms`; kernel move `26.459 ms` rejected | kept API helper; reverted kernel move |
 | `frankentorch-kgs4.124` | SmoothL1 f64 mean-loss backward, 8M elems | `1.99x` slower | internal keep; `963.16 ms` -> `757.63 ms` on `hz2` | kept; follow-up `frankentorch-kgs4.128` |
 | `frankentorch-kgs4.126` | max_pool1d f64 train step `[8,64,8192]` | `12.31x` slower | no gain; candidate median `184.41 ms` vs parent `178.47 ms` | reverted |
 
-Score: `2/5` for the measured gauntlet lanes. Correctness guards are green and
-the SmoothL1 scalar reduced-grad lever is a real internal speedup, but neither
-measured workload is performance-dominant against PyTorch yet.
+Score: `3/5` for the measured gauntlet lanes. Correctness guards are green and
+the Linear and SmoothL1 levers are real internal speedups, but no measured
+workload is performance-dominant against PyTorch yet.
 
 ## Current Gates
 
@@ -26,6 +27,9 @@ measured workload is performance-dominant against PyTorch yet.
 | Compile | `rch exec -- cargo check -p ft-api --bench pytorch_gauntlet_bench` | passed on `ovh-a` for final harness |
 | Correctness | `rch exec -- cargo test -p ft-kernel-cpu max_pool1d_direct_matches_2d_h1_first_tie_forward_backward_bit_exact` | passed on `ovh-a` |
 | Formatting | `rustfmt --edition 2024 --check crates/ft-api/benches/pytorch_gauntlet_bench.rs` | passed |
+| Criterion | `cargo bench -p ft-api --bench pytorch_gauntlet_bench -- linear --noplot` | completed locally; final FrankenTorch median `22.775 ms`, PyTorch median `9.2821 ms` |
+| Compile | `rch exec -- cargo check -p ft-api --bench pytorch_gauntlet_bench` | passed on `vmi1152480` after restoring the API-local linear path |
+| Correctness | `rch exec -- cargo test -p ft-api linear_backward_all_ones_dy_matches_kernel_reference -- --nocapture` | passed on `vmi1293453` |
 
 Known caveat: `cargo fmt --check -p ft-api` remains blocked by pre-existing
 crate-wide formatting debt in unrelated examples and long `ft-api/src/lib.rs`
@@ -44,5 +48,8 @@ The `.124` result points toward deeper SmoothL1 training overhead: tape setup,
 input/materialization cost, loss backward kernel shape, SIMD, and cache layout.
 The `.126` result points away from tiny max_pool1d backward scatter branches and
 toward larger full-step costs: autograd/session setup, allocation churn, and
-forward saved-index materialization. Future work should profile those frames
-before trying another scalar-wrapper or one-off unit-gradient branch.
+forward saved-index materialization. The `.121` result points away from moving
+the all-ones linear backward shortcut into the generic CPU kernel; the remaining
+gap is end-to-end linear training overhead, not the already-collapsed
+row-sum/copy helper alone. Future work should profile those frames before
+trying another scalar-wrapper or one-off unit-gradient branch.

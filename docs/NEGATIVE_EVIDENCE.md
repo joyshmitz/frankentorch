@@ -4,6 +4,44 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-19 - frankentorch-kgs4.121 - Linear all-ones dy kernel move
+
+- Lever: detect exact all-ones `dy` from `tensor_linear(...).sum().backward()`
+  and collapse the f64 linear backward into row-sum/copy work instead of the
+  generic two-GEMM backward.
+- Workload: `gauntlet_linear_train_hidden_2048`, deterministic f64
+  `[batch,in]=[32,512]`, `[hidden,in]=[2048,512]`, f64 bias, linear forward,
+  scalar `sum`, backward.
+- Reference: local PyTorch `2.12.1+cpu` in
+  `/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python`, 32 compute
+  threads and 32 interop threads on `thinkstation1`.
+- Parent-before-lever result at `4d1198f9`: FrankenTorch median `29.606 ms`;
+  PyTorch median `9.8492 ms`; ratio vs PyTorch `3.01x` slower.
+- API-local candidate result at `b5bca44e`: FrankenTorch median `21.494 ms`;
+  PyTorch median `8.6461 ms`; ratio vs PyTorch `2.49x` slower. This is a
+  `1.38x` internal FrankenTorch speedup vs the parent-before-lever row.
+- Kernel-move candidate result at `81032a4d`: FrankenTorch median `26.459 ms`;
+  PyTorch median `9.7925 ms`; ratio vs PyTorch `2.70x` slower. This regressed
+  the API-local row by `1.23x`.
+- Final restored-path result after reverting the kernel move: FrankenTorch
+  median `22.775 ms`; PyTorch median `9.2821 ms`; ratio vs PyTorch `2.45x`
+  slower. This is a `1.30x` internal speedup vs parent-before-lever, but not
+  PyTorch dominance.
+- Verdict: keep the API-local all-ones `dy` helper as a measured internal win;
+  reject and revert the kernel-level relocation. `frankentorch-kgs4.121` is
+  measured, not pending.
+- Retry condition: do not retry tiny kernel-level all-ones GEMM replacement
+  variants for this workload. Revisit only if a fresh profile shows linear
+  backward row-fill/reduction dominates after tape, allocation, and forward
+  setup are separated, or if a broader linear-training lever closes the
+  PyTorch gap end-to-end.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.121/gauntlet_20260619T0325Z/prelever_criterion_linear.log`
+  - `artifacts/perf/frankentorch-kgs4.121/gauntlet_20260619T0325Z/baseline_criterion_linear.log`
+  - `artifacts/perf/frankentorch-kgs4.121/gauntlet_20260619T0325Z/current_criterion_linear.log`
+  - `artifacts/perf/frankentorch-kgs4.121/gauntlet_20260619T0325Z/final_criterion_linear.log`
+  - `artifacts/perf/frankentorch-kgs4.121/gauntlet_20260619T0325Z/final_env.txt`
+
 ## 2026-06-19 - frankentorch-kgs4.124 - SmoothL1 direct reduced grad
 
 - Lever: route same-shape f64 `tensor_smooth_l1_loss(..., reduction="mean")`

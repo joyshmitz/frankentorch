@@ -1,0 +1,27 @@
+   Compiling ft-core v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.121-prelever-20260619T0332/crates/ft-core)
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.121-prelever-20260619T0332/crates/ft-kernel-cpu)
+   Compiling ft-runtime v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.121-prelever-20260619T0332/crates/ft-runtime)
+   Compiling ft-dispatch v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.121-prelever-20260619T0332/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.121-prelever-20260619T0332/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.121-prelever-20260619T0332/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 48.61s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-a/release/deps/pytorch_gauntlet_bench-5f2ebc2fd9ddf042)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121: Warming up for 1.0000 s
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121: Collecting 10 samples in estimated 3.5534 s (110 iterations)
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121: Analyzing
+gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121
+                        time:   [28.709 ms 29.606 ms 30.907 ms]
+                        change: [+10.811% +31.071% +62.409%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 13.5s.
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu: Collecting 10 samples in estimated 13.518 s (10 iterations)
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu: Analyzing
+gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu
+                        time:   [6.9525 ms 9.8492 ms 12.712 ms]
+                        change: [-31.366% +13.914% +83.570%] (p = 0.61 > 0.05)
+                        No change in performance detected.
