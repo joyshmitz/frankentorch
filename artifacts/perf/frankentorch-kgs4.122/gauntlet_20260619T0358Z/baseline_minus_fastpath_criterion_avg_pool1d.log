@@ -1,0 +1,30 @@
+   Compiling ft-core v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.122-minus-20260619T0400/crates/ft-core)
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.122-minus-20260619T0400/crates/ft-kernel-cpu)
+   Compiling ft-runtime v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.122-minus-20260619T0400/crates/ft-runtime)
+   Compiling ft-dispatch v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.122-minus-20260619T0400/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.122-minus-20260619T0400/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.122-minus-20260619T0400/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 48.95s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-a/release/deps/pytorch_gauntlet_bench-5f2ebc2fd9ddf042)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_avg_pool1d_grad/frankentorch_kgs4_122
+Benchmarking gauntlet_avg_pool1d_grad/frankentorch_kgs4_122: Warming up for 1.0000 s
+Benchmarking gauntlet_avg_pool1d_grad/frankentorch_kgs4_122: Collecting 10 samples in estimated 3.5333 s (20 iterations)
+Benchmarking gauntlet_avg_pool1d_grad/frankentorch_kgs4_122: Analyzing
+gauntlet_avg_pool1d_grad/frankentorch_kgs4_122
+                        time:   [177.26 ms 179.91 ms 182.76 ms]
+                        change: [-14.831% -11.817% -8.6618%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking gauntlet_avg_pool1d_grad/pytorch_2_12_cpu
+Benchmarking gauntlet_avg_pool1d_grad/pytorch_2_12_cpu: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 18.4s.
+Benchmarking gauntlet_avg_pool1d_grad/pytorch_2_12_cpu: Collecting 10 samples in estimated 18.420 s (10 iterations)
+Benchmarking gauntlet_avg_pool1d_grad/pytorch_2_12_cpu: Analyzing
+gauntlet_avg_pool1d_grad/pytorch_2_12_cpu
+                        time:   [6.4307 ms 7.0626 ms 7.8370 ms]
+                        change: [-16.936% -5.5784% +8.8529%] (p = 0.45 > 0.05)
+                        No change in performance detected.
+Found 3 outliers among 10 measurements (30.00%)
+  1 (10.00%) low mild
+  2 (20.00%) high severe

@@ -8,10 +8,11 @@ Updated: 2026-06-19
 |---|---:|---:|---:|---|
 | `frankentorch-kgs4.117` | max_pool3d f64 train step `[2,32,16,32,32]` | `9.73x` slower | internal keep; `20.585 ms` -> `15.794 ms`; remote PyTorch arm unavailable on `hz2` | kept; profile deeper end-to-end gap |
 | `frankentorch-kgs4.121` | linear f64 train step `[32,512] -> 2048` | `2.45x` slower | API-local internal keep; `29.606 ms` -> `22.775 ms`; kernel move `26.459 ms` rejected | kept API helper; reverted kernel move |
+| `frankentorch-kgs4.122` | avg_pool1d f64 train step `[8,64,8192]` | `25.86x` slower | no gain; candidate median `204.02 ms` vs fast-path-disabled `179.91 ms` | reverted |
 | `frankentorch-kgs4.124` | SmoothL1 f64 mean-loss backward, 8M elems | `1.99x` slower | internal keep; `963.16 ms` -> `757.63 ms` on `hz2` | kept; follow-up `frankentorch-kgs4.128` |
 | `frankentorch-kgs4.126` | max_pool1d f64 train step `[8,64,8192]` | `12.31x` slower | no gain; candidate median `184.41 ms` vs parent `178.47 ms` | reverted |
 
-Score: `4/5` for the measured gauntlet lanes. Correctness guards are green and
+Score: `5/5` for the measured gauntlet lanes. Correctness guards are green and
 the MaxPool3d, Linear, and SmoothL1 levers are real internal speedups, but no
 measured workload is performance-dominant against PyTorch yet.
 
@@ -28,6 +29,11 @@ measured workload is performance-dominant against PyTorch yet.
 | Compile | `rch exec -- cargo check -p ft-api --bench pytorch_gauntlet_bench` | passed on `ovh-a` for final harness |
 | Correctness | `rch exec -- cargo test -p ft-kernel-cpu max_pool1d_direct_matches_2d_h1_first_tie_forward_backward_bit_exact` | passed on `ovh-a` |
 | Formatting | `rustfmt --edition 2024 --check crates/ft-api/benches/pytorch_gauntlet_bench.rs` | passed |
+| Criterion | `cargo bench -p ft-api --bench pytorch_gauntlet_bench -- avg_pool1d --noplot` | completed locally; candidate FrankenTorch median `204.02 ms`, PyTorch median `7.4798 ms`; final reverted FrankenTorch median `184.99 ms`, PyTorch median `7.1539 ms` |
+| Compile | `rch exec -- cargo check -p ft-api --bench pytorch_gauntlet_bench` | passed on `hz1` for the clean detached avg_pool1d commit tree |
+| Compile | `rch exec -- cargo check -p ft-kernel-cpu` | passed on `vmi1227854` for the clean detached avg_pool1d commit tree |
+| Correctness | `rch exec -- cargo test -p ft-kernel-cpu avg_pool1d_direct_matches_2d_h1_forward_backward_bit_exact -- --nocapture` | passed on `hz1` for the clean detached avg_pool1d commit tree |
+| Correctness | `rch exec -- cargo test -p ft-api functional_avg_pool1d_fused_matches_reshape_2d_forward_and_backward_bits -- --nocapture` | passed on `hz2` for the clean detached avg_pool1d commit tree |
 | Criterion | `cargo bench -p ft-api --bench pytorch_gauntlet_bench -- linear --noplot` | completed locally; final FrankenTorch median `22.775 ms`, PyTorch median `9.2821 ms` |
 | Compile | `rch exec -- cargo check -p ft-api --bench pytorch_gauntlet_bench` | passed on `vmi1152480` after restoring the API-local linear path |
 | Correctness | `rch exec -- cargo test -p ft-api linear_backward_all_ones_dy_matches_kernel_reference -- --nocapture` | passed on `vmi1293453` |
@@ -54,6 +60,9 @@ verdict was available for the SmoothL1 `ft-api/src/lib.rs` closeout.
 
 The `.124` result points toward deeper SmoothL1 training overhead: tape setup,
 input/materialization cost, loss backward kernel shape, SIMD, and cache layout.
+The `.122` result points away from tiny avg_pool1d unit-gradient fill branches
+and toward end-to-end pooling overhead, especially session/tape setup,
+allocation churn, forward materialization, and generic pooling dispatch costs.
 The `.126` result points away from tiny max_pool1d backward scatter branches and
 toward larger full-step costs: autograd/session setup, allocation churn, and
 forward saved-index materialization. The `.117` result keeps compact max_pool3d

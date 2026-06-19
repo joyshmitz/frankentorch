@@ -1,0 +1,12 @@
+2026-06-18T23:58:29-04:00
+agent=IvoryDeer
+bead=frankentorch-kgs4.122
+head=c4c1162d7e0c
+nproc=64
+rustc=rustc 1.98.0-nightly (f20a92ec0 2026-06-07)
+/data/projects/.venvs/frankentorch-pytorch-cpu/lib/python3.13/site-packages/torch/_subclasses/functional_tensor.py:362: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+torch=2.12.1+cpu
+torch_num_threads_default=32
+torch_num_interop_threads_default=32
+python=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python

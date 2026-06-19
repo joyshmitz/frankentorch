@@ -4,6 +4,39 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-19 - frankentorch-kgs4.122 - AvgPool1d unit-dy fill
+
+- Lever: special-case f64 `avg_pool1d_backward_f64` for kernel `2`, stride `2`,
+  exact full coverage, and all-ones `dout`, returning a constant `0.5` gradient
+  fill instead of the generic accumulation loop.
+- Workload: `gauntlet_avg_pool1d_grad`, deterministic f64
+  `[N,C,L]=[8,64,8192]`, kernel `2`, stride `2`, forward
+  `functional_avg_pool1d`, scalar `sum`, backward.
+- Reference: local PyTorch `2.12.1+cpu` in
+  `/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python`, 32 compute
+  threads and 32 interop threads on `thinkstation1`.
+- Candidate result with the fast path: FrankenTorch median `204.02 ms`;
+  PyTorch median `7.4798 ms`; ratio vs PyTorch `27.28x` slower.
+- Current-minus-fast-path baseline: FrankenTorch median `179.91 ms`; PyTorch
+  median `7.0626 ms`; ratio vs PyTorch `25.47x` slower.
+- Final reverted-source result: FrankenTorch median `184.99 ms`; PyTorch median
+  `7.1539 ms`; ratio vs PyTorch `25.86x` slower.
+- Candidate vs fast-path-disabled baseline: `1.134x` slower by median.
+- Verdict: rejected and reverted. The standalone all-ones `dout` constant-fill
+  branch regressed the realistic full training-style workload and must not be
+  retried as a tiny avg_pool1d backward-only lever.
+- Retry condition: only revisit if profiling proves avg_pool1d backward fill is
+  dominant after forward, session/tape setup, allocation churn, and tensor
+  materialization overhead are separated. Otherwise target end-to-end pooling
+  overhead instead of another constant-gradient branch.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.122/gauntlet_20260619T0358Z/current_criterion_avg_pool1d.log`
+  - `artifacts/perf/frankentorch-kgs4.122/gauntlet_20260619T0358Z/current_env.txt`
+  - `artifacts/perf/frankentorch-kgs4.122/gauntlet_20260619T0358Z/baseline_minus_fastpath_criterion_avg_pool1d.log`
+  - `artifacts/perf/frankentorch-kgs4.122/gauntlet_20260619T0358Z/baseline_minus_fastpath_env.txt`
+  - `artifacts/perf/frankentorch-kgs4.122/gauntlet_20260619T0358Z/final_reverted_criterion_avg_pool1d.log`
+  - `artifacts/perf/frankentorch-kgs4.122/gauntlet_20260619T0358Z/final_reverted_env.txt`
+
 ## 2026-06-19 - frankentorch-kgs4.117 - MaxPool3d saved-index sidecar
 
 - Lever: save compact f64 max-pool3d first-argmax offsets during forward and

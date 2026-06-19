@@ -3,6 +3,7 @@
 //! Run with an interpreter that has CPU PyTorch installed:
 //!   PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python \
 //!   CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b \
+//!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- avg_pool1d
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- max_pool1d
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- max_pool3d
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- linear
@@ -58,6 +59,10 @@ fn pytorch_max_pool1d_script() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benches/pytorch_max_pool1d_grad.py")
 }
 
+fn pytorch_avg_pool1d_script() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benches/pytorch_avg_pool1d_grad.py")
+}
+
 fn pytorch_max_pool3d_script() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benches/pytorch_max_pool3d_grad.py")
 }
@@ -89,6 +94,19 @@ fn run_pytorch_max_pool1d_grad(iterations: u64) -> Duration {
     };
 
     parse_pytorch_elapsed(output, "PyTorch max_pool1d")
+}
+
+fn run_pytorch_avg_pool1d_grad(iterations: u64) -> Duration {
+    let output = match Command::new(pytorch_python())
+        .arg(pytorch_avg_pool1d_script())
+        .env("FT_GAUNTLET_ITERS", iterations.to_string())
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => fail(format!("failed to launch PyTorch benchmark: {err:?}")),
+    };
+
+    parse_pytorch_elapsed(output, "PyTorch avg_pool1d")
 }
 
 fn run_pytorch_max_pool3d_grad(iterations: u64) -> Duration {
@@ -171,6 +189,44 @@ fn bench_max_pool1d_unit_dout(c: &mut Criterion) {
 
     group.bench_function("pytorch_2_12_cpu", |b| {
         b.iter_custom(run_pytorch_max_pool1d_grad);
+    });
+
+    group.finish();
+}
+
+fn bench_avg_pool1d_unit_dy(c: &mut Criterion) {
+    let mut group = c.benchmark_group("gauntlet_avg_pool1d_grad");
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(3));
+    group.sample_size(10);
+
+    let values = deterministic_pool1d_values();
+    let shape = vec![MAX_POOL1D_N, MAX_POOL1D_C, MAX_POOL1D_L];
+
+    group.bench_function("frankentorch_kgs4_122", |b| {
+        b.iter(|| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = require(
+                session.tensor_variable(black_box(values.clone()), black_box(shape.clone()), true),
+                "failed to create FrankenTorch tensor",
+            );
+            let out = require(
+                session.functional_avg_pool1d(x, 2, 2),
+                "failed to run FrankenTorch avg_pool1d",
+            );
+            let loss = require(
+                session.tensor_sum(out),
+                "failed to reduce FrankenTorch output",
+            );
+            black_box(require(
+                session.tensor_backward(loss),
+                "failed to run FrankenTorch backward",
+            ))
+        });
+    });
+
+    group.bench_function("pytorch_2_12_cpu", |b| {
+        b.iter_custom(run_pytorch_avg_pool1d_grad);
     });
 
     group.finish();
@@ -277,6 +333,7 @@ fn bench_linear_train_hidden_2048(c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    bench_avg_pool1d_unit_dy,
     bench_max_pool1d_unit_dout,
     bench_max_pool3d_saved_indices,
     bench_linear_train_hidden_2048
