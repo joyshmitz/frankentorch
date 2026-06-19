@@ -8700,6 +8700,93 @@ impl TensorTape {
         Ok(out)
     }
 
+    /// Apply a f64 custom autograd function whose forward borrows immutable
+    /// input slices, while backward uses only the saved context and incoming
+    /// gradients. This is for ops that need zero-copy forward setup but do not
+    /// need to re-read inputs during first-order backward.
+    pub fn apply_function_f64_borrowed_forward<F, B>(
+        &mut self,
+        inputs: &[TensorNodeId],
+        forward_fn: F,
+        backward_fn: B,
+    ) -> Result<TensorNodeId, AutogradError>
+    where
+        F: FnOnce(
+            &mut FunctionCtx,
+            &[(&[f64], &[usize])],
+        ) -> Result<(Vec<f64>, Vec<usize>), AutogradError>,
+        B: Fn(&FunctionCtx, &[&[f64]]) -> Result<Vec<Option<Vec<f64>>>, AutogradError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let mut needs_input_grad = Vec::with_capacity(inputs.len());
+        let mut input_numels = Vec::with_capacity(inputs.len());
+        let mut any_requires_grad = false;
+        let mut output_device = Device::Cpu;
+
+        let (ctx, output_values, output_shape) = {
+            let mut input_refs: Vec<(&[f64], &[usize])> = Vec::with_capacity(inputs.len());
+            for &input_id in inputs {
+                let node = self.node(input_id)?;
+                let rg = node.requires_grad && self.grad_enabled;
+                needs_input_grad.push(rg);
+                if rg {
+                    any_requires_grad = true;
+                }
+                let vals = node.tensor.contiguous_values()?;
+                input_numels.push(vals.len());
+                output_device = node.tensor.meta().device();
+                input_refs.push((vals, node.tensor.meta().shape()));
+            }
+
+            let mut ctx = FunctionCtx::new(needs_input_grad);
+            let (output_values, output_shape) = forward_fn(&mut ctx, &input_refs)?;
+            (ctx, output_values, output_shape)
+        };
+
+        let inputs_owned = inputs.to_vec();
+        let out = TensorNodeId(self.nodes.len());
+
+        if !any_requires_grad || !self.grad_enabled {
+            self.nodes.push(TensorNode {
+                tensor: DenseTensor::from_storage(
+                    TensorMeta::from_shape(output_shape, DType::F64, output_device),
+                    output_values,
+                )?,
+                requires_grad: false,
+                op: TensorNodeOp::Leaf,
+            });
+            return Ok(out);
+        }
+
+        let function_id = self.next_custom_function_id;
+        self.next_custom_function_id += 1;
+
+        self.custom_functions.insert(
+            function_id,
+            CustomFunctionRecord {
+                ctx,
+                backward: CustomFunctionBackward::Owned(Arc::new(backward_fn)),
+                input_numel: input_numels,
+                create_graph_backward: None,
+            },
+        );
+
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(
+                TensorMeta::from_shape(output_shape, DType::F64, output_device),
+                output_values,
+            )?,
+            requires_grad: any_requires_grad,
+            op: TensorNodeOp::CustomFunction {
+                inputs: inputs_owned,
+                function_id,
+            },
+        });
+        Ok(out)
+    }
+
     /// Borrowed-inputs custom op (zero-copy 1st-order backward, like
     /// [`Self::apply_function_f64_borrowed_inputs`]) that ALSO registers a
     /// create_graph backward so the op participates in double-backward without
@@ -24712,6 +24799,37 @@ mod tests {
         let report = tape.backward(y).expect("backward");
         let grad = report.gradient(x).expect("gradient exists");
         assert_eq!(grad, &[2.0, -4.0, 7.0]);
+    }
+
+    #[test]
+    fn custom_function_borrowed_forward_owned_backward_uses_saved_context() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, -2.0, 3.5], vec![3], true).expect("x");
+
+        let y = tape
+            .apply_function_f64_borrowed_forward(
+                &[x],
+                |ctx, inputs| {
+                    let (vals, shape) = inputs[0];
+                    ctx.save_for_backward(vec![2.0], vec![1]);
+                    let doubled = vals.iter().map(|value| value * 2.0).collect();
+                    Ok((doubled, shape.to_vec()))
+                },
+                |ctx, grad_outputs| {
+                    let scale = ctx.saved_tensors()[0][0];
+                    let grad = grad_outputs[0]
+                        .iter()
+                        .map(|grad| grad * scale)
+                        .collect();
+                    Ok(vec![Some(grad)])
+                },
+            )
+            .expect("borrowed-forward function");
+
+        assert_eq!(tape.values(y).expect("values"), vec![2.0, -4.0, 7.0]);
+        let report = tape.backward(y).expect("backward");
+        let grad = report.gradient(x).expect("gradient exists");
+        assert_eq!(grad, &[2.0, 2.0, 2.0]);
     }
 
     #[test]

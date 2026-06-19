@@ -129,6 +129,45 @@ is explicitly satisfied.
   - `artifacts/perf/frankentorch-kgs4.128/gauntlet_20260619T0521Z/final_reverted_criterion_max_pool3d.log`
   - `artifacts/perf/frankentorch-kgs4.128/gauntlet_20260619T0521Z/summary.md`
 
+## 2026-06-19 - frankentorch-kgs4.132 - MaxPool3d borrowed-forward keep with PyTorch loss
+
+- Lever: f64 `functional_max_pool3d` now uses a custom autograd route whose
+  forward borrows input slices, while backward uses only saved context plus
+  incoming output gradients. This preserves the saved-index sidecar backward and
+  avoids the prior rejected borrowed-input-backward family from
+  `frankentorch-kgs4.128`.
+- Workload: `gauntlet_max_pool3d_grad`, deterministic f64
+  `[N,C,D,H,W]=[2,32,16,32,32]`, kernel `2x2x2`, stride `2x2x2`,
+  forward max_pool3d, scalar `sum`, backward.
+- Same-worker rch `hz2` internal A/B: FrankenTorch median `8.3166 ms` to
+  `5.4809 ms`; `1.52x` faster, `-34.1%`, Criterion p=0.00.
+- Same-worker rch stage proof: forward-only median `4.2347 ms` to `1.5978 ms`;
+  `2.65x` faster, Criterion p=0.00. Setup, sum, backward, and raw-kernel
+  stages were neutral/noisy rather than independent wins.
+- PyTorch head-to-head: local PyTorch `2.12.1+cpu`, 32 compute threads and 32
+  interop threads. Candidate FrankenTorch median `5.4457 ms`; PyTorch median
+  `1.6027 ms`; ratio vs PyTorch `3.40x` slower. Baseline ratio was `3.47x`
+  slower, so the gap narrowed but remained a loss.
+- Remote PyTorch caveat: rch `hz2` built and ran the FrankenTorch arm, but the
+  PyTorch arm failed with `ModuleNotFoundError: No module named 'torch'`; those
+  remote rows are internal FrankenTorch A/B proof, not PyTorch ratio proof.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Verdict: keep as a measured internal FrankenTorch win; classify as a
+  PyTorch-loss row for release readiness. No source revert.
+- Retry condition: do not retry sidecar-only, borrowed-input-only, or unit-`dout`
+  scatter variants for this workload. The next pass should attack the remaining
+  scalar sum/tape edge, backward scheduling, allocation churn, or a fused
+  training primitive with fresh ratio-vs-PyTorch proof.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.132/gauntlet_20260619T1306Z/SCORECARD.md`
+  - `artifacts/perf/frankentorch-kgs4.132/gauntlet_20260619T1306Z/NEGATIVE_EVIDENCE_LEDGER.md`
+  - `artifacts/perf/frankentorch-kgs4.132/gauntlet_20260619T1306Z/baseline_rch_max_pool3d.log`
+  - `artifacts/perf/frankentorch-kgs4.132/gauntlet_20260619T1306Z/candidate_rch_max_pool3d.log`
+  - `artifacts/perf/frankentorch-kgs4.132/gauntlet_20260619T1306Z/baseline_rch_max_pool3d_stage.log`
+  - `artifacts/perf/frankentorch-kgs4.132/gauntlet_20260619T1306Z/candidate_rch_max_pool3d_stage.log`
+  - `artifacts/perf/frankentorch-kgs4.132/gauntlet_20260619T1306Z/baseline_local_pytorch_max_pool3d.log`
+  - `artifacts/perf/frankentorch-kgs4.132/gauntlet_20260619T1306Z/candidate_local_pytorch_max_pool3d.log`
+
 ## 2026-06-19 - frankentorch-kgs4.121 - Linear all-ones dy kernel move
 
 - Lever: detect exact all-ones `dy` from `tensor_linear(...).sum().backward()`
