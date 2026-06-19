@@ -16545,15 +16545,29 @@ fn eigh_tridiag_reduce_blocked(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) 
 /// (which regressed: memory-bound, O(n²) fork/joins). Each row replays the entire
 /// log in order, so every entry is BIT-FOR-BIT identical to the inline sweep.
 /// frankentorch-kgs4.73.
-fn eigh_tql2_z_deferred(n: usize, d: &mut [f64], e: &mut [f64], z: &mut [f64]) {
+/// Row-block for the deferred QL replay (frankentorch-x53r3). The replay
+/// re-streams the whole `ops` Vec (≈2·n² rotations) once PER ROW; at large n that
+/// Vec is tens of MB and exceeds cache, so the per-row `par_chunks_mut(n)` form is
+/// MEMORY-BANDWIDTH bound on re-reading `ops` (≈n× the Vec). Grouping a small
+/// block of rows and looping op-OUTER reads `ops` once per BLOCK (≈n/B× less RAM
+/// traffic) while the block's z rows stay in L1/L2. Same-worker A/B (10 threads):
+/// 8 rows is the optimum — 2.31x @ n=512, 3.59x @ n=1024; block≥16 falls off the
+/// cache cliff (≥0.4x). Bit-identical to the per-row replay (same ops, same order
+/// per row; only the loop nesting / row→task grouping changes).
+const EIGH_TQL2_REPLAY_BLOCK_ROWS: usize = 8;
+
+/// The QL recurrence (frankentorch-kgs4.73): mutates `d`/`e` to the eigenvalues
+/// and returns the ORDERED rotation stream `(col i, c, s)` for the deferred
+/// eigenvector replay. Reads only `d`/`e`, never `z`.
+fn eigh_tql2_collect_ops(n: usize, d: &mut [f64], e: &mut [f64]) -> Vec<(usize, f64, f64)> {
+    let mut ops: Vec<(usize, f64, f64)> = Vec::new();
     if n == 0 {
-        return;
+        return ops;
     }
     for i in 1..n {
         e[i - 1] = e[i];
     }
     e[n - 1] = 0.0;
-    let mut ops: Vec<(usize, f64, f64)> = Vec::new();
     for l in 0..n {
         let mut iter = 0;
         loop {
@@ -16609,20 +16623,62 @@ fn eigh_tql2_z_deferred(n: usize, d: &mut [f64], e: &mut [f64], z: &mut [f64]) {
             e[m] = 0.0;
         }
     }
-    // Replay: each row of z independently applies the whole ordered rotation stream
-    // to its adjacent column pairs (i, i+1). Bit-identical to the inline form
-    // because the recurrence above never read z.
-    if !ops.is_empty() {
-        let ops = &ops;
-        z.par_chunks_mut(n).for_each(|row| {
-            for &(i, c, s) in ops {
-                let a = row[i];
-                let bb = row[i + 1];
-                row[i + 1] = s * a + c * bb;
-                row[i] = c * a - s * bb;
-            }
-        });
+    ops
+}
+
+/// Replay the ordered QL rotation stream onto the eigenvector matrix `z`
+/// (row-major n×n), parallel over ROW BLOCKS. Each block of `block_rows` rows is
+/// processed by one task with the rotation loop on the OUTSIDE, so `ops` is read
+/// once per block (cache-resident block, RAM-streamed `ops`) instead of once per
+/// row. BIT-IDENTICAL to the per-row form: every row applies the identical ops in
+/// the identical order; only the loop nesting / row→task grouping changes.
+/// `block_rows == 1` reproduces the legacy per-row replay. frankentorch-x53r3.
+fn eigh_tql2_replay_blocked(z: &mut [f64], n: usize, ops: &[(usize, f64, f64)], block_rows: usize) {
+    if ops.is_empty() || n == 0 {
+        return;
     }
+    let br = block_rows.max(1);
+    z.par_chunks_mut(br * n).for_each(|block| {
+        let nrows = block.len() / n;
+        for &(i, c, s) in ops {
+            for r in 0..nrows {
+                let base = r * n;
+                let a = block[base + i];
+                let bb = block[base + i + 1];
+                block[base + i + 1] = s * a + c * bb;
+                block[base + i] = c * a - s * bb;
+            }
+        }
+    });
+}
+
+fn eigh_tql2_z_deferred(n: usize, d: &mut [f64], e: &mut [f64], z: &mut [f64]) {
+    if n == 0 {
+        return;
+    }
+    let ops = eigh_tql2_collect_ops(n, d, e);
+    eigh_tql2_replay_blocked(z, n, &ops, EIGH_TQL2_REPLAY_BLOCK_ROWS);
+}
+
+/// A/B entry point (NOT production dispatch, frankentorch-x53r3): runs the full
+/// eigh eigenvector path and times ONLY the QL replay for a caller-chosen
+/// `block_rows`, so a same-worker A/B can confirm the row-block bandwidth win
+/// (block_rows=1 = legacy per-row anchor). Returns replay nanoseconds.
+#[doc(hidden)]
+pub fn eigh_tql2_replay_block_ab(data: &[f64], n: usize, block_rows: usize) -> u128 {
+    let mut lower = vec![0.0f64; n * (n + 1) / 2];
+    for i in 0..n {
+        let dst = lower_packed_index(i, 0);
+        let src = i * n;
+        lower[dst..=dst + i].copy_from_slice(&data[src..=src + i]);
+    }
+    let mut d = vec![0.0f64; n];
+    let mut e = vec![0.0f64; n];
+    let mut z = eigh_tred2_packed_full(n, &mut lower, &mut d, &mut e);
+    let ops = eigh_tql2_collect_ops(n, &mut d, &mut e);
+    let t = std::time::Instant::now();
+    eigh_tql2_replay_blocked(&mut z, n, &ops, block_rows);
+    t.elapsed().as_nanos()
 }
 
 fn eigh_tql2_values_only(n: usize, d: &mut [f64], e: &mut [f64]) {
@@ -16878,14 +16934,23 @@ fn eigh_tql2_z_deferred_f32(n: usize, d: &mut [f32], e: &mut [f32], z: &mut [f32
             e[m] = 0.0;
         }
     }
+    // Row-BLOCKED, op-outer replay (frankentorch-x53r3): read the ops stream once
+    // per cache-resident row block instead of once per row (the per-row form is
+    // RAM-bandwidth bound on re-streaming `ops`). Bit-identical to the per-row
+    // replay. See `EIGH_TQL2_REPLAY_BLOCK_ROWS`.
     if !ops.is_empty() {
         let ops = &ops;
-        z.par_chunks_mut(n).for_each(|row| {
+        let br = EIGH_TQL2_REPLAY_BLOCK_ROWS.max(1);
+        z.par_chunks_mut(br * n).for_each(|block| {
+            let nrows = block.len() / n;
             for &(i, c, s) in ops {
-                let a = row[i];
-                let bb = row[i + 1];
-                row[i + 1] = s * a + c * bb;
-                row[i] = c * a - s * bb;
+                for r in 0..nrows {
+                    let base = r * n;
+                    let a = block[base + i];
+                    let bb = block[base + i + 1];
+                    block[base + i + 1] = s * a + c * bb;
+                    block[base + i] = c * a - s * bb;
+                }
             }
         });
     }
@@ -17000,6 +17065,41 @@ pub fn eigh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EighResult
         eigenvectors,
         n,
     })
+}
+
+/// Stage-timing profiler for eigh (frankentorch-x53r3): splits the symmetric-eig
+/// eigenvector path into reduce / backtransform(form-Q) / tql2 nanoseconds so the
+/// dominant phase is targeted. NOT production dispatch.
+#[doc(hidden)]
+pub fn eigh_stage_profile_f64(data: &[f64], n: usize) -> (u128, u128, u128) {
+    let mut lower = vec![0.0f64; n * (n + 1) / 2];
+    for i in 0..n {
+        let dst = lower_packed_index(i, 0);
+        let src = i * n;
+        lower[dst..=dst + i].copy_from_slice(&data[src..=src + i]);
+    }
+    let mut d = vec![0.0f64; n];
+    let mut e = vec![0.0f64; n];
+    let mut scaled = vec![0.0f64; lower.len()];
+    let t0 = std::time::Instant::now();
+    eigh_tred2_reduce_packed_full(n, &mut lower, &mut scaled, &mut d, &mut e);
+    let reduce_ns = t0.elapsed().as_nanos();
+    let mut z = vec![0.0f64; n * n];
+    for i in 0..n {
+        let row_start = i * n;
+        let lower_start = lower_packed_index(i, 0);
+        z[row_start..=row_start + i].copy_from_slice(&lower[lower_start..=lower_start + i]);
+        for j in 0..i {
+            z[j * n + i] = scaled[lower_packed_index(i, j)];
+        }
+    }
+    let t1 = std::time::Instant::now();
+    eigh_tred2_backtransform(n, &mut z, &mut d);
+    let backtransform_ns = t1.elapsed().as_nanos();
+    let t2 = std::time::Instant::now();
+    eigh_tql2_z_deferred(n, &mut d, &mut e, &mut z);
+    let tql2_ns = t2.elapsed().as_nanos();
+    (reduce_ns, backtransform_ns, tql2_ns)
 }
 
 /// VJP of the symmetric-eig EIGENVALUES wrt the input: `grad_A = V·diag(grad_l)·Vᵀ`
@@ -19778,23 +19878,35 @@ fn golub_reinsch_svd_impl(
         }
     }
 
-    // Replay the full V operation stream: each of the n rows applies the entire
-    // ordered log (rotations + sign-flips) independently, so this whole O(n^3)
-    // back-transform is one parallel pass. Bit-identical to the inline form
-    // because the recurrence above never read V.
+    // Replay the full V/U operation streams. Each row applies the entire ordered
+    // log independently (the recurrence never read U/V), so this whole O(n^3)
+    // back-transform is parallel. ROW-BLOCKED, op-outer (frankentorch-x53r3): the
+    // ops Vec is ≈2·n² rotations (tens of MB at large n); the old per-row form
+    // (`par_chunks_mut(n)`) re-streamed it from RAM once PER ROW (bandwidth bound).
+    // Grouping a small cache-resident block of rows reads ops once per BLOCK while
+    // the block stays in L1/L2. Bit-identical to the per-row replay (same ops, same
+    // order per row). 8 rows matches the eigh-QL replay A/B optimum.
+    const SVD_QR_REPLAY_BLOCK_ROWS: usize = 8;
     if !v_ops.is_empty() {
         let ops = &v_ops;
-        v.par_chunks_mut(n).for_each(|row| {
+        let br = SVD_QR_REPLAY_BLOCK_ROWS;
+        v.par_chunks_mut(br * n).for_each(|block| {
+            let nrows = block.len() / n;
             for &op in ops {
                 match op {
                     SvdVOp::Rot(j, c, s) => {
-                        let xv = row[j];
-                        let zv = row[j + 1];
-                        row[j] = xv * c + zv * s;
-                        row[j + 1] = zv * c - xv * s;
+                        for r in 0..nrows {
+                            let base = r * n;
+                            let xv = block[base + j];
+                            let zv = block[base + j + 1];
+                            block[base + j] = xv * c + zv * s;
+                            block[base + j + 1] = zv * c - xv * s;
+                        }
                     }
                     SvdVOp::Neg(k) => {
-                        row[k] = -row[k];
+                        for r in 0..nrows {
+                            block[r * n + k] = -block[r * n + k];
+                        }
                     }
                 }
             }
@@ -19803,12 +19915,17 @@ fn golub_reinsch_svd_impl(
     // Replay the U (left-vector) rotation stream the same way over the m rows.
     if track_left && !u_ops.is_empty() {
         let ops = &u_ops;
-        a.par_chunks_mut(n).for_each(|row| {
+        let br = SVD_QR_REPLAY_BLOCK_ROWS;
+        a.par_chunks_mut(br * n).for_each(|block| {
+            let nrows = block.len() / n;
             for &(c0, c1, c, s) in ops {
-                let yu = row[c0];
-                let zu = row[c1];
-                row[c0] = yu * c + zu * s;
-                row[c1] = zu * c - yu * s;
+                for r in 0..nrows {
+                    let base = r * n;
+                    let yu = block[base + c0];
+                    let zu = block[base + c1];
+                    block[base + c0] = yu * c + zu * s;
+                    block[base + c1] = zu * c - yu * s;
+                }
             }
         });
     }
