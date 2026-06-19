@@ -195,6 +195,49 @@ is explicitly satisfied.
   - `artifacts/perf/frankentorch-kgs4-smooth-l1-reduced-grad/gauntlet_20260619/current_local_criterion_smooth_l1_grad_8m.log`
   - `artifacts/perf/frankentorch-kgs4-smooth-l1-reduced-grad/gauntlet_20260619/torch_smooth_l1_grad_8m_local.json`
 
+## 2026-06-19 - frankentorch-kgs4.127 - SmoothL1 one-sided reduced grad
+
+- Lever: when reduced f64 SmoothL1 has only one differentiable input, compute
+  only that side's gradient instead of allocating and writing both `dinput` and
+  `dtarget`.
+- Workload: `smooth_l1/grad_8m`, 8,388,608 f64 elements, mean reduction,
+  forward loss plus backward.
+- Reference: local PyTorch `2.12.1+cpu`, 32 compute threads, median
+  `360.7852805 ms`.
+- Decisive internal A/B: same-host local Criterion current median `746.26 ms`;
+  candidate median `647.44 ms`; internal speedup `1.15x`.
+- PyTorch head-to-head: candidate FrankenTorch/PyTorch ratio `1.79x` slower.
+  Baseline before this lever was `2.07x` slower, so the gap narrowed but was
+  not closed.
+- RCH evidence: pre-change remote row ran on `ovh-a` at `674.81 ms`; candidate
+  remote rows ran on different workers, `hz1` at `774.85 ms` and `vmi1152480`
+  at `619.16 ms`. Because worker selection differed, those rows are build and
+  routing evidence rather than decisive same-worker A/B proof.
+- Profiling caveat: hardware counters were blocked by
+  `/proc/sys/kernel/perf_event_paranoid=4`, so this row uses Criterion timings
+  and PyTorch oracle timings instead of perf samples.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N` for this bead.
+- Verdict: kept as a measured FrankenTorch internal win, still a PyTorch loss.
+  `frankentorch-kgs4.127` is closed.
+- Retry condition: do not retry another one-sided reduced-gradient wrapper.
+  Attack deeper SmoothL1 overhead next: allocator/arena reuse, tape edge
+  collapse, input/RNG setup, SIMD or branchless gradient generation, or a
+  fused train-step path with fresh ratio evidence.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/env.txt`
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/local_torch_smooth_l1_grad_8m.json`
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/local_current_criterion_smooth_l1_grad_8m.log`
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/candidate_local_criterion_smooth_l1_grad_8m.log`
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/rch_current_criterion_smooth_l1_grad_8m.log`
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/candidate_rch_criterion_smooth_l1_grad_8m.log`
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/candidate_rch_ovh_a_criterion_smooth_l1_grad_8m.log`
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/test_ft_kernel_cpu_smooth_l1_one_sided.log`
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/test_ft_api_smooth_l1_one_sided.log`
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/check_ft_api.log`
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/clippy_ft_api.log`
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/clippy_ft_kernel_cpu.log`
+  - `artifacts/perf/frankentorch-kgs4.127/gauntlet_20260619T0530Z/summary.md`
+
 ## 2026-06-19 - frankentorch-kgs4.126 - max_pool1d unit-dout scatter
 
 - Lever: special-case `functional_max_pool1d` f64 backward when `dout` is exact

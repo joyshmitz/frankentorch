@@ -9126,6 +9126,60 @@ pub fn smooth_l1_backward_reduced_f64(
     (di, dt)
 }
 
+fn smooth_l1_backward_reduced_one_f64(
+    dloss_per_element: f64,
+    x: &[f64],
+    t: &[f64],
+    beta: f64,
+    negate: bool,
+) -> Vec<f64> {
+    assert_eq!(
+        x.len(),
+        t.len(),
+        "smooth_l1_backward_reduced_one_f64 requires same-length slices"
+    );
+    let mut grad = vec![0.0f64; x.len()];
+    grad.par_iter_mut().enumerate().for_each(|(i, gi)| {
+        let d = x[i] - t[i];
+        let g = if d.abs() < beta {
+            d / beta
+        } else if d > 0.0 {
+            1.0
+        } else if d < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
+        let v = dloss_per_element * g;
+        *gi = if negate { -v } else { v };
+    });
+    grad
+}
+
+/// Input gradient only for reduced smooth-L1. Use when the target is not a
+/// differentiable tensor so callers can avoid allocating/writing `dtarget`.
+#[must_use]
+pub fn smooth_l1_backward_reduced_input_f64(
+    dloss_per_element: f64,
+    x: &[f64],
+    t: &[f64],
+    beta: f64,
+) -> Vec<f64> {
+    smooth_l1_backward_reduced_one_f64(dloss_per_element, x, t, beta, false)
+}
+
+/// Target gradient only for reduced smooth-L1. Use when only the target requires
+/// a gradient.
+#[must_use]
+pub fn smooth_l1_backward_reduced_target_f64(
+    dloss_per_element: f64,
+    x: &[f64],
+    t: &[f64],
+    beta: f64,
+) -> Vec<f64> {
+    smooth_l1_backward_reduced_one_f64(dloss_per_element, x, t, beta, true)
+}
+
 /// Per-channel batch statistics for BatchNorm over `[batch, channels, spatial]`
 /// (NCHW with `spatial = H·W`): `mean[c]`, `var[c]` over all `batch·spatial`
 /// elements of channel `c`. Works directly on the NCHW layout (channel `c` is
@@ -37574,6 +37628,28 @@ mod tests {
             let dloss = vec![scale; n];
             let (want_di, want_dt) = super::smooth_l1_backward_f64(&dloss, &x, &t, beta);
             let (got_di, got_dt) = super::smooth_l1_backward_reduced_f64(scale, &x, &t, beta);
+            for i in 0..n {
+                assert_eq!(got_di[i].to_bits(), want_di[i].to_bits(), "di[{i}]");
+                assert_eq!(got_dt[i].to_bits(), want_dt[i].to_bits(), "dt[{i}]");
+            }
+        }
+    }
+
+    #[test]
+    fn smooth_l1_backward_reduced_one_sided_helpers_match_full_bits() {
+        let n = super::SUM_PARALLEL_THRESHOLD + 131;
+        let beta = 0.75;
+        let x: Vec<f64> = (0..n)
+            .map(|i| ((i % 193) as f64 - 96.0) * 0.011)
+            .collect();
+        let t: Vec<f64> = (0..n)
+            .map(|i| ((i % 157) as f64 - 78.0) * -0.007)
+            .collect();
+
+        for scale in [1.0, -0.125] {
+            let (want_di, want_dt) = super::smooth_l1_backward_reduced_f64(scale, &x, &t, beta);
+            let got_di = super::smooth_l1_backward_reduced_input_f64(scale, &x, &t, beta);
+            let got_dt = super::smooth_l1_backward_reduced_target_f64(scale, &x, &t, beta);
             for i in 0..n {
                 assert_eq!(got_di[i].to_bits(), want_di[i].to_bits(), "di[{i}]");
                 assert_eq!(got_dt[i].to_bits(), want_dt[i].to_bits(), "dt[{i}]");

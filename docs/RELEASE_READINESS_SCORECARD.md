@@ -9,18 +9,27 @@ Updated: 2026-06-19
 | `frankentorch-kgs4.117` | max_pool3d f64 train step `[2,32,16,32,32]` | `9.73x` slower | internal keep; `20.585 ms` -> `15.794 ms`; remote PyTorch arm unavailable on `hz2` | kept; profile deeper end-to-end gap |
 | `frankentorch-kgs4.121` | linear f64 train step `[32,512] -> 2048` | `2.45x` slower | API-local internal keep; `29.606 ms` -> `22.775 ms`; kernel move `26.459 ms` rejected | kept API helper; reverted kernel move |
 | `frankentorch-kgs4.122` | avg_pool1d f64 train step `[8,64,8192]` | `25.86x` slower; final rerun `24.92x` slower | no gain; candidate median `204.02 ms` vs fast-path-disabled `179.91 ms` | reverted |
-| `frankentorch-kgs4.124` | SmoothL1 f64 mean-loss backward, 8M elems | `1.99x` slower | internal keep; `963.16 ms` -> `757.63 ms` on `hz2` | kept; follow-up `frankentorch-kgs4.128` |
+| `frankentorch-kgs4.124` | SmoothL1 f64 mean-loss backward, 8M elems | `1.99x` slower | internal keep; `963.16 ms` -> `757.63 ms` on `hz2` | kept; follow-up `frankentorch-kgs4.127` |
 | `frankentorch-kgs4.126` | max_pool1d f64 train step `[8,64,8192]` | `12.31x` slower | no gain; candidate median `184.41 ms` vs parent `178.47 ms` | reverted |
+| `frankentorch-kgs4.127` | SmoothL1 f64 one-sided input grad, 8M elems | `1.79x` slower | internal keep; same-host local `746.26 ms` -> `647.44 ms` | kept; route remaining gap to tape/allocation/SIMD |
 | `frankentorch-kgs4.128` | max_pool3d f64 train step `[2,32,16,32,32]` | `9.38x` slower clean baseline | no gain; borrowed-input median `22.764 ms`, unit-dout median `16.160 ms`, sequential unit-dout median `22.465 ms` | reverted product candidates; keep stage probe |
 
-Score: `6/6` for the measured gauntlet lanes. Correctness guards are green and
-the MaxPool3d, Linear, and SmoothL1 levers are real internal speedups, but no
-measured workload is performance-dominant against PyTorch yet.
+Measured-discipline score: `7/7` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 7L / 0N`. Correctness guards are green and the MaxPool3d, Linear,
+and SmoothL1 levers include real internal speedups, but no measured workload is
+performance-dominant against PyTorch yet.
 
 ## Current Gates
 
 | Gate | Scope | Result |
 |---|---|---|
+| Criterion | `cargo bench -p ft-api --bench ops_bench -- smooth_l1/grad_8m --noplot` | kgs4.127 local same-host A/B completed; current before one-sided grad `746.26 ms`, candidate `647.44 ms`; PyTorch `360.785 ms`, ratio `1.79x` slower |
+| Remote build/bench | `rch exec -- cargo bench -p ft-api --bench ops_bench -- smooth_l1/grad_8m --noplot` | current pre-change ran on `ovh-a` at `674.81 ms`; candidate ran on `hz1` at `774.85 ms`; supplemental candidate ran on `vmi1152480` at `619.16 ms`; cross-worker rows are routing evidence, not same-worker proof |
+| Compile | `rch exec -- cargo check -p ft-api` | passed for kgs4.127 |
+| Clippy | `rch exec -- cargo clippy -p ft-api -- -D warnings`; `rch exec -- cargo clippy -p ft-kernel-cpu -- -D warnings` | both passed for kgs4.127 |
+| Correctness | `rch exec -- cargo test -p ft-kernel-cpu smooth_l1_backward_reduced_one_sided_helpers_match_full_bits`; `rch exec -- cargo test -p ft-api smooth_l1_loss_reduced_grad_skips_unneeded_one_sided_gradient` | both passed |
+| UBS | `ubs crates/ft-api/src/lib.rs crates/ft-kernel-cpu/src/lib.rs` | completed after 545s; returned broad pre-existing inventory in these large files, including historical panic/security heuristics outside the SmoothL1 hunk |
+| Formatting | `git diff --check`; `rustfmt --edition 2024 --check crates/ft-api/src/lib.rs crates/ft-kernel-cpu/src/lib.rs` | diff whitespace passed; whole-file rustfmt remains blocked by broad pre-existing formatting drift |
 | Criterion | `cargo bench -p ft-api --bench ops_bench -- smooth_l1/grad_8m --noplot` | completed on `hz2`; current median `757.63 ms` |
 | PyTorch oracle | `torch_smooth_l1_grad_8m.py` | local PyTorch `2.12.1+cu130` median `373.61 ms` |
 | Compile | `rch exec -- cargo check -p ft-api` | passed |
@@ -72,6 +81,10 @@ verdict was available for the SmoothL1 `ft-api/src/lib.rs` closeout.
 
 The `.124` result points toward deeper SmoothL1 training overhead: tape setup,
 input/materialization cost, loss backward kernel shape, SIMD, and cache layout.
+The `.127` result proves that avoiding the unused target gradient allocation is
+worthwhile, but the remaining SmoothL1 row is still PyTorch-bound; the next
+SmoothL1 attempt should attack allocation lifetime, RNG/input setup, tape edges,
+or vectorized branchless gradient generation rather than another scalar wrapper.
 The `.122` result points away from tiny avg_pool1d unit-gradient fill branches
 and toward end-to-end pooling overhead, especially session/tape setup,
 allocation churn, forward materialization, and generic pooling dispatch costs.

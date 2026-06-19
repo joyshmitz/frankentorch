@@ -1,0 +1,19 @@
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 53.60s
+     Running benches/ops_bench.rs (/data/projects/.rch-targets/frankentorch-cod-a/release/deps/ops_bench-8824b9e24f0b8087)
+Gnuplot not found, using plotters backend
+Benchmarking smooth_l1/grad_8m
+Benchmarking smooth_l1/grad_8m: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 67.1s, or reduce sample count to 10.
+Benchmarking smooth_l1/grad_8m: Collecting 100 samples in estimated 67.134 s (100 iterations)
+Benchmarking smooth_l1/grad_8m: Analyzing
+smooth_l1/grad_8m       time:   [642.65 ms 647.44 ms 652.25 ms]
+                        change: [-14.616% -13.243% -12.096%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 100 measurements (3.00%)
+  2 (2.00%) low mild
+  1 (1.00%) high mild
