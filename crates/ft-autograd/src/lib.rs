@@ -8381,34 +8381,51 @@ impl TensorTape {
             + 'static,
     {
         let mut needs_input_grad = Vec::with_capacity(inputs.len());
-        let mut input_data: Vec<(Vec<f64>, Vec<usize>)> = Vec::with_capacity(inputs.len());
         let mut input_numels: Vec<usize> = Vec::with_capacity(inputs.len());
         let mut any_requires_grad = false;
         let mut output_dtype = DType::F64;
         let mut output_device = Device::Cpu;
 
-        for &input_id in inputs {
-            let node = self.node(input_id)?;
-            let rg = node.requires_grad && self.grad_enabled;
-            needs_input_grad.push(rg);
-            if rg {
-                any_requires_grad = true;
+        // Borrow each contiguous-F64 input's storage zero-copy (the common case); only
+        // NON-f64 / non-contiguous inputs are cloned+converted via the f64 fallback.
+        // The generic path previously cloned EVERY input (`contiguous_values_as_f64()`
+        // = a full numel `to_vec()`) even for plain f64 — pure allocation+copy traffic
+        // on every custom op's forward. The forward closure only reads `&[f64]` slices,
+        // so borrowing is bit-identical. Scoped in a block so the immutable input
+        // borrows of `self` end before the `&mut self` node push below.
+        // frankentorch-mbitj.
+        let (ctx, output_values, output_shape) = {
+            let mut input_data: Vec<(std::borrow::Cow<'_, [f64]>, Vec<usize>)> =
+                Vec::with_capacity(inputs.len());
+            for &input_id in inputs {
+                let node = self.node(input_id)?;
+                let rg = node.requires_grad && self.grad_enabled;
+                needs_input_grad.push(rg);
+                if rg {
+                    any_requires_grad = true;
+                }
+                let meta = node.tensor.meta();
+                output_dtype = meta.dtype();
+                output_device = meta.device();
+                let shape = meta.shape().to_vec();
+                let vals: std::borrow::Cow<'_, [f64]> =
+                    if output_dtype == DType::F64 && meta.is_contiguous() {
+                        std::borrow::Cow::Borrowed(node.tensor.contiguous_values()?)
+                    } else {
+                        std::borrow::Cow::Owned(node.tensor.contiguous_values_as_f64()?)
+                    };
+                input_numels.push(vals.len());
+                input_data.push((vals, shape));
             }
-            let vals = node.tensor.contiguous_values_as_f64()?;
-            let shape = node.tensor.meta().shape().to_vec();
-            input_numels.push(vals.len());
-            output_dtype = node.tensor.meta().dtype();
-            output_device = node.tensor.meta().device();
-            input_data.push((vals, shape));
-        }
 
-        let mut ctx = FunctionCtx::new(needs_input_grad);
-
-        let refs: Vec<(&[f64], &[usize])> = input_data
-            .iter()
-            .map(|(v, s)| (v.as_slice(), s.as_slice()))
-            .collect();
-        let (output_values, output_shape) = forward_fn(&mut ctx, &refs)?;
+            let mut ctx = FunctionCtx::new(needs_input_grad);
+            let refs: Vec<(&[f64], &[usize])> = input_data
+                .iter()
+                .map(|(v, s)| (v.as_ref(), s.as_slice()))
+                .collect();
+            let (ov, os) = forward_fn(&mut ctx, &refs)?;
+            (ctx, ov, os)
+        };
 
         // If gradients are disabled (no_grad context) or no input requires grad,
         // produce a plain Leaf node — recording a CustomFunction op would create a

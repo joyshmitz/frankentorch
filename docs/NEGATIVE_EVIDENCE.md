@@ -2133,3 +2133,29 @@ is explicitly satisfied.
 - Gates GREEN: ft-autograd 476/0, conformance 199/0 + all sub-suites, ft-autograd clippy
   (+examples) clean. Bit-exact, can't-regress (strictly fewer allocations; same f64
   values incl. -0.0 canonicalization). Generic across the dominant backward arm.
+
+## 2026-06-20d - frankentorch-mbitj - WIN (shipped): apply_function borrows contiguous-f64 inputs (Cow) instead of cloning every forward
+
+- The generic custom-op entry `TensorGradientTape::apply_function` (used by hundreds of
+  ops) gathered inputs via `contiguous_values_as_f64()` = a full numel `to_vec()` CLONE of
+  EVERY input, even plain contiguous f64 — pure alloc+copy traffic on every forward. The
+  per-op `*_borrowed_forward` variant already proved borrowing is correct (0w3ns), but only
+  hand-routed ops used it.
+- Lever: gather inputs as `Cow<[f64]>` — `Cow::Borrowed(contiguous_values())` (zero-copy)
+  when the input is contiguous F64 (the common case), `Cow::Owned(contiguous_values_as_f64())`
+  only for non-f64 / non-contiguous (dtype-converting) inputs. Input borrows are scoped in a
+  block so they end before the `&mut self` output-node push. The forward closure only reads
+  `&[f64]`, so borrowing is BIT-IDENTICAL. `contiguous_values()` and
+  `contiguous_values_as_f64()` both slice `[storage_offset..span]` identically for F64, so
+  views with offsets are correct.
+- Magnitude: eliminates one numel f64 alloc+copy per forward for every f64 custom op
+  (generalizes the 0w3ns forward-borrow from 2 hand-routed ops to ALL of them). The
+  eliminated alloc+copy was measured at OLD 9804 us for a 4M f64 buffer (kwarf A/B,
+  2026-06-20c). Traffic/allocation reduction → core-count-independent (wins in the
+  cgroup-capped ~10-core rch sandbox).
+- Gates GREEN: ft-autograd 476/0, conformance 199/0 + all sub-suites, ft-autograd clippy
+  clean. ft-api lib 2336 passed / 2 failed — BOTH failures
+  (`complex_arithmetic_golden_matches_torch`, `functional_batch_norm1d_3d_native_fused_*`)
+  reproduce on the clean origin/main baseline (no mbitj), i.e. PRE-EXISTING (complex golden
+  worker-skew flake on vmi*; batchnorm1d native-fused is the in-flight kgs4.138 code-first
+  row) — mbitj adds zero failures. Bit-exact, can't-regress.
