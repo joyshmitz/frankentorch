@@ -4,6 +4,79 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-20 - frankentorch-kgs4.143 - BatchNorm2d f32 automatic tensor_sum shortcut keep with PyTorch loss
+
+- Lever attempted: register f32 training-mode affine `functional_batch_norm2d`
+  outputs and route ordinary `functional_batch_norm2d(...).tensor_sum()` through
+  the existing scalar-loss BatchNorm2d backward when output `retain_grad` and
+  tensor hooks do not make the materialized output gradient observable. This is
+  a trace-deforestation/partial-evaluation lever at the API/tape boundary, not
+  a kernel math rewrite. The shortcut deliberately falls back to ordinary
+  `Sum` when retained grads or hooks need the output gradient edge.
+- Workload: `pytorch_gauntlet_bench`
+  `gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114`,
+  `[N,C,H,W]=[32,256,28,28]`, affine weight and bias require gradients,
+  scalar-sum loss and backward.
+- Baseline/routing evidence:
+  - Baseline RCH on `hz1`: ordinary materialized row `[195.91 ms, 203.33 ms,
+    211.40 ms]`; explicit scalar-sum control `[53.734 ms, 55.138 ms,
+    57.025 ms]`. Remote PyTorch failed because the worker lacks `torch`.
+  - Baseline local PyTorch `2.12.1+cpu`, 32 compute/inter-op threads, five
+    40-iteration totals median `0.324062439962 s`, or `8.101561 ms/iter`.
+    Mixed-location baseline ratios: ordinary `25.10x` slower than PyTorch;
+    explicit scalar-sum `6.81x` slower.
+- Same-worker keep evidence (`vmi1152480`):
+  - Enabled automatic shortcut ordinary row `[110.48 ms, 117.96 ms, 126.06 ms]`.
+  - Temporary disabled comparison on the same worker, with only the
+    BatchNorm2d registration flag flipped off, measured `[153.50 ms,
+    166.77 ms, 182.96 ms]`. Criterion compared disabled against the prior
+    enabled row and reported `+41.380%` slower, `p = 0.00`.
+  - Enabled/disabled median runtime ratio is `0.707x`, or `1.41x` faster. The
+    explicit scalar-sum control was stable (`100.95 ms` disabled vs `103.35 ms`
+    enabled), so the measured win is on the targeted ordinary API path.
+  - The final source was restored to the enabled flag after the temporary
+    disabled run.
+- PyTorch comparator: local PyTorch after-run median was `0.308203856926 s` for
+  40 iterations, or `7.705096 ms/iter`. The enabled ordinary FrankenTorch row
+  is still `15.31x` slower than PyTorch; the enabled explicit scalar-sum
+  control is still `13.41x` slower. Win/loss/neutral vs PyTorch:
+  `0W / 1L / 0N`.
+- Correctness and quality gates:
+  - `ft-api` focused auto-shortcut tests passed: retained-grad fallback and
+    hook fallback, 2/0.
+  - Existing f32 BatchNorm2d explicit scalar-sum tests passed, 2/0.
+  - `cargo check -p ft-api --bench pytorch_gauntlet_bench --profile release`
+    passed on `hz1`.
+  - `cargo clippy -p ft-api --bench pytorch_gauntlet_bench -- -D warnings`
+    passed on `hz1`.
+  - `cargo test -p ft-conformance --profile release` passed on `vmi1152480`:
+    full conformance crate and sub-suites green.
+  - `git diff --check` passed.
+  - `cargo fmt --check -p ft-api` emitted broad pre-existing rustfmt diffs in
+    `ft-api` benches/examples and old hunks in the giant `lib.rs`; no broad
+    formatting rewrite was applied in this perf commit.
+- Verdict: keep the automatic BatchNorm2d f32 scalar-loss shortcut. It is
+  behavior-preserving under the tested autograd visibility rules and gives a
+  decisive same-worker internal speedup, but it does not dominate PyTorch.
+- Retry condition: remaining BatchNorm2d f32 work should not repeat metadata
+  sum-auto-fusion. Target true forward deforestation, saved stats/workspace
+  reuse, f32-native tape/storage, arena allocation, or generated shape-specialized
+  scalar-loss kernels that remove the residual output materialization and
+  backward/tape overhead.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.143/gauntlet_20260620T2058Z/baseline_rch_batch_norm2d_f32.log`
+  - `artifacts/perf/frankentorch-kgs4.143/gauntlet_20260620T2058Z/after_rch_batch_norm2d_f32.log`
+  - `artifacts/perf/frankentorch-kgs4.143/gauntlet_20260620T2058Z/disabled_rch_batch_norm2d_f32_vmi1152480.log`
+  - `artifacts/perf/frankentorch-kgs4.143/gauntlet_20260620T2058Z/baseline_local_pytorch_batch_norm2d_f32_5x40.log`
+  - `artifacts/perf/frankentorch-kgs4.143/gauntlet_20260620T2058Z/after_local_pytorch_batch_norm2d_f32_5x40.log`
+  - `artifacts/perf/frankentorch-kgs4.143/gauntlet_20260620T2058Z/test_ft_api_batch_norm2d_auto_shortcut.log`
+  - `artifacts/perf/frankentorch-kgs4.143/gauntlet_20260620T2058Z/test_ft_api_batch_norm2d_sum_existing.log`
+  - `artifacts/perf/frankentorch-kgs4.143/gauntlet_20260620T2058Z/check_ft_api_bench.log`
+  - `artifacts/perf/frankentorch-kgs4.143/gauntlet_20260620T2058Z/clippy_ft_api_bench.log`
+  - `artifacts/perf/frankentorch-kgs4.143/gauntlet_20260620T2058Z/test_ft_conformance_release.log`
+  - `artifacts/perf/frankentorch-kgs4.143/gauntlet_20260620T2058Z/fmt_check_ft_api.log`
+  - `artifacts/perf/frankentorch-kgs4.143/gauntlet_20260620T2058Z/summary.md`
+
 ## 2026-06-20 - frankentorch-kgs4.141 - BatchNorm2d f32 scalar-backward algebraic-zero no-gain revert
 
 - Lever attempted: mirror the f64 BatchNorm scalar-loss algebraic-zero backward

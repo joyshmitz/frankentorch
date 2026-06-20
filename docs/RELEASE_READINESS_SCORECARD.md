@@ -6,6 +6,7 @@ Updated: 2026-06-20
 
 | Bead | Workload | Result vs PyTorch | Before/after verdict | Release action |
 |---|---:|---:|---:|---|
+| `frankentorch-kgs4.143` | BatchNorm2d f32 automatic `tensor_sum` shortcut `[32,256,28,28]` NCHW | mixed-location local-oracle `15.31x` slower ordinary; `13.41x` slower explicit scalar-sum | internal keep; same-worker `vmi1152480` ordinary disabled `166.77 ms` -> enabled `117.96 ms` (`1.41x` faster); explicit scalar-sum control stable `100.95 ms` -> `103.35 ms` | kept; route remaining gap to true forward deforestation, saved-stat/workspace reuse, arena/tape allocation, f32-native storage/layout, and generated scalar-loss kernels |
 | `frankentorch-kgs4.141` | BatchNorm2d f32 scalar-loss algebraic-zero backward `[32,256,28,28]` NCHW | same-host candidate `15.46x` slower | no gain; paired local scalar-sum `116.70 ms` -> `115.48 ms`, `p=0.40`, no change detected; RCH after-run rejected as cross-worker noise because unchanged materialized row drifted `2.94x` slower | rejected/reverted; route remaining gap to output deforestation, zero-gradient representation without large `dx` allocation/fill, saved-stat/workspace reuse, generated scalar-loss kernels, and tape/session arena allocation |
 | `frankentorch-kgs4.140` | BatchNorm1d f64 scalar-loss algebraic-zero backward `[16,128,256]` NCL | same-host `4.86x` slower native; `4.35x` slower scalar-sum | internal keep; same-worker `vmi1152480` native `5.6853 ms` -> `4.6475 ms` (`1.22x` faster), scalar-sum `5.8463 ms` -> `4.1630 ms` (`1.40x` faster) | kept; route remaining gap to output deforestation, generated fused scalar-loss kernels, saved-stat/workspace reuse, tape/session arena reuse, and f64-native storage/layout |
 | `frankentorch-kgs4.139` | BatchNorm1d f64 automatic `tensor_sum` shortcut `[16,128,256]` NCL | same-host `7.42x` slower | internal keep; local ordinary native `11.622 ms` -> automatic shortcut `6.6151 ms` (`1.76x` faster); rch after row `6.0836 ms`; explicit scalar API still faster at `5.1754 ms` | kept; route remaining gap to BatchNorm output deforestation, generated scalar-loss kernels, tape/session arena reuse, and saved-stat workspace reuse |
@@ -34,14 +35,34 @@ Updated: 2026-06-20
 | `frankentorch-kgs4.133` | conv2d f64 train step `[4,64,64,64]`, 64 3x3 filters | `1.91x` slower; candidate `1.86x` slower | no gain; same-worker rch `121.07 ms` -> `117.92 ms`, `p=0.38`, no change detected | rejected; removed dormant all-ones-dout branch |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `27/27` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 26L / 1N`; the RMSNorm scalar-sum comparator is neutral for
+Measured-discipline score: `28/28` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 27L / 1N`; the RMSNorm scalar-sum comparator is neutral for
 release scoring because the candidate was faster than local PyTorch by
 mixed-location ratio but failed the same-worker FrankenTorch keep gate.
 Correctness guards are green and the SDPA, MaxPool3d,
 Linear, LayerNorm, BatchNorm1d/2d, GroupNorm, and SmoothL1 levers include real
 internal speedups, but no measured workload is performance-dominant against
 PyTorch yet.
+
+### 2026-06-20 BatchNorm2d f32 automatic tensor_sum shortcut keep (`frankentorch-kgs4.143`)
+
+The ordinary f32 training BatchNorm2d scalar-loss call now registers an
+autograd-side `tensor_sum` shortcut when output retained gradients and hooks do
+not make the materialized output gradient observable. The shortcut reuses the
+existing scalar-loss BatchNorm2d backward while preserving fallback behavior for
+observable output-gradient edges.
+
+Same-worker `vmi1152480` proof measured the ordinary API path at `166.77 ms`
+with the registration temporarily disabled and `117.96 ms` with the final
+enabled source, a `1.41x` internal speedup. The explicit scalar-sum control
+stayed statistically neutral (`100.95 ms` disabled vs `103.35 ms` enabled), so
+the win is on the targeted automatic ordinary path. Local PyTorch `2.12.1+cpu`
+measured `7.705096 ms/iter` on the same fixture, so the final ordinary row is
+still `15.31x` slower than PyTorch and counts as `0W / 1L / 0N` for this bead.
+`ft-api` focused tests, `ft-api` bench check/clippy, `ft-conformance`, and
+`git diff --check` passed. `cargo fmt --check -p ft-api` still reports broad
+pre-existing rustfmt drift in ft-api benches/examples and old giant-`lib.rs`
+hunks; no formatting churn was included in this perf commit.
 
 ### 2026-06-20 BatchNorm2d f32 scalar-loss algebraic-zero reject (`frankentorch-kgs4.141`)
 
