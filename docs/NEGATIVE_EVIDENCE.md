@@ -2159,3 +2159,24 @@ is explicitly satisfied.
   reproduce on the clean origin/main baseline (no mbitj), i.e. PRE-EXISTING (complex golden
   worker-skew flake on vmi*; batchnorm1d native-fused is the in-flight kgs4.138 code-first
   row) — mbitj adds zero failures. Bit-exact, can't-regress.
+
+## 2026-06-20e - avg_pool1d cumulative head-to-head vs PyTorch (measures the traffic-reduction wins)
+
+- Local same-env head-to-head (`PYTORCH_PYTHON=/tmp/torchvenv` torch 2.12.0+cpu, 64-core
+  box, both arms), `pytorch_gauntlet_bench -- avg_pool1d` `[8,64,8192]` f64 sum-loss train
+  step, two runs (medians):
+  - FrankenTorch standard (`kgs4_122` path): **57.0 / 63.8 ms**
+  - FrankenTorch fused-sum (`kgs4_134`): **46.5 / 49.2 ms**
+  - PyTorch 2.12 cpu: **9.41 / 12.55 ms** (noisy on the contended box, range 7.8-15.1)
+  - Ratio (standard / PyTorch): **~5-6x slower** (fused ~4-5x).
+- ★ CUMULATIVE NARROWING: kgs4.122 originally measured FrankenTorch at ~180-204 ms and
+  ~25.86x slower. The standard path is now ~57 ms = **~3.2x FT-side speedup**, gap ~25x ->
+  ~5-6x. This is the stacked effect of the bandwidth/allocation-reduction levers (the only
+  class that helps in the cgroup-capped rch sandbox, cf. 2026-06-20b): lazy grad slots
+  (cbe4t), lazy Sum/Mean accumulate (96e5d), forward input-borrow (0w3ns generalized by
+  mbitj), and owned-grad move (kwarf). My kwarf+mbitj added ~70 ms -> ~57-64 ms on top of
+  cbe4t's ~89 -> ~70 ms.
+- Caveats: local 64-core UNCAPPED env (not the rch ~10-core sandbox the official gauntlet
+  rows use), contended box, PyTorch arm noisy — treat as a directional cumulative datapoint,
+  not a single-lever attribution. The robust signal is the FT-side absolute drop
+  (180-204 ms -> 57 ms), which is allocation-bound and core-count-independent.
