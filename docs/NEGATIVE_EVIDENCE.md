@@ -723,3 +723,23 @@ is explicitly satisfied.
   this hunk.
 - W/L/N vs PyTorch for this row: `0 / 1 / 0`. Do not count remote worker rows as
   PyTorch comparisons until Torch is installed on the selected worker.
+
+## 2026-06-20b - frankentorch-kgs4.118 - KEEP / PyTorch loss remains: conv3d all-ones dout backward
+
+- Lever: existing code-first f64 `conv3d_backward_f64` special case for non-empty
+  upstream `dout` slices that are exactly all `+1.0`, the scalar sum-loss backward
+  case used by `ops_bench` `conv3d/grad`. It collapses repeated all-ones GEMM rows
+  into one-row reductions plus a repeated-row col2im scatter; non-unit and empty
+  `dout` stay on the generic path.
+- Same-worker `rch` A/B on `ovh-a`: parent baseline `75d87600^` (`870abe0d`)
+  `conv3d/grad` median `29.723 ms`; current `main` median `26.595 ms`. The intervals
+  did not overlap (`[29.423, 30.038]` vs `[26.116, 27.077]`), so this is a real
+  `1.12x` internal FrankenTorch win / `10.5%` lower median.
+- Local PyTorch CPU comparator for the same f64 shape (`[2,32,8,16,16]` input,
+  `[32,32,3,3,3]` weight, stride1/pad1, scalar sum backward, 32 compute threads)
+  measured `7.593859 ms`; current FrankenTorch remains `3.50x` slower.
+- Gates GREEN: `ft-kernel-cpu conv3d` 2/0, `ft-api conv3d` 10/0, strict scheduler
+  conformance 1/0.
+- Verdict: keep the source change and close the stale code-first bead as measured,
+  but record the PyTorch row as a loss. W/L/N vs PyTorch: `0 / 1 / 0`.
+- Evidence: `artifacts/perf/frankentorch-kgs4.118/gauntlet_20260620T0108Z/SCORECARD.md`.

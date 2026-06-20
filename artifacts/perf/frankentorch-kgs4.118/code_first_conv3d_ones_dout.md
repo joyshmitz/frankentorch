@@ -2,7 +2,7 @@
 
 Date: 2026-06-18
 Agent: cod-a / IvoryDeer
-Status: code-first batch-test pending
+Status: measured keep; PyTorch loss remains
 
 ## Target
 
@@ -11,7 +11,7 @@ Current routing evidence from `artifacts/perf/frankentorch-next-reprofile-202606
 - `conv3d/grad`: median about 41.312 ms.
 - The benchmark loss is `tensor_sum(out)`, so the upstream gradient entering conv3d backward is exactly `+1.0` at every output element.
 
-This is routing evidence only. The campaign still needs same-worker criterion proof against the legacy original after the batch test window.
+This was routing evidence only until the 2026-06-20 gauntlet closeout below.
 
 ## Lever
 
@@ -46,7 +46,10 @@ Attempt: `frankentorch-kgs4.118`
 - Lever: conv3d sum-loss backward all-ones `dout` collapse.
 - Expected win class: bandwidth and allocation reduction in realistic training traces where scalar sum loss drives conv3d backward.
 - Correctness risk: a missed non-ones upstream gradient would be catastrophic; mitigated by exact `+1.0` bit trigger and generic fallback.
-- Benchmark status: pending. Do not mark as a keep until same-worker criterion shows a real `conv3d/grad` win and conformance stays green.
+- Benchmark status: KEEP after 2026-06-20 same-worker `ovh-a` Criterion proof:
+  parent baseline `29.723 ms`, current `26.595 ms`, `1.12x` faster / `10.5%`
+  lower median, with non-overlapping intervals. Local PyTorch CPU comparator for
+  the same f64 shape measured `7.593859 ms`, so FrankenTorch still loses `3.50x`.
 - Revert predicate: any conformance failure, measurable `conv3d/grad` regression, or benchmark evidence showing the `dout` scan costs more than the repeated-matrix collapse saves.
 
 Avoided dead ends from the campaign ledger:
@@ -62,8 +65,23 @@ Avoided dead ends from the campaign ledger:
 - Arena/custom allocator: not used; no new long-lived allocation policy.
 - EV score: impact 4, confidence 3, effort 2 -> 6.0.
 
-## Required Follow-Up
+## 2026-06-20 Gauntlet Closeout
 
-- Run the campaign batch criterion comparison for `conv3d/grad` against the original legacy oracle.
-- Run conformance for conv3d backward and full affected training-gradient lanes.
-- Update this ledger with measured keep/reject evidence before closing the bead.
+- Baseline worktree: detached parent `870abe0d` (`75d87600^`) at
+  `/data/projects/frankentorch-kgs4-118-baseline`.
+- Baseline command: `RCH_WORKER=ovh-a RCH_WORKERS=ovh-a
+  CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec --
+  cargo bench -p ft-api --bench ops_bench -- conv3d/grad --noplot`.
+- Baseline result: selected `ovh-a`; `conv3d/grad [29.423 ms 29.723 ms 30.038 ms]`.
+- Current command: `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+  rch exec -- cargo bench -p ft-api --bench ops_bench -- conv3d/grad --noplot`.
+- Current result: selected `ovh-a`; `conv3d/grad [26.116 ms 26.595 ms 27.077 ms]`.
+- PyTorch comparator: local CPU PyTorch `2.12.1+cpu`, 32 compute threads and 32
+  interop threads, same f64 `[2,32,8,16,16] @ [32,32,3,3,3]` stride1/pad1
+  sum-loss backward; median `7.593859 ms`.
+- Verdict: keep the existing source change and close `frankentorch-kgs4.118` as a
+  measured internal win, but classify the row as a PyTorch loss (`0W / 1L / 0N`).
+- Validation: `ft-kernel-cpu conv3d` 2/0, `ft-api conv3d` 10/0, strict scheduler
+  conformance 1/0.
+- Evidence scorecard:
+  `artifacts/perf/frankentorch-kgs4.118/gauntlet_20260620T0108Z/SCORECARD.md`.

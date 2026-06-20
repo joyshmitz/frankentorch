@@ -56,6 +56,14 @@ statistically neutral despite a lower median. Gates: ft-autograd 476/0, ft-api
 avg_pool1d bit regression 1/0, strict scheduler conformance 1/0, ft-autograd clippy
 clean.
 
+Conv3d sum-loss backward (`frankentorch-kgs4.118`): existing code-first f64 all-ones
+`dout` fast path is now batch-verified. Same-worker `ovh-a` parent baseline
+`29.723 ms` -> current `26.595 ms` (`1.12x` faster, `10.5%` lower median) on
+`ops_bench` `conv3d/grad`, with non-overlapping intervals. Same-shape local PyTorch
+CPU remains much faster at `7.593859 ms`, so current FT/PyTorch is still `3.50x`
+slower. Gates: ft-kernel-cpu conv3d 2/0, ft-api conv3d 10/0, strict scheduler
+conformance 1/0.
+
 ## Current Gates
 
 | Gate | Scope | Result |
