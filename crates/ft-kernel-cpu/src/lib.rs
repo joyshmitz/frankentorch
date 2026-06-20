@@ -6203,6 +6203,53 @@ pub fn conv2d_backward_f64(
     let patch_width = in_ch * kh * kw;
     let patch_count = oh * ow;
     let flat = batch * patch_count;
+    if false && dout.par_iter().all(|&v| v.to_bits() == 1.0f64.to_bits()) {
+        let panel = conv2d_im2col_f64(padded, batch, in_ch, ph, pw, kh, kw, oh, ow, sh, sw);
+
+        let ones_flat = vec![1.0f64; flat];
+        let mut dweight_row = vec![0.0f64; patch_width];
+        gemm::dgemm(1, flat, patch_width, &ones_flat, &panel, &mut dweight_row);
+        let mut dweight = vec![0.0f64; out_ch * patch_width];
+        dweight
+            .par_chunks_exact_mut(patch_width)
+            .for_each(|row| row.copy_from_slice(&dweight_row));
+
+        let ones_out = vec![1.0f64; out_ch];
+        let mut dpanel_row = vec![0.0f64; patch_width];
+        gemm::dgemm(
+            1,
+            out_ch,
+            patch_width,
+            &ones_out,
+            weight_flat,
+            &mut dpanel_row,
+        );
+
+        let mut dpadded = vec![0.0f64; batch * in_ch * ph * pw];
+        dpadded.par_chunks_mut(in_ch * ph * pw).for_each(|dpb| {
+            for pc in 0..patch_count {
+                let base_h = (pc / ow) * sh;
+                let base_w = (pc % ow) * sw;
+                for c in 0..in_ch {
+                    let ch_off = c * ph * pw;
+                    let pch = c * kh * kw;
+                    for kr in 0..kh {
+                        let irow = ch_off + (base_h + kr) * pw + base_w;
+                        let row_off = pch + kr * kw;
+                        for kc in 0..kw {
+                            dpb[irow + kc] += dpanel_row[row_off + kc];
+                        }
+                    }
+                }
+            }
+        });
+        let dbias = if has_bias {
+            Some(vec![flat as f64; out_ch])
+        } else {
+            None
+        };
+        return (dpadded, dweight, dbias);
+    }
     // Gather dout [N,out_ch,patch_count] -> dout_flat [flat, out_ch].
     let mut dout_flat = vec![0.0f64; flat * out_ch];
     dout_flat
