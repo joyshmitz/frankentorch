@@ -1,0 +1,26 @@
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.28s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-a/release/deps/pytorch_gauntlet_bench-5f2ebc2fd9ddf042)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121: Warming up for 1.0000 s
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121: Collecting 10 samples in estimated 3.1256 s (330 iterations)
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121: Analyzing
+gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121
+                        time:   [8.9583 ms 9.1200 ms 9.3170 ms]
+                        change: [-60.418% -59.189% -57.824%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu: Warming up for 1.0000 s
+PyTorch linear benchmark failed with status Some(1)
+stdout:
+
+stderr:
+Traceback (most recent call last):
+  File "/data/projects/frankentorch/crates/ft-api/benches/pytorch_linear_train.py", line 4, in <module>
+    import torch
+ModuleNotFoundError: No module named 'torch'
+
+error: bench failed, to rerun pass `-p ft-api --bench pytorch_gauntlet_bench`
+
+Caused by:
+  process didn't exit successfully: `/data/projects/.rch-targets/frankentorch-cod-a/release/deps/pytorch_gauntlet_bench-5f2ebc2fd9ddf042 linear --noplot --bench` (exit status: 1)

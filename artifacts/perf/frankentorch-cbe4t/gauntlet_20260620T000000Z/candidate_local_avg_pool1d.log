@@ -1,0 +1,26 @@
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 39.98s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-a/release/deps/pytorch_gauntlet_bench-5f2ebc2fd9ddf042)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_avg_pool1d_grad/frankentorch_kgs4_122
+Benchmarking gauntlet_avg_pool1d_grad/frankentorch_kgs4_122: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 5.2s or enable flat sampling.
+Benchmarking gauntlet_avg_pool1d_grad/frankentorch_kgs4_122: Collecting 10 samples in estimated 5.1809 s (55 iterations)
+Benchmarking gauntlet_avg_pool1d_grad/frankentorch_kgs4_122: Analyzing
+gauntlet_avg_pool1d_grad/frankentorch_kgs4_122
+                        time:   [69.836 ms 70.446 ms 71.800 ms]
+                        change: [-25.632% -19.132% -11.467%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking gauntlet_avg_pool1d_grad/pytorch_2_12_cpu
+Benchmarking gauntlet_avg_pool1d_grad/pytorch_2_12_cpu: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 12.2s.
+Benchmarking gauntlet_avg_pool1d_grad/pytorch_2_12_cpu: Collecting 10 samples in estimated 12.220 s (10 iterations)
+Benchmarking gauntlet_avg_pool1d_grad/pytorch_2_12_cpu: Analyzing
+gauntlet_avg_pool1d_grad/pytorch_2_12_cpu
+                        time:   [5.8986 ms 6.2101 ms 6.5112 ms]
+                        change: [-13.344% -7.4237% -1.1811%] (p = 0.04 < 0.05)
+                        Performance has improved.
+

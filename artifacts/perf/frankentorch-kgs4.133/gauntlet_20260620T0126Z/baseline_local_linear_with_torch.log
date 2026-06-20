@@ -1,0 +1,24 @@
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.07s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-a/release/deps/pytorch_gauntlet_bench-5f2ebc2fd9ddf042)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121: Warming up for 1.0000 s
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121: Collecting 10 samples in estimated 3.3568 s (385 iterations)
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121: Analyzing
+gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121
+                        time:   [8.0845 ms 8.3573 ms 8.7076 ms]
+                        change: [-9.5209% -4.3598% +1.8501%] (p = 0.14 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 10.9s.
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu: Collecting 10 samples in estimated 10.873 s (10 iterations)
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu: Analyzing
+gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu
+                        time:   [5.7609 ms 7.2282 ms 8.7785 ms]
+                        change: [-42.750% -22.128% +3.1004%] (p = 0.13 > 0.05)
+                        No change in performance detected.
+
