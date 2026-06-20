@@ -10077,85 +10077,29 @@ pub fn batch_norm_backward_f64(
     (dx, dweight, dbias)
 }
 
-/// Scalar-upstream f64 BatchNorm backward for `sum(BatchNorm(...))`.
+/// Scalar-upstream f64 training BatchNorm backward for `sum(BatchNorm(...))`.
 ///
-/// Algebraically identical to [`batch_norm_backward_f64`] with dense constant
-/// `dy = upstream`, without allocating or rereading that output-gradient buffer.
+/// For training stats, `sum((x - mean(x)) / sqrt(var(x) + eps) * weight + bias)`
+/// is independent of `x` and `weight`: per-channel centered terms sum to zero.
+/// Return the annihilated gradients directly instead of rereading the input with
+/// a dense constant `dy` buffer.
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn batch_norm_backward_scalar_f64(
     upstream: f64,
     x: &[f64],
-    weight: &[f64],
-    mean: &[f64],
-    var: &[f64],
+    _weight: &[f64],
+    _mean: &[f64],
+    _var: &[f64],
     batch: usize,
     channels: usize,
     spatial: usize,
-    eps: f64,
+    _eps: f64,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let m = (batch * spatial) as f64;
-    let inv_m = 1.0 / m;
-    let cs = channels * spatial;
-    let rstd: Vec<f64> = (0..channels).map(|c| 1.0 / (var[c] + eps).sqrt()).collect();
-    let mut dweight = vec![0.0f64; channels];
-    if spatial == 1 {
-        dweight.par_iter_mut().enumerate().for_each(|(c, dwc)| {
-            let rstd = rstd[c];
-            let mut sw = 0.0f64;
-            for n in 0..batch {
-                let idx = n * channels + c;
-                sw += (x[idx] - mean[c]) * rstd;
-            }
-            *dwc = upstream * sw;
-        });
-        let dbias = vec![upstream * m; channels];
-        let mut dx = vec![0.0f64; x.len()];
-        dx.par_chunks_mut(channels)
-            .enumerate()
-            .for_each(|(n, dxrow)| {
-                let base = n * channels;
-                for c in 0..channels {
-                    let rstd_c = rstd[c];
-                    let w = weight[c];
-                    let c1 = w * dbias[c];
-                    let c2 = w * dweight[c];
-                    let xhat = (x[base + c] - mean[c]) * rstd_c;
-                    let dxhat = upstream * w;
-                    dxrow[c] = rstd_c * inv_m * (m * dxhat - c1 - xhat * c2);
-                }
-            });
-        return (dx, dweight, dbias);
-    }
-    dweight.par_iter_mut().enumerate().for_each(|(c, dwc)| {
-        let rstd = rstd[c];
-        let mut sw = 0.0f64;
-        for n in 0..batch {
-            let base = n * cs + c * spatial;
-            for s in 0..spatial {
-                sw += (x[base + s] - mean[c]) * rstd;
-            }
-        }
-        *dwc = upstream * sw;
-    });
+    let dx = vec![0.0f64; x.len()];
+    let dweight = vec![0.0f64; channels];
     let dbias = vec![upstream * m; channels];
-    let mut dx = vec![0.0f64; x.len()];
-    dx.par_chunks_mut(spatial)
-        .with_min_len(BATCH_NORM_MIN_PAR_ROWS)
-        .enumerate()
-        .for_each(|(idx, dxrow)| {
-            let c = idx % channels;
-            let base = idx * spatial;
-            let rstd = rstd[c];
-            let w = weight[c];
-            let c1 = w * dbias[c];
-            let c2 = w * dweight[c];
-            let dxhat = upstream * w;
-            for s in 0..spatial {
-                let xhat = (x[base + s] - mean[c]) * rstd;
-                dxrow[s] = rstd * inv_m * (m * dxhat - c1 - xhat * c2);
-            }
-        });
     (dx, dweight, dbias)
 }
 
@@ -38380,7 +38324,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_norm_f64_scalar_backward_matches_unit_dy_bits() {
+    fn batch_norm_f64_scalar_backward_unit_dy_uses_algebraic_zero() {
         for (batch, channels, spatial) in [(5usize, 7usize, 1usize), (3, 4, 15)] {
             let eps = 1e-5f64;
             let x: Vec<f64> = (0..batch * channels * spatial)
@@ -38402,15 +38346,23 @@ mod tests {
             for (got, expected) in got_dx.iter().zip(want_dx.iter()) {
                 assert_eq!(
                     got.to_bits(),
-                    expected.to_bits(),
-                    "dx mismatch for spatial={spatial}"
+                    0.0f64.to_bits(),
+                    "dx zero for spatial={spatial}"
+                );
+                assert!(
+                    (got - expected).abs() <= 2.0e-14,
+                    "dx dense-reference residue too large for spatial={spatial}: {got} vs {expected}"
                 );
             }
             for (got, expected) in got_dw.iter().zip(want_dw.iter()) {
                 assert_eq!(
                     got.to_bits(),
-                    expected.to_bits(),
-                    "dweight mismatch for spatial={spatial}"
+                    0.0f64.to_bits(),
+                    "dweight zero for spatial={spatial}"
+                );
+                assert!(
+                    (got - expected).abs() <= 2.0e-13,
+                    "dweight dense-reference residue too large for spatial={spatial}: {got} vs {expected}"
                 );
             }
             for (got, expected) in got_db.iter().zip(want_db.iter()) {

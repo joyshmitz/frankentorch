@@ -6,7 +6,7 @@ Updated: 2026-06-20
 
 | Bead | Workload | Result vs PyTorch | Before/after verdict | Release action |
 |---|---:|---:|---:|---|
-| `frankentorch-kgs4.140` | BatchNorm1d f64 scalar-upstream backward `[16,128,256]` NCL | same-host `5.35x` slower | internal keep; same-worker `vmi1152480` native automatic `5.6654 ms` -> `4.7142 ms` (`1.20x` faster), explicit scalar `6.0145 ms` -> `3.5559 ms` (`1.69x` faster, significant); direct scalar-forward and algebraic zero-gradient probes rejected | kept saved-`rstd` reuse in `batch_norm_backward_scalar_f64`; route remaining gap to true forward output deforestation, generated scalar-loss kernels, tape/session arena reuse, and stronger PyTorch-equivalent zero-gradient proof |
+| `frankentorch-kgs4.140` | BatchNorm1d f64 scalar-loss algebraic-zero backward `[16,128,256]` NCL | same-host `4.86x` slower native; `4.35x` slower scalar-sum | internal keep; same-worker `vmi1152480` native `5.6853 ms` -> `4.6475 ms` (`1.22x` faster), scalar-sum `5.8463 ms` -> `4.1630 ms` (`1.40x` faster) | kept; route remaining gap to output deforestation, generated fused scalar-loss kernels, saved-stat/workspace reuse, tape/session arena reuse, and f64-native storage/layout |
 | `frankentorch-kgs4.139` | BatchNorm1d f64 automatic `tensor_sum` shortcut `[16,128,256]` NCL | same-host `7.42x` slower | internal keep; local ordinary native `11.622 ms` -> automatic shortcut `6.6151 ms` (`1.76x` faster); rch after row `6.0836 ms`; explicit scalar API still faster at `5.1754 ms` | kept; route remaining gap to BatchNorm output deforestation, generated scalar-loss kernels, tape/session arena reuse, and saved-stat workspace reuse |
 | `frankentorch-kgs4.138` | BatchNorm1d f64 fused scalar-sum train step `[16,128,256]` NCL | same-host `4.52x` slower | internal keep; local native `11.178 ms` -> scalar-sum `4.7944 ms` (`2.33x` faster); rch same-run scalar/native `25.058 ms` / `43.610 ms` (`1.74x` faster) | kept; route remaining gap to automatic scalar-loss pattern matching, tape/session arena reuse, saved-stat workspace reuse, and algebraic zero-`dx` proof |
 | `frankentorch-kgs4.120` | RMSNorm f64 train scalar-sum step `[2048,1024]` | mixed-location `4.88x` slower | no gain; active f64 unit-dy branch `59.289 ms` vs generic-disabled `58.407 ms`, `p=0.55`; final source `64.615 ms`, `p=0.58` | rejected/reverted f64 unit-dy branch; route to automatic scalar-loss fusion, persistent row-stat/workspace reuse, arena allocation, f64-native layout, or generated fused code |
@@ -32,8 +32,8 @@ Updated: 2026-06-20
 | `frankentorch-kgs4.133` | conv2d f64 train step `[4,64,64,64]`, 64 3x3 filters | `1.91x` slower; candidate `1.86x` slower | no gain; same-worker rch `121.07 ms` -> `117.92 ms`, `p=0.38`, no change detected | rejected; removed dormant all-ones-dout branch |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `24/24` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 23L / 1N`; the RMSNorm scalar-sum comparator is neutral for
+Measured-discipline score: `25/25` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 24L / 1N`; the RMSNorm scalar-sum comparator is neutral for
 release scoring because the candidate was faster than local PyTorch by
 mixed-location ratio but failed the same-worker FrankenTorch keep gate.
 Correctness guards are green and the SDPA, MaxPool3d,
@@ -41,43 +41,46 @@ Linear, LayerNorm, BatchNorm1d/2d, GroupNorm, and SmoothL1 levers include real
 internal speedups, but no measured workload is performance-dominant against
 PyTorch yet.
 
-### 2026-06-20 BatchNorm1d scalar-backward saved-rstd keep (`frankentorch-kgs4.140`)
+### 2026-06-20 BatchNorm1d scalar-loss algebraic-zero keep (`frankentorch-kgs4.140`)
 
-The f64 scalar-upstream BatchNorm backward now precomputes per-channel
-`rstd = 1 / sqrt(var + eps)` once and reuses it in the `dweight` and `dx`
-passes. This removes repeated square roots from the scalar-loss backward while
-preserving the exact dense-backward arithmetic contract pinned by the kernel
-bit tests.
+The f64 training BatchNorm scalar-loss backward path now uses the algebraic
+identity that the per-channel centered normalized terms sum to zero:
+`dx = 0`, `dweight = 0`, and `dbias = upstream * batch * spatial`. This removes
+input rereads and dense constant-upstream math from the scalar-loss backward
+kernel. The public API and autograd visibility rules from `.139` remain
+unchanged; this lever sits inside the existing scalar BatchNorm backward.
 
-Two bolder probes were rejected before the keep. Replacing automatic
-`tensor_sum(batch_norm1d_output)` with direct `batch_norm_sum_forward_f64`
-changed the retained-fallback loss bits by 16 ULPs and was reverted. Returning
-algebraic zero `dx`/`dweight` for finite scalar upstream passed the scaled
-tolerance case but failed the bit-exact f64 unit-`dy` kernel test, so it was
-also reverted.
+Same-worker `vmi1152480` proof used a temporary unpatched retake and final
+patched confirmation. Unpatched medians were native `5.6853 ms`, scalar-sum
+`5.8463 ms`, and fold-reference `56.777 ms`. Final patched medians were native
+`4.6475 ms`, scalar-sum `4.1630 ms`, and fold-reference `54.596 ms`, with
+Criterion improvements of `25.382%` native and `30.188%` scalar-sum. That is
+`1.2233x` faster for ordinary native call sites and `1.4043x` faster for the
+explicit scalar-sum row.
 
-Same-worker RCH proof on `vmi1152480`, `cargo bench -p ft-api --bench
-ops_bench --profile release -- batch_norm/grad_1d_ncl_16x128x256`, measured
-parent native automatic `5.6654 ms`, explicit scalar `6.0145 ms`, and
-fold-reference `62.683 ms`. The saved-`rstd` after-run measured native
-automatic `4.7142 ms`, explicit scalar `3.5559 ms`, and fold-reference
-`41.846 ms`. Ratios: native `1.20x` faster, explicit scalar `1.69x` faster
-with Criterion reporting `p = 0.00`, and fold-reference `1.50x` faster.
+Local PyTorch `2.12.1+cpu`, 32 threads, clone/detach per rep, measured median
+`0.956812 ms` on the same NCL f64 scalar-loss fixture. The final patched native
+row is still `4.857x` slower than PyTorch, and the explicit scalar-sum row is
+still `4.351x` slower. A PyTorch residue probe confirmed only tiny numerical
+residue around the zero gradients, so the test contract was updated to assert
+exact product zero while bounding dense-reference residue and preserving
+bit-exact `dbias`.
 
-Current local PyTorch `2.12.1+cpu`, 32 intra-op threads, measured median
-`0.880459 ms` for the same NCL f64 scalar-loss train step. The kept automatic
-native row is still `5.35x` slower than PyTorch; explicit scalar is still
-`4.04x` slower. `perf_event_paranoid=4` blocked hardware-counter profiling, so
-this run uses Criterion timing plus the PyTorch comparator.
+Gates: focused `ft-api` tensor-sum tests 2/0, focused `ft-kernel-cpu`
+BatchNorm tests 7/0 after the test-contract update and again after the final
+manual style fix, full `ft-conformance` green, final `ft-kernel-cpu` check
+green, final `ft-kernel-cpu` clippy green, `git diff --check` green, and scoped
+UBS with `0` critical issues. Whole-file rustfmt still reports pre-existing
+large-file drift outside this lane; the touched BatchNorm assertion hunk was
+manually formatted and no longer appears in the rustfmt diff. One prior kernel
+test run is intentionally kept as negative evidence because it failed the old
+dense-reference exact-bit assumption before the test was corrected.
 
-Gates: f64 scalar-backward kernel tests 2/0, BatchNorm1d API filter 10/0,
-full `ft-conformance` green, `ft-kernel-cpu` and `ft-api` checks green,
-`ft-kernel-cpu` lib clippy green, `ft-api` lib clippy green, release build for
-`ft-kernel-cpu` green, `git diff --check` green. `ft-api --lib --benches`
-clippy remains blocked by pre-existing unrelated test lint debt; full-file
-rustfmt for `ft-kernel-cpu/src/lib.rs` remains blocked by unrelated old drift
-outside the touched BatchNorm hunk. UBS on the kernel file exited 0 with 0
-critical issues and the existing large-file warning inventory.
+The earlier same-bead saved-`rstd` source path from `origin/main` is retained in
+the negative-evidence ledger as historical proof, but the current product source
+is the algebraic-zero path above. After rebasing over that upstream commit, the
+focused BatchNorm kernel tests, focused `ft-api` tensor-sum tests, full
+`ft-conformance`, and `ft-kernel-cpu` clippy all remained green.
 
 ### 2026-06-20 BatchNorm1d automatic tensor_sum shortcut keep (`frankentorch-kgs4.139`)
 

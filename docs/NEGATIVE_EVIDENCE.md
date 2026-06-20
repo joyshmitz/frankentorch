@@ -6,6 +6,11 @@ is explicitly satisfied.
 
 ## 2026-06-20 - frankentorch-kgs4.140 - BatchNorm1d scalar-backward saved-rstd keep with PyTorch loss
 
+- Supersession note: this same-bead saved-`rstd` source path was later
+  superseded by the algebraic-zero scalar-loss backward entry below. The
+  measurement is retained as historical negative/positive evidence from
+  `origin/main`, but the final product source no longer uses this dense
+  scalar-backward body.
 - Lever attempted: precompute per-channel `rstd = 1 / sqrt(var + eps)` once in
   f64 `batch_norm_backward_scalar_f64` and reuse it in both the `dweight`
   reduction and `dx` pass. This is saved-stat reuse inside the scalar-loss
@@ -104,6 +109,117 @@ is explicitly satisfied.
   - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T185743Z/git_diff_check_rstd.log`
   - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T185743Z/ubs_ft_kernel_cpu_rstd.log`
   - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T185743Z/summary.md`
+## 2026-06-20 - frankentorch-kgs4.140 - BatchNorm1d scalar-loss algebraic-zero keep with PyTorch loss
+
+- Lever attempted: specialize f64 training BatchNorm scalar-loss backward for
+  the algebraic identity
+  `sum((x - mean(x)) / sqrt(var(x) + eps) * weight + bias)`. Per-channel
+  centered normalized terms sum to zero, so scalar-loss `dx` and `dweight` are
+  exactly zero under the product contract and `dbias = upstream * batch *
+  spatial`. This removes all input rereads and dense constant-upstream backward
+  math from `batch_norm_backward_scalar_f64`.
+- Workload: f64 BatchNorm1d training forward plus scalar backward,
+  `[N,C,L]=[16,128,256]`, affine weight and bias require gradients, measured
+  through `ops_bench` `batch_norm/grad_1d_ncl_16x128x256`.
+- Source of idea: radical partial evaluation, algebraic annihilation, and
+  trace deforestation from the alien-graveyard / alien-artifact pass, applied
+  below the existing scalar-loss API instead of adding another wrapper.
+- Baseline evidence:
+  - Initial RCH baseline on `hz2`: native `6.4707 ms`, explicit scalar-sum
+    `3.8543 ms`, fold-reference `46.121 ms`.
+  - The first proof-mode after command refused local fallback because no
+    admissible worker was available; this row is recorded as blocked evidence,
+    not a performance result.
+  - Same-worker unpatched retake on `vmi1152480`: native `5.6853 ms`,
+    scalar-sum `5.8463 ms`, fold-reference `56.777 ms`.
+- Candidate evidence:
+  - Patched support run on `vmi1152480`: native `5.3185 ms`, scalar-sum
+    `4.1376 ms`, fold-reference `54.591 ms`. This established that the
+    candidate was plausible but lacked an immediate same-worker unpatched row.
+  - Final same-worker patched confirmation on `vmi1152480`: native `4.6475 ms`
+    with Criterion change `[-34.983% -25.382% -14.510%]`, scalar-sum
+    `4.1630 ms` with change `[-37.349% -30.188% -20.954%]`, and fold-reference
+    `54.596 ms` with change `[-23.434% -13.524% -1.5604%]`.
+  - Same-worker ratios vs the unpatched retake: native `1.2233x` faster,
+    explicit scalar-sum `1.4043x` faster, fold-reference `1.0399x` faster.
+- PyTorch comparator: local PyTorch `2.12.1+cpu`, 32 compute/inter-op threads,
+  same NCL f64 fixture, clone/detach per rep, measured median `0.956812 ms`,
+  mean `1.129408 ms`, min `0.780639 ms`, p95 `2.230037 ms`. Final patched
+  native/PyTorch ratio is `4.857x` slower; final patched scalar-sum/PyTorch
+  ratio is `4.351x` slower.
+- PyTorch residue check: local PyTorch confirms the algebraic zero up to tiny
+  numerical residue. For spatial `1`, max absolute `dx` residue was
+  `9.469693939924459e-17` and max `dweight` residue was
+  `8.579287036987381e-17`; for spatial `3`, max `dx` residue was
+  `3.0141251449398127e-16` and max `dweight` residue was
+  `2.7829414683458537e-15`. `dbias` was `[4,4,4]` and `[12,12,12]` in the
+  checked fixtures.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Verdict: keep. This is a measured same-worker internal win and removes a
+  real scalar-loss backward hot path, but it still loses badly to PyTorch. The
+  next gap is no longer this scalar-backward algebra; it is forward output
+  materialization, saved-stat/workspace reuse, tape/session allocation, and
+  f64 storage/layout overhead.
+- Retry condition: do not retry dense-unit-upstream scalar BatchNorm backward
+  rereads or another BatchNorm sum-loss algebraic-zero proof. The follow-up must
+  move the boundary: output deforestation of `batch_norm(...).sum()`, generated
+  fused training scalar-loss code, saved-stat/workspace reuse across
+  forward/backward, session/tape arena reuse, or f64-native storage layout.
+- Gates:
+  - `rch exec -- cargo test -p ft-api functional_batch_norm1d_tensor_sum --lib --profile release -- --nocapture`:
+    passed, 2 focused tests.
+  - `rch exec -- cargo test -p ft-kernel-cpu batch_norm --lib --profile release -- --nocapture`:
+    first failed the old exact-bit dense-reference scalar test after the
+    algebraic-zero patch; this was the obsolete test contract exposing dense
+    numerical residue, not a product failure.
+  - Updated scalar-backward test now asserts exact product zero for `dx` and
+    `dweight`, bounds dense-reference residue, and keeps `dbias` bit-exact.
+  - `rch exec -- cargo test -p ft-kernel-cpu batch_norm --lib --profile release -- --nocapture`:
+    passed after the test-contract update, 7 focused BatchNorm tests.
+  - `rch exec -- cargo test -p ft-conformance --profile release`: passed,
+    conformance green.
+  - After a manual touched-hunk style fix,
+    `rch exec -- cargo test -p ft-kernel-cpu batch_norm --lib --profile release -- --nocapture`:
+    passed again, 7 focused BatchNorm tests.
+  - After the same final source fix,
+    `rch exec -- cargo check -p ft-kernel-cpu --lib`: passed.
+  - After the same final source fix,
+    `rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings`: passed.
+  - `rustfmt --edition 2024 --check crates/ft-kernel-cpu/src/lib.rs`:
+    still fails on pre-existing whole-file drift in the giant kernel file.
+    The touched BatchNorm assertion hunk was manually formatted and no longer
+    appears in the after-manual-format rustfmt diff.
+  - `git diff --check`: passed.
+  - `ubs` on the scoped source/docs/artifact summary surface: passed with `0`
+    critical issues; it reports the existing broad warning inventory in
+    `crates/ft-kernel-cpu/src/lib.rs`.
+  - Rebase integration on top of `origin/main` kept the algebraic-zero source
+    over the earlier saved-`rstd` body and re-ran:
+    `ft-kernel-cpu` BatchNorm tests 7/0, `ft-api`
+    `functional_batch_norm1d_tensor_sum` tests 2/0, full `ft-conformance`
+    green, and `ft-kernel-cpu` clippy green.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/baseline_ft_api_batchnorm.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/after_ft_api_batchnorm_hz2.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/after_ft_api_batchnorm_hz2_retry.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/baseline_unpatched_after_probe.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/after_confirm_ft_api_batchnorm_vmi1152480.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/pytorch_batch_norm1d_ncl_f64_sum.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/test_ft_api_batchnorm_tensor_sum_final.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/test_ft_kernel_cpu_batch_norm_final.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/test_ft_kernel_cpu_batch_norm_final_after_test_update.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/test_ft_kernel_cpu_batch_norm_final_after_manual_fmt.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/test_ft_conformance_final.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/check_ft_kernel_cpu_lib_after_manual_fmt.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/clippy_ft_kernel_cpu_lib_after_manual_fmt.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/rustfmt_ft_kernel_cpu_check_after_manual_fmt.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/git_diff_check_after_manual_fmt.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/ubs_scoped.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/test_ft_kernel_cpu_batch_norm_after_rebase.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/test_ft_api_batchnorm_tensor_sum_after_rebase.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/test_ft_conformance_after_rebase.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/clippy_ft_kernel_cpu_lib_after_rebase.log`
+  - `artifacts/perf/frankentorch-kgs4.140/gauntlet_20260620T1908Z/summary.md`
 
 ## 2026-06-20 - frankentorch-kgs4.139 - automatic BatchNorm1d tensor_sum shortcut keep with PyTorch loss
 
