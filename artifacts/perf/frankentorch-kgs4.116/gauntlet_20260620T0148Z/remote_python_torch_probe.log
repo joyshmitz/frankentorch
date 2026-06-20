@@ -1,0 +1,8 @@
+  [2m2026-06-20T02:16:33.072408Z[0m [33m WARN[0m [1;33mrch::hook[0m[33m: [33mexec called with non-compilation command: python3 -c 'import torch; print(torch.__version__)'[0m
+    [2;3mat[0m rch/src/hook.rs:749 [2;3mon[0m ThreadId(1)
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import torch; print(torch.__version__)
+    ^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'torch'

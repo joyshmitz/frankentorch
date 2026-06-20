@@ -4,6 +4,48 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-20 - frankentorch-kgs4.116 - LayerNorm unit-dy keep with PyTorch loss
+
+- Lever verified: already-landed f64/f32 `layer_norm_backward` all-ones-`dy`
+  fast path for the realistic scalar `sum(out)` LayerNorm training row. This
+  closeout verifies the code-first change; no source edits were made in this
+  pass.
+- Workload: `ops_bench` `layer_norm/grad_2048x1024`, f64
+  `[rows,hidden]=[2048,1024]`, affine weight and bias require gradients,
+  scalar `sum` loss.
+- Same-worker rch A/B on `hz2`: parent baseline at `2aa78200` median estimate
+  `90.723 ms`; current `29.606 ms`; current/parent latency ratio `0.3263x`,
+  or `3.06x` faster. Supporting f32 composed-vs-fused diagnostic on
+  `[8192,1024]` was `1930.66 ms -> 293.49 ms` (`6.58x`).
+- PyTorch head-to-head: local PyTorch `2.12.1+cpu` in
+  `/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python`; PyTorch median
+  `8.261743 ms`, min `5.949352 ms`; current FrankenTorch Criterion estimate
+  `29.606 ms`; ratio vs PyTorch median `3.58x` slower.
+- Remote PyTorch caveat: rch was used for Rust build/bench proof, but the
+  workers still lack `torch`; PyTorch ratio evidence is local oracle-only.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Verdict: keep the LayerNorm unit-dy path as a measured internal win;
+  classify as a PyTorch-loss row for release readiness. No source revert.
+- Retry condition: do not retry LayerNorm saved-stat rematerialization or
+  another narrow normalization-only `dy == 1` branch for this row unless a
+  fresh profile shows the kernel branch, not session setup, tensor/tape
+  allocation, tensor materialization, or scalar-sum backward, is dominant. Route
+  the remaining gap to arena-backed tensor/tape allocation, fused loss/backward
+  primitives, persistent normalization workspaces, deterministic parallel
+  affine-gradient reductions, f32-native end-to-end rows, or layout/scheduling
+  work that removes whole-array passes.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.116/gauntlet_20260620T0148Z/SCORECARD.md`
+  - `artifacts/perf/frankentorch-kgs4.116/gauntlet_20260620T0148Z/NEGATIVE_EVIDENCE_LEDGER.md`
+  - `artifacts/perf/frankentorch-kgs4.116/gauntlet_20260620T0148Z/current_rch_ops_layer_norm_grad.log`
+  - `artifacts/perf/frankentorch-kgs4.116/gauntlet_20260620T0148Z/baseline_parent_rch_ops_layer_norm_grad.log`
+  - `artifacts/perf/frankentorch-kgs4.116/gauntlet_20260620T0148Z/current_rch_layernorm_f32_ab.log`
+  - `artifacts/perf/frankentorch-kgs4.116/gauntlet_20260620T0148Z/local_pytorch_layer_norm_f64_grad.log`
+  - `artifacts/perf/frankentorch-kgs4.116/gauntlet_20260620T0148Z/remote_python_torch_probe.log`
+  - `artifacts/perf/frankentorch-kgs4.116/gauntlet_20260620T0148Z/test_ft_kernel_cpu_layer_norm_unit_dy.log`
+  - `artifacts/perf/frankentorch-kgs4.116/gauntlet_20260620T0148Z/test_ft_api_functional_layer_norm.log`
+  - `artifacts/perf/frankentorch-kgs4.116/gauntlet_20260620T0148Z/test_ft_conformance_strict_scheduler_retry_hz2.log`
+
 ## 2026-06-20 - frankentorch-kgs4.115 - f32 GroupNorm unit-dy keep with PyTorch loss
 
 - Lever verified: already-landed f32 `group_norm_backward_f32` all-ones-`dy`

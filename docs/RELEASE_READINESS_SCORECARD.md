@@ -6,6 +6,7 @@ Updated: 2026-06-20
 
 | Bead | Workload | Result vs PyTorch | Before/after verdict | Release action |
 |---|---:|---:|---:|---|
+| `frankentorch-kgs4.116` | LayerNorm f64 train step `[2048,1024]` | `3.58x` slower | internal keep; same-worker rch parent `90.723 ms` -> current `29.606 ms`; f32 diagnostic `1930.66 ms` -> `293.49 ms` | kept; route remaining gap to allocation/tape/loss fusion/workspaces/parallel reductions |
 | `frankentorch-kgs4.115` | GroupNorm f32 train step `[8,64,28,28]`, groups `32` | `19.04x` slower | internal keep; same-worker rch parent `19.13 ms` -> current `11.72 ms` | kept; route remaining gap to allocation/tape/fusion/parallel f32 scheduling |
 | `frankentorch-kgs4.113` | SDPA f64 train step `[16,512,64]` | `1.29x` slower | internal keep; same-worker rch `114.40 ms` old post-scale -> `82.730 ms` scaled alpha | kept; route remaining gap to SDPA scheduling/allocation/fusion |
 | `frankentorch-kgs4.112` | avg_pool2d f64 train step `[8,64,64,64]` | `4.54x` slower | existing 2x2s2 fast path verified; direct-assignment candidate `58.600 ms` -> `68.624 ms` rejected | keep gauntlet harness/evidence; product source unchanged |
@@ -18,10 +19,10 @@ Updated: 2026-06-20
 | `frankentorch-kgs4.128` | max_pool3d f64 train step `[2,32,16,32,32]` | `9.38x` slower clean baseline | no gain; borrowed-input median `22.764 ms`, unit-dout median `16.160 ms`, sequential unit-dout median `22.465 ms` | reverted product candidates; keep stage probe |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `11/11` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 11L / 0N`. Correctness guards are green and the SDPA, MaxPool3d,
-Linear, GroupNorm, and SmoothL1 levers include real internal speedups, but no
-measured workload is performance-dominant against PyTorch yet.
+Measured-discipline score: `12/12` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 12L / 0N`. Correctness guards are green and the SDPA, MaxPool3d,
+Linear, LayerNorm, GroupNorm, and SmoothL1 levers include real internal
+speedups, but no measured workload is performance-dominant against PyTorch yet.
 
 ### 2026-06-19 root-cause — the pooling-train-step losses are the generic backward machinery (`frankentorch-96e5d`)
 
@@ -74,10 +75,24 @@ GroupNorm f32 unit-dy (`frankentorch-kgs4.115`): existing code-first f32 all-one
 Gates: ft-kernel-cpu f32 unit-dy guard 1/0, ft-api f32 grad parity 1/0, strict
 scheduler conformance 1/0.
 
+LayerNorm unit-dy (`frankentorch-kgs4.116`): existing code-first f64/f32
+all-ones `dy` fast path is now batch-verified. Same-worker `hz2` parent
+baseline at `2aa78200` `layer_norm/grad_2048x1024` `90.723 ms` -> current
+`29.606 ms` (`3.06x` faster). Supporting f32 composed-vs-fused diagnostic is
+`1930.66 ms` -> `293.49 ms` (`6.58x`). Local PyTorch CPU `2.12.1+cpu` remains
+faster at `8.261743 ms` median for the same f64 shape, so current FT/PyTorch is
+still `3.58x` slower. Gates: ft-kernel-cpu LayerNorm unit-dy guards 2/0, ft-api
+functional LayerNorm 7/0, strict scheduler conformance 1/0 after canceling a
+stale-progress `vmi1264463` run and retrying on `hz2`.
+
 ## Current Gates
 
 | Gate | Scope | Result |
 |---|---|---|
+| Rust A/B | `rch exec -- cargo bench -p ft-api --bench ops_bench -- layer_norm/grad_2048x1024 --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot` | `frankentorch-kgs4.116` current ran on `hz2`: `29.606 ms`; detached parent `2aa78200` on `hz2`: `90.723 ms`; current is `3.06x` faster |
+| Rust diagnostic | `rch exec -- cargo run --release -p ft-api --example layernorm_f32_grad_ab` | `frankentorch-kgs4.116` current ran on `hz2`: composed `1930.66 ms`, fused `293.49 ms`, `6.58x` faster |
+| PyTorch oracle | local CPU torch f64 LayerNorm `[2048,1024]`, affine grads, sum loss | PyTorch `2.12.1+cpu` median `8.261743 ms`, min `5.949352 ms`; current FrankenTorch Criterion estimate `29.606 ms`, ratio `3.58x` slower |
+| Correctness | `rch exec -- cargo test -p ft-kernel-cpu layer_norm_f -- --nocapture`; `rch exec -- cargo test -p ft-api functional_layer_norm -- --nocapture`; `rch exec -- cargo test -p ft-conformance strict_scheduler -- --nocapture` | all passed for `frankentorch-kgs4.116`; conformance retry on `hz2` passed after canceling stale-progress `vmi1264463` run |
 | Rust A/B | `rch exec -- cargo run --release -p ft-api --example group_norm_f32_grad_ab` | `frankentorch-kgs4.115` current ran on `hz1`: composed `101.96 ms`, fused current `11.72 ms`; detached parent `e1927d48` on `hz1`: fused `19.13 ms`; current is `1.63x` faster |
 | PyTorch oracle | local CPU torch f32 GroupNorm best-of-12, `[8,64,28,28]`, groups `32`, affine grads, sum loss | PyTorch `2.12.1+cpu` best `0.615446 ms`, median `0.989997 ms`; current FrankenTorch best `11.72 ms`, ratio `19.04x` slower |
 | Correctness | `rch exec -- cargo test -p ft-kernel-cpu group_norm_f32_unit_dy_matches_general_reference_bits`; `rch exec -- cargo test -p ft-api functional_group_norm_f32_grad_matches_f64_path`; `rch exec -- cargo test -p ft-conformance strict_scheduler` | all passed for `frankentorch-kgs4.115` on rch workers `vmi1153651`, `ovh-a`, and `vmi1152480` |
@@ -168,6 +183,11 @@ alpha, but the remaining PyTorch gap should move to whole-row scheduling,
 cache-blocked softmax/GEMM interaction, f32-native ratio work, arena/tape
 allocation removal, or fused loss/backward primitives rather than another
 post-scale cleanup.
+The `.116` result verifies the LayerNorm unit-dy branch as a real internal win,
+but the remaining `3.58x` PyTorch gap should move beyond constant-gradient
+normalization branches to whole-row allocation/tape/loss fusion, persistent
+normalization workspaces, deterministic parallel affine-gradient reductions,
+and f32-native end-to-end rows.
 The `.112` result verifies the current avg_pool2d 2x2s2 specialization but
 rejects direct assignment scatter writes; the remaining gap should move to
 whole-workload tape/allocation/sum-backward overhead, native f32 layout, or a
