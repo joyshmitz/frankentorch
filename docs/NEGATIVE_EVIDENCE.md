@@ -2095,3 +2095,20 @@ is explicitly satisfied.
   core rch worker becomes routable AND num_bh < cores for the target shape; otherwise the
   SDPA gap needs a faster small-GEMM microkernel or tolerance-policy SIMD exp, not more
   threads.
+
+## 2026-06-20b - frankentorch-kgs4.113 - SHARPENED: rch exec is cgroup-capped to ~10 cores (campaign-wide consequence)
+
+- Follow-up to the 2026-06-20 SDPA refutation. Re-measured the SDPA forward q-block
+  nesting A/B targeting a 64-PHYSICAL-core worker (`RCH_WORKER=vmi1227854`, `nproc`=64).
+- KEY FINDING: inside the rch exec sandbox `std::thread::available_parallelism()` returns
+  **10**, NOT 64 — the rch remote exec runs under a cgroup CPU quota (~10 cores) even on a
+  64-core host. So rayon defaults to ~10 threads. With `num_bh=16 ≥ 10`, the shipped
+  num_bh-way SDPA forward already saturates the available cores; nesting q-blocks is
+  bit-exact and NEUTRAL (threads=8 ratio **1.03x**).
+- ★ CAMPAIGN-WIDE CONSEQUENCE: the gauntlet Criterion benches run via rch, so BOTH arms
+  (FrankenTorch and PyTorch) see ~10 cores. Any perf lever that only adds PARALLELISM to a
+  kernel already parallel to ≥10-way is dead in this environment (cannot beat the ~10-core
+  cap). This explains the recurring "parallelism win evaporates" pattern. The lever classes
+  that DO work in the rch sandbox are TRAFFIC/ALLOCATION reduction (fewer bytes moved, fewer
+  fresh allocations — bandwidth-bound, core-count-independent) — e.g. the shipped lazy
+  Sum/Mean accumulation (96e5d) and forward input-borrow (0w3ns). Probe reverted.
