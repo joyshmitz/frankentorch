@@ -2180,3 +2180,25 @@ is explicitly satisfied.
   rows use), contended box, PyTorch arm noisy — treat as a directional cumulative datapoint,
   not a single-lever attribution. The robust signal is the FT-side absolute drop
   (180-204 ms -> 57 ms), which is allocation-bound and core-count-independent.
+
+## 2026-06-20f - multi-lane cumulative head-to-head: the generic traffic-reduction levers narrowed avg_pool1d/max_pool1d/linear
+
+- Same local env head-to-head (torch 2.12.0+cpu, both arms, 64-core), gauntlet medians,
+  measuring the STACKED effect of the bandwidth/allocation-reduction levers (cbe4t lazy
+  slots, 96e5d lazy Sum/Mean, 0w3ns+mbitj forward input-borrow, kwarf owned-grad move):
+
+  | lane | FT now | PyTorch | ratio now | origin (bead) | FT origin |
+  |---|---:|---:|---:|---:|---:|
+  | avg_pool1d `[8,64,8192]` | ~57-64 ms | ~9-12 ms | ~5-6x | 25.86x (kgs4.122) | ~180-204 ms |
+  | max_pool1d `[8,64,8192]` | ~58 ms | ~16.6 ms | ~3.5x | 12.31x (kgs4.126) | ~184 ms |
+  | linear `[32,512]->2048` | ~9.2 ms | ~6.3 ms | ~1.46x | 2.45x (kgs4.121) | ~22.8 ms |
+
+- The FT-side absolute drops (~2.5-3.2x each: 180->57, 184->58, 22.8->9.2 ms) are the
+  ROBUST signal — these are allocation/bandwidth-bound and core-count-independent, so they
+  hold in the cgroup-capped ~10-core rch sandbox too (cf. 2026-06-20b). linear is now near
+  parity (~1.46x). The PyTorch ratios are noisy (contended box, wide PyTorch arms) — treat
+  as directional. The generic levers (mbitj forward-borrow + kwarf owned-grad move) help
+  EVERY f64 CustomFunction op, so this narrowing generalizes beyond these three lanes.
+- Caveat: local 64-core UNCAPPED env, not the rch ~10-core sandbox of the official gauntlet
+  rows; PyTorch arm variance is large. Directional cumulative evidence, not single-lever
+  attribution.
