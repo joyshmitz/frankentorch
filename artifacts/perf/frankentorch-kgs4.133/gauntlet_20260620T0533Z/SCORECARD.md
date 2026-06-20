@@ -35,6 +35,7 @@ than PyTorch. Product source removes the compile-time-false parked branch.
 - `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings`: passed on `vmi1293453`.
 - `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo clippy -p ft-kernel-cpu --all-targets -- -D warnings`: blocked by pre-existing lint debt in examples/tests and unrelated helper code, not by the removed conv2d branch.
 - `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo test -p ft-kernel-cpu conv2d -- --nocapture`: passed, 5 tests ok and 1 perf-only ignored.
+- `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo test -p ft-conformance`: passed on `vmi1227854`, including 199 lib tests, bin unit tests, integration tests, smoke tests, and doc-tests.
 - `git diff --check`: passed.
 - `rustfmt --edition 2024 --check crates/ft-kernel-cpu/src/lib.rs`: blocked by pre-existing whole-file formatting drift outside this deletion.
 - `ubs crates/ft-kernel-cpu/src/lib.rs docs/NEGATIVE_EVIDENCE.md docs/RELEASE_READINESS_SCORECARD.md artifacts/perf/frankentorch-kgs4.133/gauntlet_20260620T0533Z/SCORECARD.md artifacts/perf/frankentorch-kgs4.133/gauntlet_20260620T0533Z/NEGATIVE_EVIDENCE_LEDGER.md`: 0 critical issues; existing large-file warning inventory remains.
