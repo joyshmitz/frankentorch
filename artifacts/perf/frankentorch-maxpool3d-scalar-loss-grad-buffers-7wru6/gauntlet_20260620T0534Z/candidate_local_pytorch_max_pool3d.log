@@ -1,0 +1,54 @@
+Script started on 2026-06-20 01:41:50-04:00 [COMMAND="cargo bench -p ft-api --bench pytorch_gauntlet_bench -- max_pool3d --noplot" <not executed on terminal>]
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 48.11s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-b/release/deps/pytorch_gauntlet_bench-5f2ebc2fd9ddf042)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_max_pool3d_grad/frankentorch_kgs4_117[2KBenchmarking gauntlet_max_pool3d_grad/frankentorch_kgs4_117: Warming up for 1.0000 s[2KBenchmarking gauntlet_max_pool3d_grad/frankentorch_kgs4_117: Collecting 10 samples in estimated 3.2004 s (385 iterations)[2KBenchmarking gauntlet_max_pool3d_grad/frankentorch_kgs4_117: Analyzing[2K[38;5;2mgauntlet_max_pool3d_grad/frankentorch_kgs4_117[0m
+[38;5;2m[0m                        time:   [[2m8.5092 ms[0m [1m8.6060 ms[0m [2m8.7419 ms[0m]
+                        change: [[2m+19.827%[0m [38;5;1m[1m+22.475%[0m[0m [2m+25.570%[0m] (p = 0.00 < 0.05)
+                        Performance has [38;5;1mregressed[0m.
+Benchmarking gauntlet_max_pool3d_grad/frankentorch_fused_sum_loss[2KBenchmarking gauntlet_max_pool3d_grad/frankentorch_fused_sum_loss: Warming up for 1.0000 s[2KBenchmarking gauntlet_max_pool3d_grad/frankentorch_fused_sum_loss: Collecting 10 samples in estimated 3.2226 s (440 iterations)[2KBenchmarking gauntlet_max_pool3d_grad/frankentorch_fused_sum_loss: Analyzing[2K[38;5;2mgauntlet_max_pool3d_grad/frankentorch_fused_sum_loss[0m
+[38;5;2m[0m                        time:   [[2m6.8664 ms[0m [1m7.0459 ms[0m [2m7.3111 ms[0m]
+                        change: [[2m+17.378%[0m [38;5;1m[1m+25.423%[0m[0m [2m+34.604%[0m] (p = 0.00 < 0.05)
+                        Performance has [38;5;1mregressed[0m.
+Benchmarking gauntlet_max_pool3d_grad/frankentorch_fused_sum_loss_accumulate_only[2KBenchmarking gauntlet_max_pool3d_grad/frankentorch_fused_sum_loss_accumulate_only: Warming up for 1.0000 s[2KBenchmarking gauntlet_max_pool3d_grad/frankentorch_fused_sum_loss_accumulate_only: Collecting 10 samples in estimated 3.1504 s (550 iterations)[2KBenchmarking gauntlet_max_pool3d_grad/frankentorch_fused_sum_loss_accumulate_only: Analyzing[2K[38;5;2mgauntlet_max_pool3d_grad/frankentorch_fused_sum_loss_accumulate_only[0m
+[38;5;2m[0m                        time:   [[2m5.7012 ms[0m [1m5.7846 ms[0m [2m5.8703 ms[0m]
+[38;5;3mFound 1 outliers among 10 measurements (10.00%)[0m
+  1 (10.00%) low mild
+Benchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu[2KBenchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu: Warming up for 1.0000 s
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 22.4s.
+[2KBenchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu: Collecting 10 samples in estimated 22.406 s (10 iterations)[2KBenchmarking gauntlet_max_pool3d_grad/pytorch_2_12_cpu: Analyzing[2K[38;5;2mgauntlet_max_pool3d_grad/pytorch_2_12_cpu[0m
+[38;5;2m[0m                        time:   [[2m1.7966 ms[0m [1m1.9164 ms[0m [2m2.0449 ms[0m]
+                        change: [[2m-40.696%[0m -17.507% [2m+14.412%[0m] (p = 0.42 > 0.05)
+                        No change in performance detected.
+
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor[2KBenchmarking gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor: Warming up for 1.0000 s[2KBenchmarking gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor: Collecting 10 samples in estimated 3.0114 s (8140 iterations)[2KBenchmarking gauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor: Analyzing[2K[38;5;2mgauntlet_max_pool3d_grad_stage/frankentorch_setup_tensor[0m
+[38;5;2m[0m                        time:   [[2m283.64 µs[0m [1m305.75 µs[0m [2m332.63 µs[0m]
+                        change: [[2m+34.119%[0m [38;5;1m[1m+46.429%[0m[0m [2m+59.799%[0m] (p = 0.00 < 0.05)
+                        Performance has [38;5;1mregressed[0m.
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_forward_only[2KBenchmarking gauntlet_max_pool3d_grad_stage/frankentorch_forward_only: Warming up for 1.0000 s[2KBenchmarking gauntlet_max_pool3d_grad_stage/frankentorch_forward_only: Collecting 10 samples in estimated 3.0513 s (605 iterations)[2KBenchmarking gauntlet_max_pool3d_grad_stage/frankentorch_forward_only: Analyzing[2K[38;5;2mgauntlet_max_pool3d_grad_stage/frankentorch_forward_only[0m
+[38;5;2m[0m                        time:   [[2m1.5380 ms[0m [1m1.6760 ms[0m [2m1.7424 ms[0m]
+                        change: [[2m-17.091%[0m +2.2974% [2m+25.450%[0m] (p = 0.83 > 0.05)
+                        No change in performance detected.
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_sum_only[2KBenchmarking gauntlet_max_pool3d_grad_stage/frankentorch_sum_only: Warming up for 1.0000 s[2KBenchmarking gauntlet_max_pool3d_grad_stage/frankentorch_sum_only: Collecting 10 samples in estimated 3.0000 s (550 iterations)[2KBenchmarking gauntlet_max_pool3d_grad_stage/frankentorch_sum_only: Analyzing[2K[38;5;2mgauntlet_max_pool3d_grad_stage/frankentorch_sum_only[0m
+[38;5;2m[0m                        time:   [[2m517.09 µs[0m [1m761.24 µs[0m [2m861.59 µs[0m]
+                        change: [[2m-56.390%[0m -13.342% [2m+66.190%[0m] (p = 0.67 > 0.05)
+                        No change in performance detected.
+Benchmarking gauntlet_max_pool3d_grad_stage/frankentorch_backward_only[2KBenchmarking gauntlet_max_pool3d_grad_stage/frankentorch_backward_only: Warming up for 1.0000 s[2KBenchmarking gauntlet_max_pool3d_grad_stage/frankentorch_backward_only: Collecting 10 samples in estimated 3.0244 s (275 iterations)[2KBenchmarking gauntlet_max_pool3d_grad_stage/frankentorch_backward_only: Analyzing[2K[38;5;2mgauntlet_max_pool3d_grad_stage/frankentorch_backward_only[0m
+[38;5;2m[0m                        time:   [[2m5.6887 ms[0m [1m5.9396 ms[0m [2m6.1288 ms[0m]
+                        change: [[2m-0.2966%[0m +7.9182% [2m+15.382%[0m] (p = 0.07 > 0.05)
+                        No change in performance detected.
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices[2KBenchmarking gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices: Warming up for 1.0000 s[2KBenchmarking gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices: Collecting 10 samples in estimated 3.0233 s (3520 iterations)[2KBenchmarking gauntlet_max_pool3d_grad_stage/kernel_forward_with_indices: Analyzing[2K[38;5;2mgauntlet_max_pool3d_grad_stage/kernel_forward_with_indices[0m
+[38;5;2m[0m                        time:   [[2m838.93 µs[0m [1m847.76 µs[0m [2m863.04 µs[0m]
+                        change: [[2m+8.6326%[0m [38;5;1m[1m+11.695%[0m[0m [2m+14.967%[0m] (p = 0.00 < 0.05)
+                        Performance has [38;5;1mregressed[0m.
+Benchmarking gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices[2KBenchmarking gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices: Warming up for 1.0000 s[2KBenchmarking gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices: Collecting 10 samples in estimated 3.0451 s (1650 iterations)[2KBenchmarking gauntlet_max_pool3d_grad_stage/kernel_backward_from_indices: Analyzing[2K[38;5;2mgauntlet_max_pool3d_grad_stage/kernel_backward_from_indices[0m
+[38;5;2m[0m                        time:   [[2m1.8434 ms[0m [1m1.8612 ms[0m [2m1.8802 ms[0m]
+                        change: [[2m+13.735%[0m [38;5;1m[1m+15.953%[0m[0m [2m+18.431%[0m] (p = 0.00 < 0.05)
+                        Performance has [38;5;1mregressed[0m.
+
+
+Script done on 2026-06-20 01:43:36-04:00 [COMMAND_EXIT_CODE="0"]
