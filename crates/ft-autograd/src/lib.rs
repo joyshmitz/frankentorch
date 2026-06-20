@@ -10406,15 +10406,12 @@ impl TensorTape {
     {
         let fetch = |flat: usize| -> Result<T, AutogradError> {
             let src = src_index_for_output(flat)?;
-            values
-                .get(src)
-                .cloned()
-                .ok_or(AutogradError::DenseTensor(
-                    DenseTensorError::InsufficientStorage {
-                        needed: src + 1,
-                        actual: values.len(),
-                    },
-                ))
+            values.get(src).cloned().ok_or(AutogradError::DenseTensor(
+                DenseTensorError::InsufficientStorage {
+                    needed: src + 1,
+                    actual: values.len(),
+                },
+            ))
         };
         // Output-driven gather (each output index maps to one source index): every
         // output is computed independently, so fanning over rayon is bit-for-bit
@@ -19783,6 +19780,19 @@ impl TensorTape {
             let Some(gradient) = gradient.as_deref() else {
                 continue;
             };
+            // Persist `.grad` ONLY for leaf tensors and those with retain_grad set —
+            // matching PyTorch (non-leaf `.grad` is None) AND the create_graph backward
+            // path (`backward_create_graph`), which already restricts persistence the same
+            // way. The first-order path previously persisted EVERY reachable node, cloning
+            // intermediate gradients into `persistent_grads` that no leaf/optimizer reader
+            // consumes (the returned report's `.gradient(node)` still exposes intermediate
+            // grads). Skipping them removes a per-intermediate numel `to_vec` clone each
+            // backward. frankentorch-pwjrs.
+            let is_leaf = self.nodes[idx].op == TensorNodeOp::Leaf;
+            let has_retain_grad = self.retains_grad.contains(&idx);
+            if !(is_leaf || has_retain_grad) {
+                continue;
+            }
             let node = TensorNodeId(idx);
             match self.persistent_grads.get_mut(&idx) {
                 Some(existing) => {
@@ -21685,7 +21695,12 @@ mod tests {
             .expect("f32 custom op");
         // Output must be an F32 leaf with values x².
         assert_eq!(tape.node(y).unwrap().tensor.meta().dtype(), DType::F32);
-        let yvals = tape.node(y).unwrap().tensor.contiguous_values_f32().unwrap();
+        let yvals = tape
+            .node(y)
+            .unwrap()
+            .tensor
+            .contiguous_values_f32()
+            .unwrap();
         assert_eq!(yvals, &[4.0f32, 9.0, 16.0]);
         // backward of sum(x²): d/dx = 2x = [4,6,8].
         let (s, _) = tape.sum(y, ExecutionMode::Strict).expect("sum");
@@ -21796,7 +21811,11 @@ mod tests {
             let want = generic(&data, &shape, &perm);
             assert_eq!(got.len(), want.len());
             for k in 0..want.len() {
-                assert_eq!(got[k].to_bits(), want[k].to_bits(), "conv perm {perm:?} idx={k}");
+                assert_eq!(
+                    got[k].to_bits(),
+                    want[k].to_bits(),
+                    "conv perm {perm:?} idx={k}"
+                );
             }
         }
     }
@@ -24971,10 +24990,7 @@ mod tests {
                 },
                 |ctx, grad_outputs| {
                     let scale = ctx.saved_tensors()[0][0];
-                    let grad = grad_outputs[0]
-                        .iter()
-                        .map(|grad| grad * scale)
-                        .collect();
+                    let grad = grad_outputs[0].iter().map(|grad| grad * scale).collect();
                     Ok(vec![Some(grad)])
                 },
             )

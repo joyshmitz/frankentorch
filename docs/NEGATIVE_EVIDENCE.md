@@ -2202,3 +2202,26 @@ is explicitly satisfied.
 - Caveat: local 64-core UNCAPPED env, not the rch ~10-core sandbox of the official gauntlet
   rows; PyTorch arm variance is large. Directional cumulative evidence, not single-lever
   attribution.
+
+## 2026-06-20g - frankentorch-pwjrs - WIN (shipped, correctness+consistency+perf): first-order backward persists .grad for leaf+retain_grad only
+
+- The first-order `backward_with_options` path (`accumulate_persistent_gradients`) persisted
+  `.grad` for EVERY reachable requires_grad node, cloning each intermediate node's gradient
+  (`to_vec`) into `persistent_grads`. The create_graph path (`backward_create_graph`) ALREADY
+  restricts persistence to `is_leaf || retain_grad` — so the two backward modes were
+  INCONSISTENT, and the first-order path also diverged from PyTorch (non-leaf `.grad` is None).
+- Fix: gate first-order persistence on `is_leaf || retains_grad` too. The returned report's
+  `.gradient(node)` still exposes intermediate grads (callers wanting them are unaffected);
+  only `persistent_grads` (read by optimizers / `tensor_grad`, which operate on leaves) drops
+  the unused intermediate entries. Removes one numel `to_vec` clone PER intermediate node per
+  backward.
+- Bit-exact + can't-regress (strictly fewer clones; leaf/retain grads identical). Gates GREEN:
+  ft-autograd 476/0, conformance 199/0 + all sub-suites, ft-autograd clippy clean; ft-api 2336
+  passed / 2 failed (the SAME pre-existing `complex_arithmetic_golden` + `batch_norm1d_3d_native_fused`
+  reds on clean origin/main — not introduced here).
+- Perf magnitude SCALES WITH GRAPH DEPTH (one clone saved per intermediate). The shallow
+  avg_pool1d gauntlet graph has a single intermediate (`out`, 2M = 16 MB), so its end-to-end
+  delta (~1 clone) is buried under the ±20% box-contention noise (FT median swung 57-70 ms
+  across runs). Per-clone cost reference: a 4M f64 alloc+copy = ~9.8 ms (kwarf A/B). Deep
+  training graphs (N intermediates) save ~N clones. Shipped primarily as a correctness+
+  consistency fix (matches create_graph path + PyTorch) that is also strictly less work.
