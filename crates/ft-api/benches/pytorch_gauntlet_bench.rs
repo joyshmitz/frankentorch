@@ -5,6 +5,7 @@
 //!   CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b \
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- avg_pool1d
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- avg_pool2d
+//!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- batch_norm2d_f32
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- max_pool1d
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- max_pool3d
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- linear
@@ -28,6 +29,12 @@ const AVG_POOL2D_C: usize = 64;
 const AVG_POOL2D_H: usize = 64;
 const AVG_POOL2D_W: usize = 64;
 const AVG_POOL2D_TOTAL: usize = AVG_POOL2D_N * AVG_POOL2D_C * AVG_POOL2D_H * AVG_POOL2D_W;
+
+const BATCH_NORM2D_N: usize = 32;
+const BATCH_NORM2D_C: usize = 256;
+const BATCH_NORM2D_H: usize = 28;
+const BATCH_NORM2D_W: usize = 28;
+const BATCH_NORM2D_TOTAL: usize = BATCH_NORM2D_N * BATCH_NORM2D_C * BATCH_NORM2D_H * BATCH_NORM2D_W;
 
 const MAX_POOL3D_N: usize = 2;
 const MAX_POOL3D_C: usize = 32;
@@ -70,6 +77,12 @@ fn deterministic_values(n: usize, shift: f64) -> Vec<f64> {
         .collect()
 }
 
+fn deterministic_values_f32(n: usize, shift: f32) -> Vec<f32> {
+    (0..n)
+        .map(|i| (((i as f32) * 0.017 + shift).sin()) * 0.2)
+        .collect()
+}
+
 fn pytorch_python() -> String {
     std::env::var("PYTORCH_PYTHON").unwrap_or_else(|_| "python3".to_string())
 }
@@ -84,6 +97,10 @@ fn pytorch_avg_pool1d_script() -> PathBuf {
 
 fn pytorch_avg_pool2d_script() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benches/pytorch_avg_pool2d_grad.py")
+}
+
+fn pytorch_batch_norm2d_f32_script() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benches/pytorch_batch_norm2d_f32_grad.py")
 }
 
 fn pytorch_max_pool3d_script() -> PathBuf {
@@ -147,6 +164,19 @@ fn run_pytorch_avg_pool2d_grad(iterations: u64) -> Duration {
     };
 
     parse_pytorch_elapsed(output, "PyTorch avg_pool2d")
+}
+
+fn run_pytorch_batch_norm2d_f32_grad(iterations: u64) -> Duration {
+    let output = match Command::new(pytorch_python())
+        .arg(pytorch_batch_norm2d_f32_script())
+        .env("FT_GAUNTLET_ITERS", iterations.to_string())
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => fail(format!("failed to launch PyTorch benchmark: {err:?}")),
+    };
+
+    parse_pytorch_elapsed(output, "PyTorch batch_norm2d f32")
 }
 
 fn run_pytorch_max_pool3d_grad(iterations: u64) -> Duration {
@@ -336,6 +366,86 @@ fn bench_avg_pool2d_unit_dy(c: &mut Criterion) {
 
     group.bench_function("pytorch_2_12_cpu", |b| {
         b.iter_custom(run_pytorch_avg_pool2d_grad);
+    });
+
+    group.finish();
+}
+
+fn bench_batch_norm2d_f32_unit_dy(c: &mut Criterion) {
+    let mut group = c.benchmark_group("gauntlet_batch_norm2d_f32_grad");
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(3));
+    group.sample_size(10);
+
+    let x_values = deterministic_values_f32(BATCH_NORM2D_TOTAL, 0.0);
+    let running_mean = vec![0.0f32; BATCH_NORM2D_C];
+    let running_var = vec![1.0f32; BATCH_NORM2D_C];
+    let weight_values = deterministic_values_f32(BATCH_NORM2D_C, 1.0);
+    let bias_values = deterministic_values_f32(BATCH_NORM2D_C, 2.0);
+    let shape = vec![
+        BATCH_NORM2D_N,
+        BATCH_NORM2D_C,
+        BATCH_NORM2D_H,
+        BATCH_NORM2D_W,
+    ];
+
+    group.bench_function("frankentorch_kgs4_114", |b| {
+        b.iter(|| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = require(
+                session.tensor_variable_f32(black_box(x_values.clone()), shape.clone(), true),
+                "failed to create FrankenTorch BatchNorm input",
+            );
+            let rm = require(
+                session.tensor_variable_f32(running_mean.clone(), vec![BATCH_NORM2D_C], false),
+                "failed to create FrankenTorch BatchNorm running_mean",
+            );
+            let rv = require(
+                session.tensor_variable_f32(running_var.clone(), vec![BATCH_NORM2D_C], false),
+                "failed to create FrankenTorch BatchNorm running_var",
+            );
+            let weight = require(
+                session.tensor_variable_f32(
+                    black_box(weight_values.clone()),
+                    vec![BATCH_NORM2D_C],
+                    true,
+                ),
+                "failed to create FrankenTorch BatchNorm weight",
+            );
+            let bias = require(
+                session.tensor_variable_f32(
+                    black_box(bias_values.clone()),
+                    vec![BATCH_NORM2D_C],
+                    true,
+                ),
+                "failed to create FrankenTorch BatchNorm bias",
+            );
+            let (out, _, _) = require(
+                session.functional_batch_norm2d(
+                    x,
+                    Some(rm),
+                    Some(rv),
+                    Some(weight),
+                    Some(bias),
+                    true,
+                    0.1,
+                    1e-5,
+                ),
+                "failed to run FrankenTorch BatchNorm2d",
+            );
+            let loss = require(
+                session.tensor_sum(out),
+                "failed to reduce FrankenTorch BatchNorm output",
+            );
+            black_box(require(
+                session.tensor_backward(loss),
+                "failed to run FrankenTorch BatchNorm backward",
+            ))
+        });
+    });
+
+    group.bench_function("pytorch_2_12_cpu", |b| {
+        b.iter_custom(run_pytorch_batch_norm2d_f32_grad);
     });
 
     group.finish();
@@ -670,6 +780,7 @@ criterion_group!(
     benches,
     bench_avg_pool1d_unit_dy,
     bench_avg_pool2d_unit_dy,
+    bench_batch_norm2d_f32_unit_dy,
     bench_max_pool1d_unit_dout,
     bench_max_pool3d_saved_indices,
     bench_max_pool3d_stage_probe,

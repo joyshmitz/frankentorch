@@ -10075,60 +10075,6 @@ pub fn batch_norm_backward_f32(
     let m = (batch * spatial) as f32;
     let inv_m = 1.0f32 / m;
     let cs = channels * spatial;
-    if dy.par_iter().all(|&v| v.to_bits() == 1.0f32.to_bits()) {
-        let rstd: Vec<f32> = (0..channels)
-            .map(|c| 1.0f32 / (var[c] + eps).sqrt())
-            .collect();
-        let mut dweight = vec![0.0f32; channels];
-        let dbias = vec![m; channels];
-        dweight.par_iter_mut().enumerate().for_each(|(c, dwc)| {
-            let rstd_c = rstd[c];
-            let mut sw = 0.0f32;
-            for n in 0..batch {
-                let base = n * cs + c * spatial;
-                for s in 0..spatial {
-                    let xhat = (x[base + s] - mean[c]) * rstd_c;
-                    sw += xhat;
-                }
-            }
-            *dwc = sw;
-        });
-        let mut dx = vec![0.0f32; x.len()];
-        if spatial == 1 {
-            dx.par_chunks_mut(channels)
-                .enumerate()
-                .for_each(|(n, dxrow)| {
-                    let base = n * channels;
-                    for c in 0..channels {
-                        let rstd_c = rstd[c];
-                        let w = weight[c];
-                        let c1 = w * dbias[c];
-                        let c2 = w * dweight[c];
-                        let idx = base + c;
-                        let xhat = (x[idx] - mean[c]) * rstd_c;
-                        let dxhat = w;
-                        dxrow[c] = rstd_c * inv_m * (m * dxhat - c1 - xhat * c2);
-                    }
-                });
-        } else {
-            dx.par_chunks_mut(spatial)
-                .enumerate()
-                .for_each(|(idx, dxrow)| {
-                    let c = idx % channels;
-                    let base = idx * spatial;
-                    let rstd_c = rstd[c];
-                    let w = weight[c];
-                    let c1 = w * dbias[c];
-                    let c2 = w * dweight[c];
-                    for s in 0..spatial {
-                        let xhat = (x[base + s] - mean[c]) * rstd_c;
-                        let dxhat = w;
-                        dxrow[s] = rstd_c * inv_m * (m * dxhat - c1 - xhat * c2);
-                    }
-                });
-        }
-        return (dx, dweight, dbias);
-    }
     let mut dweight = vec![0.0f32; channels];
     let mut dbias = vec![0.0f32; channels];
     dweight

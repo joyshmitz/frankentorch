@@ -8,6 +8,7 @@ Updated: 2026-06-20
 |---|---:|---:|---:|---|
 | `frankentorch-kgs4.116` | LayerNorm f64 train step `[2048,1024]` | `3.58x` slower | internal keep; same-worker rch parent `90.723 ms` -> current `29.606 ms`; f32 diagnostic `1930.66 ms` -> `293.49 ms` | kept; route remaining gap to allocation/tape/loss fusion/workspaces/parallel reductions |
 | `frankentorch-kgs4.115` | GroupNorm f32 train step `[8,64,28,28]`, groups `32` | `19.04x` slower | internal keep; same-worker rch parent `19.13 ms` -> current `11.72 ms` | kept; route remaining gap to allocation/tape/fusion/parallel f32 scheduling |
+| `frankentorch-kgs4.114` | BatchNorm2d f32 train step `[32,256,28,28]` | final `28.14x` slower | no gain; same-worker rch `vmi1152480` disabled/final `147.30 ms`, active unit-dy branch `157.93 ms` | rejected/reverted unit-dy branch; keep gauntlet harness |
 | `frankentorch-kgs4.113` | SDPA f64 train step `[16,512,64]` | `1.29x` slower | internal keep; same-worker rch `114.40 ms` old post-scale -> `82.730 ms` scaled alpha | kept; route remaining gap to SDPA scheduling/allocation/fusion |
 | `frankentorch-kgs4.112` | avg_pool2d f64 train step `[8,64,64,64]` | `4.54x` slower | existing 2x2s2 fast path verified; direct-assignment candidate `58.600 ms` -> `68.624 ms` rejected | keep gauntlet harness/evidence; product source unchanged |
 | `frankentorch-kgs4.117` | max_pool3d f64 train step `[2,32,16,32,32]` | `9.73x` slower | internal keep; `20.585 ms` -> `15.794 ms`; remote PyTorch arm unavailable on `hz2` | kept; profile deeper end-to-end gap |
@@ -22,8 +23,8 @@ Updated: 2026-06-20
 | `frankentorch-kgs4.133` | conv2d f64 train step `[4,64,64,64]`, 64 3x3 filters | `1.91x` slower; candidate `1.86x` slower | no gain; same-worker rch `121.07 ms` -> `117.92 ms`, `p=0.38`, no change detected | rejected; removed dormant all-ones-dout branch |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `15/15` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 15L / 0N`. Correctness guards are green and the SDPA, MaxPool3d,
+Measured-discipline score: `16/16` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 16L / 0N`. Correctness guards are green and the SDPA, MaxPool3d,
 Linear, LayerNorm, GroupNorm, and SmoothL1 levers include real internal
 speedups, but no measured workload is performance-dominant against PyTorch yet.
 
@@ -123,6 +124,10 @@ regressed `+15.953%`. The source hook was reverted.
 
 | Gate | Scope | Result |
 |---|---|---|
+| PyTorch gauntlet | `PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b cargo bench -p ft-api --bench pytorch_gauntlet_bench -- batch_norm2d_f32 --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot` | `frankentorch-kgs4.114` active branch local FT `228.85 ms`, PyTorch `6.8744 ms`, `33.29x` slower; disabled/final local FT `238.33 ms`, PyTorch `8.4699 ms`, `28.14x` slower |
+| Remote same-worker A/B | `RCH_WORKER=vmi1152480 RCH_WORKERS=vmi1152480 CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b rch exec -- cargo bench -p ft-api --bench pytorch_gauntlet_bench -- gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114 --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot` | disabled/final `147.30 ms`; active unit-dy branch `157.93 ms`; active/disabled `1.072x` slower, Criterion `[+1.2713% +7.2142% +13.421%]`, `p=0.05`; product branch reverted |
+| Correctness / conformance | `rch exec -- cargo test -p ft-kernel-cpu batch_norm_f32_unit_dy_matches_general_reference_bits -- --nocapture`; `rch exec -- cargo test -p ft-api functional_batch_norm2d_f32_grad_matches_f64_path -- --nocapture`; `rch exec -- cargo test -p ft-conformance` | all passed for `frankentorch-kgs4.114`; full conformance green on `hz2` |
+| Compile / clippy / static | `rch exec -- cargo check -p ft-api --bench pytorch_gauntlet_bench`; `rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings`; `rch exec -- cargo clippy -p ft-api --bench pytorch_gauntlet_bench -- -D warnings`; `rustfmt --edition 2024 --check crates/ft-api/benches/pytorch_gauntlet_bench.rs`; `python3 -m py_compile crates/ft-api/benches/pytorch_batch_norm2d_f32_grad.py`; `git diff --check` | all passed |
 | PyTorch gauntlet | `PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a cargo bench -p ft-api --bench pytorch_gauntlet_bench -- avg_pool1d --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot` | `frankentorch-kgs4.134` local baseline old median `79.285 ms`, PyTorch `6.2886 ms`, ratio `12.61x` slower; candidate same-run old `69.267 ms`, fused `59.050 ms`, PyTorch `7.8192 ms`, fused/PyTorch `7.55x` slower |
 | Remote build/bench | `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo bench -p ft-api --bench pytorch_gauntlet_bench -- avg_pool1d --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot` | rch worker `vmi1152480`: old `134.74 ms`, fused scalar-sum `87.564 ms`, fused/old `0.6500x`; PyTorch arm failed because remote `torch` is unavailable |
 | Correctness | `rch exec -- cargo test -p ft-kernel-cpu avg_pool1d_sum_scalar_backward_matches_materialized_bits -- --nocapture`; `rch exec -- cargo test -p ft-api functional_avg_pool1d_sum_matches_pool_sum_backward_bits -- --nocapture`; `rch exec -- cargo test -p ft-conformance` | all passed for `frankentorch-kgs4.134`; full conformance suite green |
@@ -235,6 +240,10 @@ The `.134` result narrows avg_pool1d with scalar-loss fusion, but the remaining
 `7.55x` PyTorch loss should move to a general fused-loss/backward family,
 persistent gradient/tape allocation, or whole-row `.grad` traffic removal rather
 than another avg_pool1d kernel-only branch.
+The `.114` result rejects f32 BatchNorm all-ones-`dy` as a local branch. Route
+BatchNorm to fused scalar-loss, saved-stat reuse, persistent workspaces,
+stats+backward fusion, arena/tape allocation, or cache-blocked f32 reductions
+with same-worker proof.
 The `.116` result verifies the LayerNorm unit-dy branch as a real internal win,
 but the remaining `3.58x` PyTorch gap should move beyond constant-gradient
 normalization branches to whole-row allocation/tape/loss fusion, persistent

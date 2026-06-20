@@ -1,0 +1,14 @@
+[RCH] local (no admissible workers: critical_pressure=2,insufficient_slots=6,active_project_exclusion=3)
+    Blocking waiting for file lock on package cache
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 40.83s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-b/release/deps/pytorch_gauntlet_bench-5f2ebc2fd9ddf042)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114: Warming up for 1.0000 s
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114: Collecting 10 samples in estimated 4.1479 s (20 iterations)
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114: Analyzing
+gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114
+                        time:   [191.54 ms 198.69 ms 206.07 ms]
+                        change: [+28.593% +34.891% +41.171%] (p = 0.00 < 0.05)
+                        Performance has regressed.
