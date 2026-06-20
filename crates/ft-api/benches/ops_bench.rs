@@ -433,7 +433,8 @@ fn bench_sum(c: &mut Criterion) {
 
 fn bench_amax_amin(c: &mut Criterion) {
     let mut group = c.benchmark_group("amax_amin");
-    for &(rows, cols) in &[(2048usize, 2048usize)] {
+    {
+        let (rows, cols) = (2048usize, 2048usize);
         let shape_name = format!("{rows}x{cols}");
         group.throughput(Throughput::Elements((rows * cols) as u64));
         group.bench_with_input(
@@ -836,6 +837,85 @@ fn bench_batch_norm(c: &mut Criterion) {
                         1e-5,
                     )
                     .unwrap();
+                let loss = s.tensor_sum(out).unwrap();
+                black_box(s.tensor_backward(loss).unwrap())
+            });
+        });
+        // BatchNorm1d native Conv1d layout [N,C,L]. The fold-reference row keeps
+        // the old route visible for frankentorch-kgs4.125: NCL -> NLC -> [N*L,C]
+        // -> BatchNorm1d -> NLC -> NCL.
+        let (ncl_n, ncl_c, ncl_l) = (16usize, 128usize, 256usize);
+        let (xd, rmd, wtd, bd) = {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_randn(vec![ncl_n, ncl_c, ncl_l], false).unwrap();
+            let rm = s.tensor_randn(vec![ncl_c], false).unwrap();
+            let wt = s.tensor_randn(vec![ncl_c], false).unwrap();
+            let bias = s.tensor_randn(vec![ncl_c], false).unwrap();
+            (
+                s.tensor_values(x).unwrap(),
+                s.tensor_values(rm).unwrap(),
+                s.tensor_values(wt).unwrap(),
+                s.tensor_values(bias).unwrap(),
+            )
+        };
+        group.bench_function("grad_1d_ncl_16x128x256_native", |b| {
+            b.iter(|| {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s
+                    .tensor_variable(xd.clone(), vec![ncl_n, ncl_c, ncl_l], true)
+                    .unwrap();
+                let rm = s.tensor_variable(rmd.clone(), vec![ncl_c], false).unwrap();
+                let rv = s
+                    .tensor_variable(vec![1.0; ncl_c], vec![ncl_c], false)
+                    .unwrap();
+                let wt = s.tensor_variable(wtd.clone(), vec![ncl_c], true).unwrap();
+                let bias = s.tensor_variable(bd.clone(), vec![ncl_c], true).unwrap();
+                let (out, _, _) = s
+                    .functional_batch_norm1d(
+                        x,
+                        Some(rm),
+                        Some(rv),
+                        Some(wt),
+                        Some(bias),
+                        true,
+                        0.1,
+                        1e-5,
+                    )
+                    .unwrap();
+                let loss = s.tensor_sum(out).unwrap();
+                black_box(s.tensor_backward(loss).unwrap())
+            });
+        });
+        group.bench_function("grad_1d_ncl_16x128x256_fold_reference", |b| {
+            b.iter(|| {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s
+                    .tensor_variable(xd.clone(), vec![ncl_n, ncl_c, ncl_l], true)
+                    .unwrap();
+                let rm = s.tensor_variable(rmd.clone(), vec![ncl_c], false).unwrap();
+                let rv = s
+                    .tensor_variable(vec![1.0; ncl_c], vec![ncl_c], false)
+                    .unwrap();
+                let wt = s.tensor_variable(wtd.clone(), vec![ncl_c], true).unwrap();
+                let bias = s.tensor_variable(bd.clone(), vec![ncl_c], true).unwrap();
+                let x_nlc = s.tensor_permute(x, vec![0, 2, 1]).unwrap();
+                let folded = s.tensor_reshape(x_nlc, vec![ncl_n * ncl_l, ncl_c]).unwrap();
+                let (folded_out, _, _) = s
+                    .functional_batch_norm1d(
+                        folded,
+                        Some(rm),
+                        Some(rv),
+                        Some(wt),
+                        Some(bias),
+                        true,
+                        0.1,
+                        1e-5,
+                    )
+                    .unwrap();
+                let out_nlc = s
+                    .tensor_reshape(folded_out, vec![ncl_n, ncl_l, ncl_c])
+                    .unwrap();
+                let out = s.tensor_permute(out_nlc, vec![0, 2, 1]).unwrap();
                 let loss = s.tensor_sum(out).unwrap();
                 black_box(s.tensor_backward(loss).unwrap())
             });
@@ -1600,7 +1680,7 @@ fn bench_supcon_loss(c: &mut Criterion) {
                 diag_mask[i * n + i] = -1e30;
                 let mut cc = 0.0;
                 for j in 0..n {
-                    if i != j && labels_i[i] == labels_i[j] {
+                    if i != j && labels_i[i].eq(&labels_i[j]) {
                         pos_mask[i * n + j] = 1.0;
                         cc += 1.0;
                     }
@@ -2037,7 +2117,8 @@ fn bench_unique(c: &mut Criterion) {
     // set is O(n^2) when many values are distinct; the hash-map dedup is O(n).
     // All-distinct input maximizes the unique-set size (worst case).
     let mut group = c.benchmark_group("unique");
-    for &n in &[20_000usize] {
+    {
+        let n = 20_000usize;
         let data: Vec<f64> = (0..n).map(|i| i as f64).collect();
         group.bench_function(format!("all_distinct_{n}"), |bch| {
             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);

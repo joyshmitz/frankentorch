@@ -1,0 +1,31 @@
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 52.50s
+     Running benches/ops_bench.rs (/data/projects/.rch-targets/frankentorch-cod-a/release/deps/ops_bench-8824b9e24f0b8087)
+Gnuplot not found, using plotters backend
+Benchmarking batch_norm/grad_1d_ncl_16x128x256_native
+Benchmarking batch_norm/grad_1d_ncl_16x128x256_native: Warming up for 3.0000 s
+Benchmarking batch_norm/grad_1d_ncl_16x128x256_native: Collecting 100 samples in estimated 5.5762 s (500 iterations)
+Benchmarking batch_norm/grad_1d_ncl_16x128x256_native: Analyzing
+batch_norm/grad_1d_ncl_16x128x256_native
+                        time:   [10.755 ms 10.914 ms 11.075 ms]
+                        change: [+66.471% +74.022% +81.708%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 7 outliers among 100 measurements (7.00%)
+  2 (2.00%) low mild
+  4 (4.00%) high mild
+  1 (1.00%) high severe
+Benchmarking batch_norm/grad_1d_ncl_16x128x256_fold_reference
+Benchmarking batch_norm/grad_1d_ncl_16x128x256_fold_reference: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 5.7s, or reduce sample count to 80.
+Benchmarking batch_norm/grad_1d_ncl_16x128x256_fold_reference: Collecting 100 samples in estimated 5.7432 s (100 iterations)
+Benchmarking batch_norm/grad_1d_ncl_16x128x256_fold_reference: Analyzing
+batch_norm/grad_1d_ncl_16x128x256_fold_reference
+                        time:   [56.829 ms 57.450 ms 58.076 ms]
+                        change: [-9.3774% -4.6228% -0.0927%] (p = 0.06 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) low mild

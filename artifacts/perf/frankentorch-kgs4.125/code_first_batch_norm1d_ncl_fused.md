@@ -1,8 +1,8 @@
 # frankentorch-kgs4.125 - native NCL BatchNorm1d fused path
 
-Agent: IvoryDeer / cod-b
-Date: 2026-06-19
-Status: in_progress, code-first batch-test pending
+Agent: IvoryDeer / cod-a
+Date: 2026-06-19; measured closeout 2026-06-20
+Status: measured keep; still loses to PyTorch
 
 ## Workload Trigger
 
@@ -12,8 +12,8 @@ BatchNorm remains a realistic train-trace hotspot in the current no-gaps profile
 - `batch_norm/grad_1d_8192x1024` remains a first-tier row.
 - Conv1d/sequence models commonly feed BatchNorm1d as native `[N, C, L]`.
 
-This pass does not claim a measured speedup yet; Criterion/conformance batch
-testing is pending by campaign instruction.
+Measured closeout is recorded in
+`artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/SUMMARY.md`.
 
 ## Lever
 
@@ -61,13 +61,14 @@ grad bit-for-bit.
 | BatchNorm2d f64 unit-dy branch | `artifacts/perf/frankentorch-6olvt/closeout_batch_norm2d_unit_dy_keep.md`; modest keep in different spatial workload. | Positive adjacent evidence only; this pass is API/tape layout removal for NCL. |
 | f32 BatchNorm unit-dy | `artifacts/perf/frankentorch-kgs4.114/code_first_f32_batch_norm_unit_dy.md`; code-first pending. | Separate dtype/kernel lever; do not conflate with NCL layout removal. |
 
-If batch Criterion or conformance rejects this patch, do not retry BatchNorm1d
-NCL fold-removal without a focused profile proving permute/reshape/tape nodes
-still dominate native sequence BatchNorm1d.
+The batch Criterion and conformance closeout kept the native NCL route. Do not
+retry BatchNorm1d NCL fold-removal itself. Remaining work should target f64
+scalar-loss fusion, dense all-ones `dy` removal, tape/workspace reuse, saved
+stat reuse, or a PyTorch-parity proof for zero BatchNorm sum-loss input grads.
 
 ## Verification
 
-Required local-only gate:
+Original code-first gate:
 
 ```bash
 CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b cargo check -p ft-api
@@ -75,4 +76,22 @@ CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b cargo check -p f
 
 Result: PASS on 2026-06-19.
 
-Not run by instruction: tests, rch, clippy, fmt, Criterion/conformance batch.
+Measured closeout:
+
+- RCH Criterion on `vmi1227854`: native NCL median `4.3741 ms`,
+  fold-reference median `30.484 ms`; native `6.97x` faster.
+- Local same-host row coarsening: native `11.865 ms -> 10.914 ms`, `1.09x`
+  faster.
+- Local PyTorch CPU median `2.251326 ms`; final FT/PyTorch ratio `4.85x`
+  slower.
+- Focused BatchNorm kernel tests passed.
+- Native NCL vs explicit fold bit guard passed before and after row coarsening.
+- `ft-api --benches` check passed.
+- `ft-kernel-cpu --lib` check and clippy passed.
+- `ft-api --bench ops_bench` clippy passed after fixing two pre-existing
+  single-element loops in the bench file, then passed again after the UBS
+  label-comparison cleanup.
+- Full `ft-conformance` passed via local fallback after RCH had no admissible
+  workers.
+- Scoped UBS rerun reported 0 critical findings; the remaining warning
+  inventory is the existing broad bench/kernel surface.

@@ -7,6 +7,7 @@ Updated: 2026-06-20
 | Bead | Workload | Result vs PyTorch | Before/after verdict | Release action |
 |---|---:|---:|---:|---|
 | `frankentorch-kgs4.137` | RMSNorm f64 scalar-sum train step `[2048,1024]` | mixed-location `0.86x` PyTorch median, not release-counted | no gain; same-worker scalar `12.329 ms` vs materialized same-run `12.086 ms` and baseline `12.229 ms` | rejected/no source landed; route to tape/session allocation, workspace reuse, automatic scalar-loss fusion, or f32-native layout |
+| `frankentorch-kgs4.125` | BatchNorm1d f64 native NCL train step `[16,128,256]` | same-host `4.85x` slower | internal keep; RCH native `4.3741 ms` vs fold `30.484 ms`; local row-coarsening `11.865 ms` -> `10.914 ms` | kept; route remaining gap to f64 scalar-loss fusion, dense-dy removal, tape/workspace reuse, and saved-stat reuse |
 | `frankentorch-kgs4.136` | BatchNorm2d f32 fused scalar-sum train step `[32,256,28,28]` | mixed-location `13.94x` slower | internal keep; rch Criterion `114.23 ms` fused -> `78.166 ms` scalar-sum; direct diagnostic `10.80 ms` fused -> `1.66 ms` scalar-sum | kept; route remaining gap to stats/backward reuse, arena/tape allocation, automatic loss fusion, and f32 storage/layout |
 | `frankentorch-kgs4.135` | GroupNorm f32 fused scalar-sum train step `[8,64,28,28]`, groups `32` | direct A/B `5.58x` slower | internal keep; rch direct path `8.30 ms` fused -> `2.10 ms` scalar-sum; Criterion `17.139 ms` materialized -> `8.9874 ms` scalar-sum | kept; route remaining gap to automatic loss fusion, arena/tape allocation, f32 storage/layout, and scheduler work |
 | `frankentorch-kgs4.116` | LayerNorm f64 train step `[2048,1024]` | `3.58x` slower | internal keep; same-worker rch parent `90.723 ms` -> current `29.606 ms`; f32 diagnostic `1930.66 ms` -> `293.49 ms` | kept; route remaining gap to allocation/tape/loss fusion/workspaces/parallel reductions |
@@ -26,12 +27,12 @@ Updated: 2026-06-20
 | `frankentorch-kgs4.133` | conv2d f64 train step `[4,64,64,64]`, 64 3x3 filters | `1.91x` slower; candidate `1.86x` slower | no gain; same-worker rch `121.07 ms` -> `117.92 ms`, `p=0.38`, no change detected | rejected; removed dormant all-ones-dout branch |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `19/19` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 18L / 1N`; the RMSNorm scalar-sum comparator is neutral for
+Measured-discipline score: `20/20` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 19L / 1N`; the RMSNorm scalar-sum comparator is neutral for
 release scoring because the candidate was faster than local PyTorch by
 mixed-location ratio but failed the same-worker FrankenTorch keep gate.
 Correctness guards are green and the SDPA, MaxPool3d,
-Linear, LayerNorm, BatchNorm2d, GroupNorm, and SmoothL1 levers include real
+Linear, LayerNorm, BatchNorm1d/2d, GroupNorm, and SmoothL1 levers include real
 internal speedups, but no measured workload is performance-dominant against
 PyTorch yet.
 
@@ -177,6 +178,11 @@ regressed `+15.953%`. The source hook was reverted.
 
 | Gate | Scope | Result |
 |---|---|---|
+| PyTorch oracle | local CPU torch f64 BatchNorm1d NCL `[16,128,256]`, affine grads, prebuilt tensors plus clone/detach per rep | PyTorch `2.12.1+cpu`, 32 compute/inter-op threads, median `2.251326 ms`; local FrankenTorch after row coarsening median `10.914 ms`, ratio `4.85x` slower |
+| RCH Criterion | `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo bench -p ft-api --bench ops_bench -- batch_norm/grad_1d_ncl_16x128x256` | pre-coarsening on `vmi1227854`: native median `4.3741 ms`, fold-reference median `30.484 ms`, native `6.97x` faster; after-coarsening supplemental on different worker `hz1`: native `6.2713 ms`, fold `60.234 ms`, native `9.60x` faster |
+| Local same-host A/B | `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a cargo bench -p ft-api --bench ops_bench -- batch_norm/grad_1d_ncl_16x128x256` | native NCL row improved `11.865 ms -> 10.914 ms` (`1.09x` faster); fold row `60.554 ms -> 57.450 ms` |
+| Correctness / conformance | `rch exec -- cargo test -p ft-kernel-cpu batch_norm --lib -- --nocapture`; `rch exec -- cargo test -p ft-api functional_batch_norm1d_3d_native_fused_matches_fold_reference_bits --lib -- --nocapture`; `rch exec -- cargo test -p ft-conformance` | BatchNorm kernel tests 5/0 passed; NCL native-vs-fold bit guard passed before/after; full conformance passed via local fallback after RCH reported no admissible workers |
+| Compile / clippy / formatting / static | `rch exec -- cargo check -p ft-api --benches`; `rch exec -- cargo check -p ft-kernel-cpu --lib`; `rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings`; `rch exec -- cargo clippy -p ft-api --bench ops_bench -- -D warnings`; `rustfmt --edition 2024 --check crates/ft-kernel-cpu/src/lib.rs`; `ubs <scoped files>` | check/clippy/kernel rustfmt passed; `ops_bench` clippy initially found two pre-existing single-element loops, fixed and rerun passed, then passed again after the UBS label-comparison cleanup; scoped UBS rerun reported 0 critical issues with the existing broad warning inventory; whole `ops_bench` rustfmt remains blocked by unrelated existing drift |
 | PyTorch oracle | local CPU torch f32 BatchNorm2d `[32,256,28,28]`, affine grads, prebuilt tensors plus clone/detach per rep | PyTorch 30 iterations `0.168172072968 s`, `5.605736 ms/iter`; rch Criterion scalar-sum FrankenTorch mean `78.166 ms`, ratio `13.94x` slower |
 | Remote direct A/B | `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo run --release -p ft-api --example batch_norm_f32_grad_ab` | `frankentorch-kgs4.136` candidate on `vmi1227854`: composed `109.59 ms`, existing fused `10.80 ms`, scalar-sum `1.66 ms`; scalar/fused `0.1537x`, `6.50x` faster |
 | Criterion | `PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo bench -p ft-api --bench pytorch_gauntlet_bench -- batch_norm2d_f32 --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot` | rch worker `vmi1227854`: existing fused mean `114.23 ms`, scalar-sum mean `78.166 ms`, `1.46x` faster; PyTorch arm failed because remote `torch` is unavailable |

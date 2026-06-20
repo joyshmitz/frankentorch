@@ -5,6 +5,8 @@ use std::fmt;
 use rayon::prelude::*;
 use wide::{f32x8, f64x4};
 
+const BATCH_NORM_MIN_PAR_ROWS: usize = 8;
+
 #[allow(unsafe_code)]
 mod gemm {
     use rayon::prelude::*;
@@ -9891,6 +9893,7 @@ pub fn batch_norm_apply_f64(
             });
     } else {
         out.par_chunks_mut(spatial)
+            .with_min_len(BATCH_NORM_MIN_PAR_ROWS)
             .enumerate()
             .for_each(|(idx, orow)| {
                 let c = idx % channels;
@@ -9968,6 +9971,7 @@ pub fn batch_norm_apply_f32(
     }
     let mut out = vec![0.0f32; x.len()];
     out.par_chunks_mut(spatial)
+        .with_min_len(BATCH_NORM_MIN_PAR_ROWS)
         .enumerate()
         .for_each(|(idx, orow)| {
             let c = idx % channels;
@@ -10060,6 +10064,7 @@ pub fn batch_norm_backward_f64(
         });
         let mut dx = vec![0.0f64; x.len()];
         dx.par_chunks_mut(spatial)
+            .with_min_len(BATCH_NORM_MIN_PAR_ROWS)
             .enumerate()
             .for_each(|(idx, dxrow)| {
                 let c = idx % channels;
@@ -10154,6 +10159,7 @@ pub fn batch_norm_backward_f64(
             });
     } else {
         dx.par_chunks_mut(spatial)
+            .with_min_len(BATCH_NORM_MIN_PAR_ROWS)
             .enumerate()
             .for_each(|(idx, dxrow)| {
                 let c = idx % channels;
@@ -10215,6 +10221,7 @@ pub fn batch_norm_backward_f32(
         });
     let mut dx = vec![0.0f32; x.len()];
     dx.par_chunks_mut(spatial)
+        .with_min_len(BATCH_NORM_MIN_PAR_ROWS)
         .enumerate()
         .for_each(|(idx, dxrow)| {
             let c = idx % channels;
@@ -10269,6 +10276,7 @@ pub fn batch_norm_backward_scalar_f32(
     let dbias = vec![upstream * m; channels];
     let mut dx = vec![0.0f32; x.len()];
     dx.par_chunks_mut(spatial)
+        .with_min_len(BATCH_NORM_MIN_PAR_ROWS)
         .enumerate()
         .for_each(|(idx, dxrow)| {
             let c = idx % channels;

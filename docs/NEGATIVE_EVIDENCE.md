@@ -61,6 +61,86 @@ is explicitly satisfied.
   - `artifacts/perf/frankentorch-kgs4.137/gauntlet_20260620T133307Z/env.txt`
   - `artifacts/perf/frankentorch-kgs4.137/gauntlet_20260620T133307Z/summary.md`
 
+## 2026-06-20 - frankentorch-kgs4.125 - BatchNorm1d NCL native keep with PyTorch loss
+
+- Lever attempted: preserve the code-first native `[N,C,L]` BatchNorm1d fused
+  path and add measured coverage against the explicit historical fold route
+  (`NCL -> NLC -> [N*L,C] -> BatchNorm1d -> NLC -> NCL`). Follow-up kernel lever:
+  coarsen BatchNorm row-parallel Rayon work with `with_min_len(8)` so NCL apply
+  and backward do not schedule one tiny task per `(batch, channel)` row.
+- Workload: f64 BatchNorm1d training forward plus scalar `sum` backward,
+  `[N,C,L]=[16,128,256]`, affine weight and bias require gradients.
+- Source of idea: cache/communication-avoidance pass from the alien-graveyard
+  and profiling skills: remove layout traffic first, then reduce scheduler
+  overhead on independent row work. No numerical shortcut was used; reduction
+  order and per-row writes stay unchanged.
+- Baseline/routing evidence:
+  - RCH Criterion on `vmi1227854`: native median `4.3741 ms`,
+    fold-reference median `30.484 ms`; native/fold latency ratio `0.1435x`, or
+    `6.97x` faster.
+  - Local same-host Criterion before row coarsening: native median `11.865 ms`,
+    fold-reference median `60.554 ms`; native/fold ratio `0.1959x`, or `5.10x`
+    faster.
+  - Local PyTorch CPU oracle, torch `2.12.1+cpu`, 32 compute/inter-op threads,
+    same shape/dtype and clone/detach per rep: median `2.251326 ms`.
+    Pre-coarsening FT/PyTorch ratio was `5.27x` slower.
+- Candidate evidence:
+  - Local same-host Criterion after `BATCH_NORM_MIN_PAR_ROWS = 8`: native median
+    `10.914 ms`, fold-reference median `57.450 ms`; native/fold ratio
+    `0.1900x`, or `5.26x` faster.
+  - Row coarsening improved the local native median `11.865 ms -> 10.914 ms`,
+    a `1.09x` internal speedup. It remains `4.85x` slower than the same-host
+    PyTorch oracle.
+  - Supplemental RCH Criterion after coarsening landed on a different worker
+    (`hz1`): native median `6.2713 ms`, fold-reference median `60.234 ms`;
+    native/fold ratio `0.1041x`, or `9.60x` faster. This is not used as
+    before/after proof because the pre-coarsening RCH run was on `vmi1227854`.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Verdict: keep. Native NCL routing is a large measured internal win over the
+  fold path, and row-task coarsening gives a modest same-host win without
+  changing BatchNorm math or gradient equivalence. It does not dominate PyTorch.
+- Retry condition: do not retry another NCL fold-elimination wrapper for this
+  row. The remaining gap should move deeper into automatic scalar-loss fusion,
+  avoiding the dense all-ones `dy` allocation/read for f64 BatchNorm, persistent
+  tape/tensor workspaces, saved stat reuse across forward/backward, or a
+  PyTorch-parity proof for algebraically zero BatchNorm sum-loss input grads.
+- Gates:
+  - `rch exec -- cargo test -p ft-kernel-cpu batch_norm --lib -- --nocapture`:
+    passed, 5 BatchNorm bit/equivalence tests.
+  - `rch exec -- cargo test -p ft-api functional_batch_norm1d_3d_native_fused_matches_fold_reference_bits --lib -- --nocapture`:
+    passed before and after row coarsening.
+  - `rch exec -- cargo check -p ft-api --benches`: passed.
+  - `rch exec -- cargo check -p ft-kernel-cpu --lib`: passed.
+  - `rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings`: passed.
+  - `rch exec -- cargo clippy -p ft-api --bench ops_bench -- -D warnings`:
+    initially exposed two pre-existing `single_element_loop` findings in
+    `ops_bench`; both were fixed in the bench harness and the rerun passed.
+    After the UBS label-comparison cleanup, the bench clippy gate passed again.
+  - `rch exec -- cargo test -p ft-conformance`: RCH had no admissible workers,
+    so the command fell back local; full conformance passed.
+  - `ubs` on the scoped source/docs/artifact surface: initial run flagged the
+    benchmark label equality as a constant-time comparison false positive; the
+    label check now uses `.eq()`, and the rerun reported `0` critical findings
+    with the existing broad warning inventory preserved.
+  - `rustfmt --edition 2024 --check crates/ft-kernel-cpu/src/lib.rs`: passed.
+  - `rustfmt --edition 2024 --check crates/ft-api/benches/ops_bench.rs` remains
+    blocked by pre-existing unrelated rustfmt drift elsewhere in the bench file.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/criterion_batch_norm1d_ncl.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/local_criterion_batch_norm1d_ncl.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/pytorch_batch_norm1d_ncl_f64.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/criterion_batch_norm1d_ncl_after_min_rows.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/local_criterion_batch_norm1d_ncl_after_min_rows.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/ft_kernel_cpu_batch_norm_after_min_rows.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/ft_api_batch_norm1d_ncl_bits_after_min_rows.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/check_ft_api_benches_after_min_rows.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/check_ft_kernel_cpu_lib_after_min_rows.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/clippy_ft_kernel_cpu_lib_after_min_rows.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/clippy_ft_api_ops_bench_after_single_loop_fix.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/clippy_ft_api_ops_bench_after_ubs_label_fix.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/test_ft_conformance_after_min_rows.log`
+  - `artifacts/perf/frankentorch-kgs4.125/gauntlet_20260620T1336Z/ubs_scoped_after_label_fix.log`
+
 ## 2026-06-20 - frankentorch-kgs4.136 - f32 BatchNorm2d scalar-sum keep with PyTorch loss
 
 - Lever attempted: add an affine f32 `functional_batch_norm2d_sum` scalar-loss
