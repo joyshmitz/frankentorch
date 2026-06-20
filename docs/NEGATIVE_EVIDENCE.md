@@ -4,6 +4,73 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-20 - frankentorch-kgs4.141 - BatchNorm2d f32 scalar-backward algebraic-zero no-gain revert
+
+- Lever attempted: mirror the f64 BatchNorm scalar-loss algebraic-zero backward
+  in `batch_norm_backward_scalar_f32`: return `dx = 0`, `dweight = 0`, and
+  `dbias = upstream * batch * spatial` for training-mode scalar-sum BatchNorm.
+  The idea came from the alien-graveyard/alien-artifact algebraic
+  specialization pass, but was kept to one primitive so it could be reverted
+  cleanly.
+- Workload: f32 BatchNorm2d scalar-sum training step,
+  `[N,C,H,W]=[32,256,28,28]`, affine weight and bias require gradients, measured
+  through `pytorch_gauntlet_bench`
+  `gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum`.
+- RCH evidence:
+  - Baseline on `vmi1227854`: materialized median `118.47 ms`, scalar-sum median
+    `75.361 ms`. The PyTorch arm failed on the remote worker because torch was
+    not installed.
+  - Candidate after-run on `vmi1293453`: materialized median `348.35 ms`,
+    scalar-sum median `181.90 ms`. This is rejected as keep/reject proof because
+    the unchanged materialized row was `2.94x` slower than the baseline worker.
+    It is routing/noise evidence only.
+  - RCH did not expose a stable worker pin through `rch exec`; the attempted
+    `RCH_WORKER`/`RCH_WORKERS` env pin was ignored, and no worker drain/disable
+    was used.
+- Paired local fallback:
+  - The requested local target dir `/data/projects/.rch-targets/frankentorch-cod-a`
+    contained artifacts from a different nightly and failed with `E0514`; no
+    cleanup was performed.
+  - Using fresh target `/data/projects/.rch-targets/frankentorch-cod-a-local-pair`,
+    baseline scalar median was `116.70 ms`; candidate median was `115.48 ms`.
+    Criterion reported `[-3.2139%, -1.0450%, +1.1755%]`, `p = 0.40`, and
+    "No change in performance detected."
+- PyTorch comparator: local PyTorch `2.12.1+cpu`, 32 threads, same fixture,
+  clone/detach per rep, five 40-iteration totals with median `0.298686239053 s`,
+  or `7.467156 ms` per iteration. Candidate scalar-sum was still `15.46x` slower
+  than PyTorch; baseline was `15.63x` slower. Win/loss/neutral vs PyTorch:
+  `0W / 1L / 0N`.
+- Correctness probes:
+  - Candidate f32 kernel scalar tests passed after changing the temporary test
+    contract to exact product zero plus bounded dense-reference residue.
+  - Candidate API scalar BatchNorm2d test first failed under the old materialized
+    residue contract (`dx[0]: scalar 0 vs materialized -1.8479706e-7`), then
+    passed after the same temporary contract update.
+  - Product source and temporary test-contract edits were reverted after the
+    neutral performance result.
+  - Reverted-tree `rch exec -- cargo test -p ft-conformance --profile release`
+    passed.
+- Verdict: rejected/reverted. Do not retry the f32 algebraic-zero scalar-backward
+  body by itself. It removes input rereads inside the scalar backward primitive,
+  but end-to-end scalar-sum time is dominated elsewhere.
+- Retry condition: only revisit if paired with a deeper representation or
+  pipeline change that removes the large zero `dx` allocation/fill, deforests the
+  BatchNorm output, reuses saved stats/workspaces across forward and backward,
+  introduces session/tape arena allocation, or generates a fused scalar-loss
+  kernel with a measurable paired speedup.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/baseline_pytorch_gauntlet_batch_norm2d_f32.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/after_pytorch_gauntlet_batch_norm2d_f32.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/local_baseline_scalar_sum.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/local_baseline_scalar_sum_local_pair_target.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/local_after_scalar_sum_local_pair_target.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/baseline_local_pytorch_batch_norm2d_f32_40iters.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/test_ft_kernel_cpu_batch_norm_f32_scalar.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/test_ft_api_functional_batch_norm2d_f32_sum.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/test_ft_api_functional_batch_norm2d_f32_sum_after_contract.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/test_ft_conformance_reverted.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/summary.md`
+
 ## 2026-06-20 - frankentorch-kgs4.140 - BatchNorm1d scalar-backward saved-rstd keep with PyTorch loss
 
 - Supersession note: this same-bead saved-`rstd` source path was later

@@ -6,6 +6,7 @@ Updated: 2026-06-20
 
 | Bead | Workload | Result vs PyTorch | Before/after verdict | Release action |
 |---|---:|---:|---:|---|
+| `frankentorch-kgs4.141` | BatchNorm2d f32 scalar-loss algebraic-zero backward `[32,256,28,28]` NCHW | same-host candidate `15.46x` slower | no gain; paired local scalar-sum `116.70 ms` -> `115.48 ms`, `p=0.40`, no change detected; RCH after-run rejected as cross-worker noise because unchanged materialized row drifted `2.94x` slower | rejected/reverted; route remaining gap to output deforestation, zero-gradient representation without large `dx` allocation/fill, saved-stat/workspace reuse, generated scalar-loss kernels, and tape/session arena allocation |
 | `frankentorch-kgs4.140` | BatchNorm1d f64 scalar-loss algebraic-zero backward `[16,128,256]` NCL | same-host `4.86x` slower native; `4.35x` slower scalar-sum | internal keep; same-worker `vmi1152480` native `5.6853 ms` -> `4.6475 ms` (`1.22x` faster), scalar-sum `5.8463 ms` -> `4.1630 ms` (`1.40x` faster) | kept; route remaining gap to output deforestation, generated fused scalar-loss kernels, saved-stat/workspace reuse, tape/session arena reuse, and f64-native storage/layout |
 | `frankentorch-kgs4.139` | BatchNorm1d f64 automatic `tensor_sum` shortcut `[16,128,256]` NCL | same-host `7.42x` slower | internal keep; local ordinary native `11.622 ms` -> automatic shortcut `6.6151 ms` (`1.76x` faster); rch after row `6.0836 ms`; explicit scalar API still faster at `5.1754 ms` | kept; route remaining gap to BatchNorm output deforestation, generated scalar-loss kernels, tape/session arena reuse, and saved-stat workspace reuse |
 | `frankentorch-kgs4.138` | BatchNorm1d f64 fused scalar-sum train step `[16,128,256]` NCL | same-host `4.52x` slower | internal keep; local native `11.178 ms` -> scalar-sum `4.7944 ms` (`2.33x` faster); rch same-run scalar/native `25.058 ms` / `43.610 ms` (`1.74x` faster) | kept; route remaining gap to automatic scalar-loss pattern matching, tape/session arena reuse, saved-stat workspace reuse, and algebraic zero-`dx` proof |
@@ -32,14 +33,37 @@ Updated: 2026-06-20
 | `frankentorch-kgs4.133` | conv2d f64 train step `[4,64,64,64]`, 64 3x3 filters | `1.91x` slower; candidate `1.86x` slower | no gain; same-worker rch `121.07 ms` -> `117.92 ms`, `p=0.38`, no change detected | rejected; removed dormant all-ones-dout branch |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `25/25` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 24L / 1N`; the RMSNorm scalar-sum comparator is neutral for
+Measured-discipline score: `26/26` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 25L / 1N`; the RMSNorm scalar-sum comparator is neutral for
 release scoring because the candidate was faster than local PyTorch by
 mixed-location ratio but failed the same-worker FrankenTorch keep gate.
 Correctness guards are green and the SDPA, MaxPool3d,
 Linear, LayerNorm, BatchNorm1d/2d, GroupNorm, and SmoothL1 levers include real
 internal speedups, but no measured workload is performance-dominant against
 PyTorch yet.
+
+### 2026-06-20 BatchNorm2d f32 scalar-loss algebraic-zero reject (`frankentorch-kgs4.141`)
+
+The f32 BatchNorm2d scalar-loss backward candidate mirrored the f64 algebraic
+identity from `.140`: scalar-sum training BatchNorm has product gradients
+`dx = 0`, `dweight = 0`, and `dbias = upstream * batch * spatial`. The temporary
+kernel and API contract probes passed after bounding the old dense-reference
+residue, but the end-to-end scalar-sum workload did not move enough to keep.
+
+RCH baseline on `vmi1227854` measured materialized `118.47 ms` and scalar-sum
+`75.361 ms`; the remote PyTorch arm failed because the worker lacked torch. RCH
+after-run landed on `vmi1293453`, where the unchanged materialized row measured
+`348.35 ms`, so that run was rejected as cross-worker noise rather than used as
+keep/reject proof.
+
+The paired local fallback used a fresh target dir because the requested local
+cod-a target contained artifacts from a different nightly and failed with
+`E0514`; no cleanup was performed. On the paired target, scalar-sum baseline was
+`116.70 ms` and candidate was `115.48 ms`, with Criterion reporting
+`p = 0.40` and "No change in performance detected." Local PyTorch `2.12.1+cpu`
+median was `7.467156 ms` per iteration, leaving the candidate `15.46x` slower.
+The product source and temporary test-contract edits were reverted, and
+`ft-conformance` passed on the reverted tree.
 
 ### 2026-06-20 BatchNorm1d scalar-loss algebraic-zero keep (`frankentorch-kgs4.140`)
 

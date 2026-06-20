@@ -1,0 +1,82 @@
+   Compiling num-traits v0.2.19
+   Compiling matrixmultiply v0.3.10
+   Compiling serde_derive v1.0.228
+   Compiling rayon v1.12.0
+   Compiling ciborium-ll v0.2.2
+error[E0514]: found crate `autocfg` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-traits-0.2.19/build.rs:2:14
+  |
+2 |     let ac = autocfg::new();
+  |              ^^^^^^^
+  |
+  = note: the following crate versions were found:
+          crate `autocfg` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libautocfg-ca6717da2c4ccec4.rlib
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `autocfg` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/matrixmultiply-0.3.10/build.rs:4:15
+  |
+4 |         match autocfg::AutoCfg::new() {
+  |               ^^^^^^^
+  |
+  = note: the following crate versions were found:
+          crate `autocfg` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libautocfg-ca6717da2c4ccec4.rlib
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+For more information about this error, try `rustc --explain E0514`.
+error: could not compile `num-traits` (build script) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error[E0514]: found crate `half` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ciborium-ll-0.2.2/src/hdr.rs:3:5
+  |
+3 | use half::f16;
+  |     ^^^^
+  |
+  = note: the following crate versions were found:
+          crate `half` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libhalf-819f0d2684d6c03b.rmeta
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error: could not compile `matrixmultiply` (build script) due to 1 previous error
+error: could not compile `ciborium-ll` (lib) due to 1 previous error
+error[E0514]: found crate `proc_macro2` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_derive-1.0.228/src/lib.rs:69:1
+   |
+69 | extern crate proc_macro2;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `proc_macro2` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libproc_macro2-d78a6099ad7849a5.rlib
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `quote` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_derive-1.0.228/src/lib.rs:70:1
+   |
+70 | extern crate quote;
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `quote` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libquote-81727658b6b9ade4.rlib
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `syn` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_derive-1.0.228/src/lib.rs:71:1
+   |
+71 | extern crate syn;
+   | ^^^^^^^^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `syn` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libsyn-7ade72d33765ffb1.rlib
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error: could not compile `serde_derive` (lib) due to 3 previous errors
+error[E0514]: found crate `rayon_core` compiled by an incompatible version of rustc
+   --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rayon-1.12.0/src/lib.rs:112:9
+    |
+112 | pub use rayon_core::FnContext;
+    |         ^^^^^^^^^^
+    |
+    = note: the following crate versions were found:
+            crate `rayon_core` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/librayon_core-ba7909d621a91bf2.rmeta
+    = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error: could not compile `rayon` (lib) due to 1 previous error

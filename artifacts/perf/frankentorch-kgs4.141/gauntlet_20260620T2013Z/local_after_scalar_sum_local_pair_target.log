@@ -1,0 +1,12 @@
+    Finished `release` profile [optimized] target(s) in 0.10s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-a-local-pair/release/deps/pytorch_gauntlet_bench-b4412409c2006ba3)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum: Warming up for 1.0000 s
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum: Collecting 10 samples in estimated 3.5400 s (30 iterations)
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum: Analyzing
+gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum
+                        time:   [113.67 ms 115.48 ms 117.35 ms]
+                        change: [-3.2139% -1.0450% +1.1755%] (p = 0.40 > 0.05)
+                        No change in performance detected.
+
