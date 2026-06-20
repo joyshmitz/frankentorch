@@ -71,6 +71,74 @@ is explicitly satisfied.
   - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/test_ft_conformance_reverted.log`
   - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2013Z/summary.md`
 
+## 2026-06-20 - frankentorch-kgs4.142 - avg_pool1d automatic tensor_sum shortcut no-ship
+
+- Lever attempted: register f64 `functional_avg_pool1d` outputs and make
+  ordinary `functional_avg_pool1d(...).tensor_sum()` use the existing
+  scalar-loss backward when output `retain_grad` or hooks do not make the
+  materialized output gradient observable. This was an automatic-loss-fusion
+  probe layered on top of the already-shipped `functional_avg_pool1d_sum` path:
+  no kernel rewrite and no public API change.
+- Workload: `pytorch_gauntlet_bench` `avg_pool1d`, f64 `[N,C,L]=[8,64,8192]`,
+  kernel `2`, stride `2`, scalar sum loss, backward.
+- Source of idea: alien-graveyard trace deforestation / partial evaluation
+  and the running gauntlet's largest measured PyTorch loss. The intent was to
+  collapse the ordinary gauntlet row toward the explicit scalar-sum row without
+  retrying rejected avg_pool1d kernel microlevers.
+- Candidate behavior: focused `ft-api` release tests passed for both
+  `retain_grad` fallback and output-hook fallback. The source was then reverted
+  because the same-worker benchmark did not clear the keep gate.
+- Same-worker evidence (`vmi1153651`):
+  - Baseline ordinary `frankentorch_kgs4_122`: `[838.76 ms, 1.6792 s,
+    2.7456 s]`.
+  - Baseline explicit scalar-sum `frankentorch_kgs4_134_fused_sum_loss`:
+    `[475.20 ms, 810.56 ms, 1.1951 s]`.
+  - Candidate ordinary row: `[740.66 ms, 1.2016 s, 1.6638 s]`,
+    Criterion change `[-64.514% -28.439% +51.774%]`, `p=0.44`, no change
+    detected.
+  - Candidate explicit scalar-sum row: `[316.69 ms, 650.33 ms, 1.0545 s]`,
+    Criterion change `[-65.855% -19.768% +67.749%]`, `p=0.57`, no change
+    detected. The control row also moved, so the ordinary-row median decrease
+    is not credible keep evidence.
+- PyTorch comparator: local PyTorch `2.12.1+cpu`, 32 compute/inter-op threads,
+  five runs of 10 iterations through the existing gauntlet script measured
+  totals `0.106835459010`, `0.112220346928`, `0.124119681073`,
+  `0.135108170914`, and `0.114930268959` seconds. Median is
+  `11.493027 ms` per iteration. Remote workers still lack `torch`, so the rch
+  PyTorch arm failed with `ModuleNotFoundError: No module named 'torch'`.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`. Mixed-location ratios using the
+  local PyTorch median: baseline ordinary `146.11x` slower, baseline explicit
+  scalar-sum `70.53x` slower, candidate ordinary `104.55x` slower, candidate
+  explicit scalar-sum `56.58x` slower.
+- Verdict: reject/revert. The shortcut is behavior-preserving, but it did not
+  produce statistically significant same-worker speedup and still loses badly
+  to PyTorch.
+- Retry condition: do not retry metadata-only `tensor_sum` auto-fusion for
+  avg_pool1d. The next avg_pool1d attempt must move the boundary earlier:
+  avoid materializing the pooled forward tensor itself, attack the generic
+  autograd/tape allocation path with measured allocator evidence, or use a
+  longer process-clean benchmark that isolates this lane from rch worker noise.
+- Gates and evidence:
+  - `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b rch exec -- cargo test -p ft-api functional_avg_pool1d_tensor_sum --lib --profile release -- --nocapture`:
+    passed for the candidate before revert, 2/0.
+  - `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b rch exec -- cargo test -p ft-conformance strict_scheduler --profile release -- --nocapture`:
+    passed after revert, 1/0 focused conformance.
+  - `git diff --check`: passed.
+  - `ubs docs/NEGATIVE_EVIDENCE.md docs/RELEASE_READINESS_SCORECARD.md artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2015Z/summary.md`:
+    exit 0; no recognizable source language in the Markdown/artifact scan.
+  - Product source after the verdict has no `crates/ft-api/src/lib.rs` diff.
+  - Raw logs remain under `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2015Z/`
+    because this cod-b lane was originally claimed as `.141` before rebase
+    exposed the upstream BatchNorm `.141` collision.
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2015Z/baseline_rch_pytorch_gauntlet_avg_pool1d.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2015Z/after_rch_pytorch_gauntlet_avg_pool1d.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2015Z/baseline_local_pytorch_avg_pool1d_5x10.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2015Z/test_ft_api_avg_pool1d_auto_shortcut.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2015Z/test_ft_conformance_strict_scheduler.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2015Z/git_diff_check.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2015Z/ubs_docs_artifact.log`
+  - `artifacts/perf/frankentorch-kgs4.141/gauntlet_20260620T2015Z/summary.md`
+
 ## 2026-06-20 - frankentorch-kgs4.140 - BatchNorm1d scalar-backward saved-rstd keep with PyTorch loss
 
 - Supersession note: this same-bead saved-`rstd` source path was later

@@ -25,6 +25,7 @@ Updated: 2026-06-20
 | `frankentorch-kgs4.121` | linear f64 train step `[32,512] -> 2048` | `2.45x` slower | API-local internal keep; `29.606 ms` -> `22.775 ms`; kernel move `26.459 ms` rejected | kept API helper; reverted kernel move |
 | `frankentorch-kgs4.122` | avg_pool1d f64 train step `[8,64,8192]` | `25.86x` slower; final rerun `24.92x` slower | no gain; candidate median `204.02 ms` vs fast-path-disabled `179.91 ms` | reverted |
 | `frankentorch-kgs4.134` | avg_pool1d f64 fused scalar-sum train step `[8,64,8192]` | `7.55x` slower | internal keep; local same-run old `69.267 ms` -> fused `59.050 ms`; rch same-run old `134.74 ms` -> fused `87.564 ms` | kept; route remaining gap to allocation/tape/loss fusion beyond avg_pool1d kernel microlevers |
+| `frankentorch-kgs4.142` | avg_pool1d f64 automatic `tensor_sum` shortcut `[8,64,8192]` | mixed-location `104.55x` slower candidate ordinary; `56.58x` slower explicit scalar-sum | no significant gain; same-worker `vmi1153651` ordinary `1.6792 s` -> `1.2016 s`, `p=0.44`; explicit scalar-sum control `810.56 ms` -> `650.33 ms`, `p=0.57` | rejected/reverted; do not retry metadata-only avg_pool1d sum auto-fusion without true forward deforestation or allocator/tape evidence |
 | `frankentorch-kgs4.124` | SmoothL1 f64 mean-loss backward, 8M elems | `1.99x` slower | internal keep; `963.16 ms` -> `757.63 ms` on `hz2` | kept; follow-up `frankentorch-kgs4.127` |
 | `frankentorch-kgs4.126` | max_pool1d f64 train step `[8,64,8192]` | `12.31x` slower | no gain; candidate median `184.41 ms` vs parent `178.47 ms` | reverted |
 | `frankentorch-kgs4.127` | SmoothL1 f64 one-sided input grad, 8M elems | `1.79x` slower | internal keep; same-host local `746.26 ms` -> `647.44 ms` | kept; route remaining gap to tape/allocation/SIMD |
@@ -33,8 +34,8 @@ Updated: 2026-06-20
 | `frankentorch-kgs4.133` | conv2d f64 train step `[4,64,64,64]`, 64 3x3 filters | `1.91x` slower; candidate `1.86x` slower | no gain; same-worker rch `121.07 ms` -> `117.92 ms`, `p=0.38`, no change detected | rejected; removed dormant all-ones-dout branch |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `26/26` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 25L / 1N`; the RMSNorm scalar-sum comparator is neutral for
+Measured-discipline score: `27/27` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 26L / 1N`; the RMSNorm scalar-sum comparator is neutral for
 release scoring because the candidate was faster than local PyTorch by
 mixed-location ratio but failed the same-worker FrankenTorch keep gate.
 Correctness guards are green and the SDPA, MaxPool3d,
@@ -275,6 +276,17 @@ Rust-only gauntlet moved `134.74 ms` -> `87.564 ms` (`1.54x` faster); remote
 PyTorch is still unavailable because workers lack `torch`. Gates: ft-kernel-cpu
 avg_pool1d sum 1/0, ft-api avg_pool1d sum 1/0 plus integration filters,
 ft-conformance full suite green, ft-kernel-cpu/ft-api clippy clean.
+
+Automatic avg_pool1d `tensor_sum` scalar shortcut (`frankentorch-kgs4.142`):
+the metadata-only auto-fusion candidate compiled and passed focused retain-grad
+and output-hook fallback tests, but it did not clear the same-worker keep gate.
+On `vmi1153651`, ordinary median moved `1.6792 s -> 1.2016 s` with
+`p=0.44`, while the explicit scalar-sum control moved `810.56 ms -> 650.33 ms`
+with `p=0.57`; Criterion reported no change for both. Local PyTorch median was
+`11.493027 ms`, so the mixed-location candidate ordinary row was still
+`104.55x` slower. Source was reverted; the next avg_pool1d attempt must avoid
+materializing the pooled forward tensor itself or attack tape/allocation with
+cleaner evidence.
 
 Conv3d sum-loss backward (`frankentorch-kgs4.118`): existing code-first f64 all-ones
 `dout` fast path is now batch-verified. Same-worker `ovh-a` parent baseline
