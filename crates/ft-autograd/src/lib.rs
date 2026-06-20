@@ -14398,10 +14398,13 @@ impl TensorTape {
                     for (i, maybe_grad) in input_grads.into_iter().enumerate() {
                         let input_id = inputs_snapshot[i];
                         if let Some(grad) = maybe_grad {
-                            Self::accumulate_tensor_gradient(
+                            // The closure handed us an owned, cache-hot gradient Vec;
+                            // move it into the (lazy) slot on first contribution rather
+                            // than allocating a fresh buffer and copying. Bit-identical.
+                            Self::accumulate_tensor_gradient_owned(
                                 input_id,
                                 &mut grads[input_id.0],
-                                &grad,
+                                grad,
                             )?;
                         }
                         Self::complete_dependency(&mut pending, input_id, &mut queue)?;
@@ -19508,6 +19511,39 @@ impl TensorTape {
             for &value in contribution {
                 target.values.push(0.0 + value);
             }
+            return Ok(());
+        }
+        Self::ensure_tensor_len(node, target.values.len(), contribution.len())?;
+        for (target_value, value) in target.values.iter_mut().zip(contribution.iter()) {
+            *target_value += value;
+        }
+        Ok(())
+    }
+
+    /// Like [`Self::accumulate_tensor_gradient`] but takes an OWNED contribution
+    /// buffer. On the FIRST contribution to a (lazy, empty) gradient slot — the
+    /// common case for a leaf or single-use intermediate input — the owned buffer is
+    /// moved into the slot in place (no fresh allocation, no second-buffer copy)
+    /// instead of `reserve + push(0.0 + value)`. The `*v = 0.0 + *v` normalization is
+    /// applied in place so the result is BIT-IDENTICAL to the borrowed path (it only
+    /// canonicalizes `-0.0 -> +0.0`, matching the prior `0.0 + value`). Used by the
+    /// CustomFunction backward arm, whose closures return freshly-allocated, cache-hot
+    /// per-input gradient Vecs — eliminating one numel allocation + one numel copy per
+    /// backward op (bandwidth-bound win, core-count-independent). frankentorch-kwarf.
+    fn accumulate_tensor_gradient_owned(
+        node: TensorNodeId,
+        target: &mut TensorGradientSlot,
+        mut contribution: Vec<f64>,
+    ) -> Result<(), AutogradError> {
+        Self::ensure_tensor_len(node, target.expected_len, contribution.len())?;
+        if target.values.is_empty() {
+            // Canonicalize -0.0 -> +0.0 in place to match the borrowed path's
+            // `0.0 + value` bit-for-bit (`x += 0.0` == `0.0 + x` by IEEE add
+            // commutativity), then move the buffer in with no fresh allocation.
+            for value in contribution.iter_mut() {
+                *value += 0.0;
+            }
+            target.values = contribution;
             return Ok(());
         }
         Self::ensure_tensor_len(node, target.values.len(), contribution.len())?;

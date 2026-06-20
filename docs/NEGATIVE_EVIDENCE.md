@@ -2112,3 +2112,24 @@ is explicitly satisfied.
   that DO work in the rch sandbox are TRAFFIC/ALLOCATION reduction (fewer bytes moved, fewer
   fresh allocations — bandwidth-bound, core-count-independent) — e.g. the shipped lazy
   Sum/Mean accumulation (96e5d) and forward input-borrow (0w3ns). Probe reverted.
+
+## 2026-06-20c - frankentorch-kwarf - WIN (shipped): move owned CustomFunction grad into the lazy slot (no alloc+copy)
+
+- After cbe4t made gradient slots lazy (empty until first contribution), the FIRST
+  contribution path in `accumulate_tensor_gradient` does `reserve(numel) + push(0.0+v)`
+  — a fresh allocation plus a copy of the contribution. The CustomFunction backward arm
+  (avg_pool / max_pool / conv / norms / every elementwise `apply_function` op) hands the
+  engine an OWNED, cache-hot `din` Vec straight from the kernel, then accumulates it by
+  REFERENCE → fresh alloc + copy + drop din.
+- Lever: `accumulate_tensor_gradient_owned` MOVES the owned buffer into the slot on first
+  contribution (normalize `-0.0 -> +0.0` in place via `*v += 0.0`, bit-identical to the
+  borrowed `0.0 + v` by IEEE add commutativity) — no fresh allocation, no second-buffer
+  copy. Only the CustomFunction arm changed (it is the one arm with an owned contribution).
+- MEASURED same-process A/B (isolating the removed work; m=4M f64 = avg_pool1d din, 60
+  reps, rch ~10-core sandbox): OLD alloc+copy **9804 us** vs NEW normalize+move **1211 us**
+  = **8.10x min / 8.21x mean** on the first-contribution accumulate. Traffic/allocation
+  reduction → core-count-independent (works in the cgroup-capped rch sandbox, unlike
+  parallelism levers; cf. 2026-06-20b).
+- Gates GREEN: ft-autograd 476/0, conformance 199/0 + all sub-suites, ft-autograd clippy
+  (+examples) clean. Bit-exact, can't-regress (strictly fewer allocations; same f64
+  values incl. -0.0 canonicalization). Generic across the dominant backward arm.
