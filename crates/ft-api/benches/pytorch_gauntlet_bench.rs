@@ -472,6 +472,57 @@ fn bench_batch_norm2d_f32_unit_dy(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("frankentorch_kgs4_136_scalar_sum", |b| {
+        b.iter(|| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = require(
+                session.tensor_variable_f32(black_box(x_values.clone()), shape.clone(), true),
+                "failed to create FrankenTorch BatchNorm input",
+            );
+            let rm = require(
+                session.tensor_variable_f32(running_mean.clone(), vec![BATCH_NORM2D_C], false),
+                "failed to create FrankenTorch BatchNorm running_mean",
+            );
+            let rv = require(
+                session.tensor_variable_f32(running_var.clone(), vec![BATCH_NORM2D_C], false),
+                "failed to create FrankenTorch BatchNorm running_var",
+            );
+            let weight = require(
+                session.tensor_variable_f32(
+                    black_box(weight_values.clone()),
+                    vec![BATCH_NORM2D_C],
+                    true,
+                ),
+                "failed to create FrankenTorch BatchNorm weight",
+            );
+            let bias = require(
+                session.tensor_variable_f32(
+                    black_box(bias_values.clone()),
+                    vec![BATCH_NORM2D_C],
+                    true,
+                ),
+                "failed to create FrankenTorch BatchNorm bias",
+            );
+            let (loss, _, _) = require(
+                session.functional_batch_norm2d_sum(
+                    x,
+                    Some(rm),
+                    Some(rv),
+                    Some(weight),
+                    Some(bias),
+                    true,
+                    0.1,
+                    1e-5,
+                ),
+                "failed to run scalar FrankenTorch BatchNorm2d",
+            );
+            black_box(require(
+                session.tensor_backward(loss),
+                "failed to run scalar FrankenTorch BatchNorm backward",
+            ))
+        });
+    });
+
     group.bench_function("pytorch_2_12_cpu", |b| {
         b.iter_custom(run_pytorch_batch_norm2d_f32_grad);
     });

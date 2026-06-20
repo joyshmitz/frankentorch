@@ -4,6 +4,97 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-20 - frankentorch-kgs4.136 - f32 BatchNorm2d scalar-sum keep with PyTorch loss
+
+- Lever attempted: add an affine f32 `functional_batch_norm2d_sum` scalar-loss
+  path backed by `batch_norm_sum_forward_f32` and
+  `batch_norm_backward_scalar_f32`. The path computes
+  `sum(batch_norm2d(input, running_mean, running_var, weight, bias))` directly
+  for training mode and backpropagates the scalar upstream gradient without
+  materializing the normalized output tensor, `tensor_sum` tape node, or dense
+  all-ones `dy` buffer.
+- Workload: f32 BatchNorm2d forward plus backward,
+  `[N,C,H,W]=[32,256,28,28]`, affine weight and bias require gradients, scalar
+  `sum` loss.
+- Baseline/routing evidence:
+  - rch direct pre-change A/B on `ovh-a`, smaller diagnostic shape
+    `[16,64,28,28]`: composed path `129.84 ms`, existing fused path
+    `13.59 ms`, composed/fused speedup `9.56x`.
+  - Prior `frankentorch-kgs4.114` local PyTorch oracle left the final
+    materialized f32 BatchNorm2d row `28.14x` slower than PyTorch and rejected
+    the exact f32 all-ones-`dy` branch.
+- Candidate evidence:
+  - rch direct A/B on `vmi1227854`, smaller diagnostic shape `[16,64,28,28]`:
+    composed `109.59 ms`, existing fused `10.80 ms`, scalar-sum `1.66 ms`.
+    Scalar-sum/fused latency ratio `0.1537x`, or `6.50x` faster than the
+    previous internal fused row on that run.
+  - rch Criterion gauntlet on `vmi1227854`, target shape `[32,256,28,28]`:
+    existing `frankentorch_kgs4_114` mean `114.23 ms`; new
+    `frankentorch_kgs4_136_scalar_sum` mean `78.166 ms`. Scalar-sum/current
+    latency ratio `0.6843x`, or `1.46x` faster.
+  - Remote PyTorch arm in the same rch Criterion run failed with
+    `ModuleNotFoundError: No module named 'torch'`, so remote PyTorch is
+    environment-blocked rather than a performance result.
+  - Local PyTorch fair oracle with prebuilt tensors and clone/detach per rep:
+    30 iterations in `0.168172072968 s`, or `5.605736 ms/iter`.
+    Compared to the rch scalar-sum Criterion mean, FrankenTorch remains
+    `13.94x` slower than PyTorch; the old fused row was `20.38x` slower by the
+    same mixed-location ratio.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Verdict: keep. The scalar-sum path is behavior-equivalent in focused API
+  tests, has unit-upstream bit parity and scaled-upstream tolerance coverage for
+  the kernel scalar-backward helper, improves the measured BatchNorm2d train
+  row, and narrows the PyTorch gap. It does not dominate PyTorch.
+- Retry condition: do not retry the already-rejected f32 BatchNorm all-ones
+  dense-`dy` branch or another scalar-loss wrapper that only removes
+  `tensor_sum`. The remaining gap should move deeper into batch-stat/sidecar
+  reuse across forward/backward, allocator/arena-backed session and grad
+  buffers, automatic scalar-loss fusion in the tape scheduler, f32-native
+  persistent storage, or a PyTorch-parity proof for algebraically zero
+  BatchNorm sum-loss gradients.
+- Gates:
+  - `rch exec -- cargo test -p ft-kernel-cpu batch_norm_f32_scalar_backward_matches -- --nocapture`:
+    passed, 2 focused tests covering unit-upstream bit parity and scaled
+    upstream tolerance.
+  - `rch exec -- cargo test -p ft-api functional_batch_norm2d_f32_sum --lib -- --nocapture`:
+    passed, 2 focused tests.
+  - `rch exec -- cargo test -p ft-conformance strict_scheduler -- --nocapture`:
+    passed.
+  - `rch exec -- cargo check -p ft-api --all-targets`: passed with an existing
+    unrelated `hessian_probe.rs` warning.
+  - `rch exec -- cargo check -p ft-kernel-cpu --all-targets`: passed with
+    existing unrelated `gemm_golden.rs` warnings.
+  - `rch exec -- cargo clippy -p ft-api --lib -- -D warnings`: passed.
+  - `rch exec -- cargo clippy -p ft-api --bench pytorch_gauntlet_bench -- -D warnings`:
+    passed.
+  - `rch exec -- cargo clippy -p ft-api --example batch_norm_f32_grad_ab -- -D warnings`:
+    passed.
+  - `rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings`: passed.
+  - `rustfmt --edition 2024 --check` on the small touched benchmark/example
+    files: passed after formatting `batch_norm_f32_grad_ab.rs`.
+  - `git diff --check` on the scoped commit surface: passed.
+  - `ubs` on the scoped source/docs/artifact summary surface timed out after
+    240 seconds with no findings emitted beyond `Scanning rust...`, matching
+    existing large-file scanner timeout behavior.
+  - `rch exec -- cargo fmt --check -p ft-api -p ft-kernel-cpu` remains blocked
+    by existing unrelated rustfmt drift across large source files, examples,
+    and `ops_bench`.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/baseline_batch_norm_f32_grad_ab.txt`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/after_batch_norm_f32_grad_ab.txt`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/after_pytorch_gauntlet_batch_norm2d_f32.txt`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/local_pytorch_batch_norm2d_f32_30iters.txt`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/test_ft_kernel_cpu_scalar_batch_norm.log`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/test_ft_kernel_cpu_scalar_batch_norm_scaled.log`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/test_ft_api_batch_norm2d_sum.log`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/test_ft_conformance_strict_scheduler.log`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/check_ft_api_all_targets.log`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/check_ft_kernel_cpu_all_targets.log`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/clippy_ft_api_lib.log`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/clippy_ft_api_pytorch_gauntlet_bench.log`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/clippy_ft_api_batch_norm_example.log`
+  - `artifacts/perf/frankentorch-kgs4.136/gauntlet_20260620T1123Z/clippy_ft_kernel_cpu_lib.log`
+
 ## 2026-06-20 - frankentorch-kgs4.135 - f32 GroupNorm scalar-sum keep with PyTorch loss
 
 - Lever attempted: add an affine f32 `functional_group_norm_sum` scalar-loss

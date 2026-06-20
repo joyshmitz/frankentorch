@@ -9980,6 +9980,43 @@ pub fn batch_norm_apply_f32(
     out
 }
 
+/// Scalar forward for `sum(BatchNorm(x, weight, bias))` in f32 training/eval
+/// lanes. This is the loss-specialized mirror of [`batch_norm_apply_f32`]:
+/// precompute the same scale/shift, stream the native NCHW blocks, and reduce to
+/// one scalar without materializing the normalized output tensor.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn batch_norm_sum_forward_f32(
+    x: &[f32],
+    mean: &[f32],
+    var: &[f32],
+    weight: Option<&[f32]>,
+    bias: Option<&[f32]>,
+    batch: usize,
+    channels: usize,
+    spatial: usize,
+    eps: f32,
+) -> f32 {
+    let cs = channels * spatial;
+    let per_channel: Vec<f32> = (0..channels)
+        .into_par_iter()
+        .map(|c| {
+            let rstd = 1.0f32 / (var[c] + eps).sqrt();
+            let scale = rstd * weight.map_or(1.0, |w| w[c]);
+            let shift = bias.map_or(0.0, |b| b[c]) - mean[c] * scale;
+            let mut sum = 0.0f32;
+            for n in 0..batch {
+                let base = n * cs + c * spatial;
+                for s in 0..spatial {
+                    sum += x[base + s] * scale + shift;
+                }
+            }
+            sum
+        })
+        .collect();
+    per_channel.iter().sum()
+}
+
 /// Training backward of BatchNorm (NCHW) given the batch `mean`/`var` used in the
 /// forward and the affine `weight`. Returns `(dx, dweight, dbias)`.
 ///
@@ -10189,6 +10226,60 @@ pub fn batch_norm_backward_f32(
             for s in 0..spatial {
                 let xhat = (x[base + s] - mean[c]) * rstd;
                 let dxhat = dy[base + s] * w;
+                dxrow[s] = rstd * inv_m * (m * dxhat - c1 - xhat * c2);
+            }
+        });
+    (dx, dweight, dbias)
+}
+
+/// Scalar-upstream f32 BatchNorm backward for `sum(BatchNorm(...))`.
+///
+/// This is algebraically identical to [`batch_norm_backward_f32`] with a dense
+/// constant `dy = upstream`, but avoids allocating and rereading that gradient
+/// buffer. The reduction order for `dweight` matches the generic path for
+/// `upstream == 1`, which keeps the common scalar-loss lane bit-stable.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn batch_norm_backward_scalar_f32(
+    upstream: f32,
+    x: &[f32],
+    weight: &[f32],
+    mean: &[f32],
+    var: &[f32],
+    batch: usize,
+    channels: usize,
+    spatial: usize,
+    eps: f32,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let m = (batch * spatial) as f32;
+    let inv_m = 1.0f32 / m;
+    let cs = channels * spatial;
+    let mut dweight = vec![0.0f32; channels];
+    dweight.par_iter_mut().enumerate().for_each(|(c, dwc)| {
+        let rstd = 1.0f32 / (var[c] + eps).sqrt();
+        let mut sw = 0.0f32;
+        for n in 0..batch {
+            let base = n * cs + c * spatial;
+            for s in 0..spatial {
+                sw += (x[base + s] - mean[c]) * rstd;
+            }
+        }
+        *dwc = upstream * sw;
+    });
+    let dbias = vec![upstream * m; channels];
+    let mut dx = vec![0.0f32; x.len()];
+    dx.par_chunks_mut(spatial)
+        .enumerate()
+        .for_each(|(idx, dxrow)| {
+            let c = idx % channels;
+            let base = idx * spatial;
+            let rstd = 1.0f32 / (var[c] + eps).sqrt();
+            let w = weight[c];
+            let c1 = w * dbias[c];
+            let c2 = w * dweight[c];
+            let dxhat = upstream * w;
+            for s in 0..spatial {
+                let xhat = (x[base + s] - mean[c]) * rstd;
                 dxrow[s] = rstd * inv_m * (m * dxhat - c1 - xhat * c2);
             }
         });
@@ -38436,6 +38527,94 @@ mod tests {
                     got.to_bits(),
                     expected.to_bits(),
                     "dbias mismatch for spatial={spatial}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn batch_norm_f32_scalar_backward_matches_unit_dy_bits() {
+        for (batch, channels, spatial) in [(5usize, 7usize, 1usize), (3, 4, 15)] {
+            let eps = 1e-5f32;
+            let x: Vec<f32> = (0..batch * channels * spatial)
+                .map(|i| ((i % 37) as f32 - 18.0) * 0.03125 + (i as f32) * 0.0007)
+                .collect();
+            let dy = vec![1.0f32; x.len()];
+            let weight: Vec<f32> = (0..channels)
+                .map(|c| 0.8 + (c % 5) as f32 * 0.0625)
+                .collect();
+            let (mean, var) = crate::batch_norm_stats_f32(&x, batch, channels, spatial);
+
+            let (want_dx, want_dw, want_db) = crate::batch_norm_backward_f32(
+                &dy, &x, &weight, &mean, &var, batch, channels, spatial, eps,
+            );
+            let (got_dx, got_dw, got_db) = crate::batch_norm_backward_scalar_f32(
+                1.0, &x, &weight, &mean, &var, batch, channels, spatial, eps,
+            );
+
+            for (got, expected) in got_dx.iter().zip(want_dx.iter()) {
+                assert_eq!(
+                    got.to_bits(),
+                    expected.to_bits(),
+                    "dx mismatch for spatial={spatial}"
+                );
+            }
+            for (got, expected) in got_dw.iter().zip(want_dw.iter()) {
+                assert_eq!(
+                    got.to_bits(),
+                    expected.to_bits(),
+                    "dweight mismatch for spatial={spatial}"
+                );
+            }
+            for (got, expected) in got_db.iter().zip(want_db.iter()) {
+                assert_eq!(
+                    got.to_bits(),
+                    expected.to_bits(),
+                    "dbias mismatch for spatial={spatial}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn batch_norm_f32_scalar_backward_matches_scaled_dy_tolerance() {
+        for (batch, channels, spatial, upstream) in [
+            (5usize, 7usize, 1usize, -0.375f32),
+            (3usize, 4usize, 15usize, 0.625f32),
+        ] {
+            let eps = 1e-5f32;
+            let x: Vec<f32> = (0..batch * channels * spatial)
+                .map(|i| ((i % 37) as f32 - 18.0) * 0.03125 + (i as f32) * 0.0007)
+                .collect();
+            let dy = vec![upstream; x.len()];
+            let weight: Vec<f32> = (0..channels)
+                .map(|c| 0.8 + (c % 5) as f32 * 0.0625)
+                .collect();
+            let (mean, var) = crate::batch_norm_stats_f32(&x, batch, channels, spatial);
+
+            let (want_dx, want_dw, want_db) = crate::batch_norm_backward_f32(
+                &dy, &x, &weight, &mean, &var, batch, channels, spatial, eps,
+            );
+            let (got_dx, got_dw, got_db) = crate::batch_norm_backward_scalar_f32(
+                upstream, &x, &weight, &mean, &var, batch, channels, spatial, eps,
+            );
+
+            for (got, expected) in got_dx.iter().zip(want_dx.iter()) {
+                assert!(
+                    (got - expected).abs() <= 2.0e-6,
+                    "dx mismatch for spatial={spatial}: {got} vs {expected}"
+                );
+            }
+            for (got, expected) in got_dw.iter().zip(want_dw.iter()) {
+                assert!(
+                    (got - expected).abs() <= 2.0e-5,
+                    "dweight mismatch for spatial={spatial}: {got} vs {expected}"
+                );
+            }
+            for (got, expected) in got_db.iter().zip(want_db.iter()) {
+                assert!(
+                    got.to_bits() == expected.to_bits(),
+                    "dbias mismatch for spatial={spatial}: {got} vs {expected}"
                 );
             }
         }

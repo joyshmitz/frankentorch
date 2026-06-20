@@ -1,0 +1,55 @@
+Diff in /data/projects/frankentorch/crates/ft-api/examples/batch_norm_f32_grad_ab.rs:18:
+     let m = (n * sp) as f64;
+     let eps = 1e-5;
+     let mom = 0.1;
+[31m-    let xv: Vec<f32> = (0..n * c * sp).map(|i| ((i % 877) as f32 - 400.0) * 0.002).collect();
+[m[32m+    let xv: Vec<f32> = (0..n * c * sp)
+[m[32m+        .map(|i| ((i % 877) as f32 - 400.0) * 0.002)
+[m[32m+        .collect();
+[m     let wv: Vec<f32> = (0..c).map(|j| 1.0 + (j % 13) as f32 * 0.01).collect();
+     let bvv: Vec<f32> = (0..c).map(|j| (j % 7) as f32 * 0.01 - 0.03).collect();
+     let rmv: Vec<f32> = (0..c).map(|j| (j % 5) as f32 * 0.02).collect();
+Diff in /data/projects/frankentorch/crates/ft-api/examples/batch_norm_f32_grad_ab.rs:26:
+
+     let new_step = || {
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let x = s.tensor_variable_f32(xv.clone(), vec![n, c, h, w], true).unwrap();
+[m[32m+        let x = s
+[m[32m+            .tensor_variable_f32(xv.clone(), vec![n, c, h, w], true)
+[m[32m+            .unwrap();
+[m         let rm = s.tensor_variable_f32(rmv.clone(), vec![c], false).unwrap();
+         let rv = s.tensor_variable_f32(rvv.clone(), vec![c], false).unwrap();
+         let wt = s.tensor_variable_f32(wv.clone(), vec![c], true).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/examples/batch_norm_f32_grad_ab.rs:39:
+     };
+     let scalar_step = || {
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let x = s.tensor_variable_f32(xv.clone(), vec![n, c, h, w], true).unwrap();
+[m[32m+        let x = s
+[m[32m+            .tensor_variable_f32(xv.clone(), vec![n, c, h, w], true)
+[m[32m+            .unwrap();
+[m         let rm = s.tensor_variable_f32(rmv.clone(), vec![c], false).unwrap();
+         let rv = s.tensor_variable_f32(rvv.clone(), vec![c], false).unwrap();
+         let wt = s.tensor_variable_f32(wv.clone(), vec![c], true).unwrap();
+Diff in /data/projects/frankentorch/crates/ft-api/examples/batch_norm_f32_grad_ab.rs:52:
+     // OLD: manual composed BatchNorm2d op-graph (per-channel stats over N,H,W).
+     let old_step = || {
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+[31m-        let x = s.tensor_variable_f32(xv.clone(), vec![n, c, h, w], true).unwrap();
+[m[32m+        let x = s
+[m[32m+            .tensor_variable_f32(xv.clone(), vec![n, c, h, w], true)
+[m[32m+            .unwrap();
+[m         let wt = s.tensor_variable_f32(wv.clone(), vec![c], true).unwrap();
+         let bt = s.tensor_variable_f32(bvv.clone(), vec![c], true).unwrap();
+         // [N,C,H,W] -> [C, N*H*W] via permute(1,0,2,3)+reshape so the per-channel
+Diff in /data/projects/frankentorch/crates/ft-api/examples/batch_norm_f32_grad_ab.rs:104:
+         scalar_step();
+         bs = bs.min(t.elapsed().as_secs_f64() * 1e3);
+     }
+[31m-    eprintln!("batch_norm2d f32 fwd+bwd [{n},{c},{h}x{w}]: composed {bo:.2} ms / fused {bn:.2} ms / scalar {bs:.2} ms / fused speedup {:.2}x / scalar-vs-fused {:.2}x", bo / bn, bn / bs);
+[m[32m+    eprintln!(
+[m[32m+        "batch_norm2d f32 fwd+bwd [{n},{c},{h}x{w}]: composed {bo:.2} ms / fused {bn:.2} ms / scalar {bs:.2} ms / fused speedup {:.2}x / scalar-vs-fused {:.2}x",
+[m[32m+        bo / bn,
+[m[32m+        bn / bs
+[m[32m+    );
+[m }
