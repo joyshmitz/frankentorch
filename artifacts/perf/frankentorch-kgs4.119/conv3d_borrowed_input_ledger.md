@@ -1,8 +1,8 @@
 # frankentorch-kgs4.119 - conv3d f64 borrowed-input autograd
 
-Agent: OrangeCedar / cod-b
-Date: 2026-06-18
-Status: in_progress, code-first batch-test pending
+Agent: OrangeCedar / cod-b; verified by IvoryDeer / cod-b
+Date: 2026-06-18; verified 2026-06-20
+Status: KEEP, measured. PyTorch loss remains.
 
 ## Workload Trigger
 
@@ -69,5 +69,21 @@ CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b cargo check -p f
 
 Result: PASS on 2026-06-18.
 
-Criterion/conformance batch testing is intentionally pending per campaign
-instruction.
+Measured verification added 2026-06-20:
+
+- Local PyTorch-enabled gauntlet: current FrankenTorch median `24.095 ms`; PyTorch
+  `2.12.1+cpu` median `10.126 ms`; FrankenTorch remains `2.38x` slower.
+- Same-worker `rch` A/B on `ovh-a`: disabled save-copy median `19.429 ms`;
+  current borrowed-input median `15.632 ms`; current is `1.24x` faster.
+- Initial current-only `rch` row on `vmi1152480` measured `28.364 ms`, but lacked a
+  same-worker disabled/PyTorch comparator and is routing-only evidence.
+
+Verdict: keep the borrowed-input implementation. Do not revert to saved input
+copies; chase the remaining PyTorch gap in whole-row autograd/tape allocation,
+scalar-loss gradient materialization, persistent workspaces, or fused Conv3d
+sum-backward.
+
+Detailed evidence:
+
+- `artifacts/perf/frankentorch-kgs4.119/gauntlet_20260620T1112Z/NEGATIVE_EVIDENCE_LEDGER.md`
+- `artifacts/perf/frankentorch-kgs4.119/gauntlet_20260620T1112Z/SCORECARD.md`

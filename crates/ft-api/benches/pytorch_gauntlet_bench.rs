@@ -6,6 +6,7 @@
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- avg_pool1d
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- avg_pool2d
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- batch_norm2d_f32
+//!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- conv3d
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- max_pool1d
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- max_pool3d
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- linear
@@ -35,6 +36,16 @@ const BATCH_NORM2D_C: usize = 256;
 const BATCH_NORM2D_H: usize = 28;
 const BATCH_NORM2D_W: usize = 28;
 const BATCH_NORM2D_TOTAL: usize = BATCH_NORM2D_N * BATCH_NORM2D_C * BATCH_NORM2D_H * BATCH_NORM2D_W;
+
+const CONV3D_N: usize = 2;
+const CONV3D_C_IN: usize = 32;
+const CONV3D_C_OUT: usize = 32;
+const CONV3D_D: usize = 8;
+const CONV3D_H: usize = 16;
+const CONV3D_W: usize = 16;
+const CONV3D_K: usize = 3;
+const CONV3D_INPUT_TOTAL: usize = CONV3D_N * CONV3D_C_IN * CONV3D_D * CONV3D_H * CONV3D_W;
+const CONV3D_WEIGHT_TOTAL: usize = CONV3D_C_OUT * CONV3D_C_IN * CONV3D_K * CONV3D_K * CONV3D_K;
 
 const MAX_POOL3D_N: usize = 2;
 const MAX_POOL3D_C: usize = 32;
@@ -101,6 +112,10 @@ fn pytorch_avg_pool2d_script() -> PathBuf {
 
 fn pytorch_batch_norm2d_f32_script() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benches/pytorch_batch_norm2d_f32_grad.py")
+}
+
+fn pytorch_conv3d_script() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benches/pytorch_conv3d_grad.py")
 }
 
 fn pytorch_max_pool3d_script() -> PathBuf {
@@ -177,6 +192,19 @@ fn run_pytorch_batch_norm2d_f32_grad(iterations: u64) -> Duration {
     };
 
     parse_pytorch_elapsed(output, "PyTorch batch_norm2d f32")
+}
+
+fn run_pytorch_conv3d_grad(iterations: u64) -> Duration {
+    let output = match Command::new(pytorch_python())
+        .arg(pytorch_conv3d_script())
+        .env("FT_GAUNTLET_ITERS", iterations.to_string())
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => fail(format!("failed to launch PyTorch benchmark: {err:?}")),
+    };
+
+    parse_pytorch_elapsed(output, "PyTorch conv3d")
 }
 
 fn run_pytorch_max_pool3d_grad(iterations: u64) -> Duration {
@@ -446,6 +474,50 @@ fn bench_batch_norm2d_f32_unit_dy(c: &mut Criterion) {
 
     group.bench_function("pytorch_2_12_cpu", |b| {
         b.iter_custom(run_pytorch_batch_norm2d_f32_grad);
+    });
+
+    group.finish();
+}
+
+fn bench_conv3d_grad(c: &mut Criterion) {
+    let mut group = c.benchmark_group("gauntlet_conv3d_grad");
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(3));
+    group.sample_size(10);
+
+    let x_values = deterministic_values(CONV3D_INPUT_TOTAL, 0.0);
+    let w_values = deterministic_values(CONV3D_WEIGHT_TOTAL, 1.0);
+    let x_shape = vec![CONV3D_N, CONV3D_C_IN, CONV3D_D, CONV3D_H, CONV3D_W];
+    let w_shape = vec![CONV3D_C_OUT, CONV3D_C_IN, CONV3D_K, CONV3D_K, CONV3D_K];
+
+    group.bench_function("frankentorch_kgs4_119", |b| {
+        b.iter(|| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = require(
+                session.tensor_variable(black_box(x_values.clone()), x_shape.clone(), true),
+                "failed to create FrankenTorch Conv3d input",
+            );
+            let w = require(
+                session.tensor_variable(black_box(w_values.clone()), w_shape.clone(), true),
+                "failed to create FrankenTorch Conv3d weight",
+            );
+            let out = require(
+                session.functional_conv3d(x, w, None, (1, 1, 1), (1, 1, 1)),
+                "failed to run FrankenTorch Conv3d",
+            );
+            let loss = require(
+                session.tensor_sum(out),
+                "failed to reduce FrankenTorch Conv3d output",
+            );
+            black_box(require(
+                session.tensor_backward(loss),
+                "failed to run FrankenTorch Conv3d backward",
+            ))
+        });
+    });
+
+    group.bench_function("pytorch_2_12_cpu", |b| {
+        b.iter_custom(run_pytorch_conv3d_grad);
     });
 
     group.finish();
@@ -781,6 +853,7 @@ criterion_group!(
     bench_avg_pool1d_unit_dy,
     bench_avg_pool2d_unit_dy,
     bench_batch_norm2d_f32_unit_dy,
+    bench_conv3d_grad,
     bench_max_pool1d_unit_dout,
     bench_max_pool3d_saved_indices,
     bench_max_pool3d_stage_probe,

@@ -1058,3 +1058,30 @@ is explicitly satisfied.
 - Verdict: keep the source change and close the stale code-first bead as measured,
   but record the PyTorch row as a loss. W/L/N vs PyTorch: `0 / 1 / 0`.
 - Evidence: `artifacts/perf/frankentorch-kgs4.118/gauntlet_20260620T0108Z/SCORECARD.md`.
+
+## 2026-06-20c - frankentorch-kgs4.119 - KEEP / PyTorch loss remains: conv3d borrowed-input custom autograd
+
+- Lever: existing code-first f64 `functional_conv3d` custom autograd path uses
+  `apply_function_with_create_graph_borrowed_inputs`, so first-order backward borrows
+  the padded input and weight instead of copying them through `ctx.save_for_backward`.
+  Temporary disabled variant restored the old saved-copy path for A/B only, then was
+  reverted after measurement.
+- Local PyTorch-enabled head-to-head (`PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python`,
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`,
+  `cargo bench -p ft-api --bench pytorch_gauntlet_bench -- 'gauntlet_conv3d_grad' --noplot`):
+  current FrankenTorch median `24.095 ms`; PyTorch `2.12.1+cpu` median `10.126 ms`;
+  FrankenTorch remains `2.38x` slower. W/L/N vs PyTorch: `0 / 1 / 0`.
+- Same-worker `rch` A/B on `ovh-a` for the FrankenTorch-only row:
+  disabled save-copy median `19.429 ms`; current borrowed-input median `15.632 ms`.
+  Borrowed-input is `1.24x` faster (`19.429 / 15.632`) and Criterion reported
+  `[-27.005%, -22.256%, -14.205%]`, `p = 0.00`, on the current rerun.
+- Routing-only remote row: initial current-only run selected `vmi1152480` and measured
+  `28.364 ms`; no same-worker disabled/PyTorch comparator was available there, so it
+  is not keep/reject proof.
+- Verdict: KEEP the borrowed-input implementation. Reverting it would be a measured
+  regression even though the PyTorch gauntlet row is still a loss.
+- Retry condition: the remaining `2.38x` PyTorch gap should move to whole-row
+  autograd/tape allocation, scalar-loss gradient materialization, persistent conv3d
+  workspaces, direct fused `conv3d(...).sum().backward()`, or an exotic layout/kernel
+  plan with fresh same-worker proof. Do not re-chase saved-input copying for this row.
+- Evidence: `artifacts/perf/frankentorch-kgs4.119/gauntlet_20260620T1112Z/NEGATIVE_EVIDENCE_LEDGER.md`.

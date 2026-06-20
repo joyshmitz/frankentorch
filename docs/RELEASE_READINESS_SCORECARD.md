@@ -232,6 +232,14 @@ regressed `+15.953%`. The source hook was reverted.
 | Clippy | `rch exec -- cargo clippy -p ft-api --bench pytorch_gauntlet_bench -- -D warnings` | passed on `vmi1152480` for the retained kgs4.128 stage-probe harness |
 | UBS | `ubs crates/ft-api/benches/pytorch_gauntlet_bench.rs docs/NEGATIVE_EVIDENCE.md docs/RELEASE_READINESS_SCORECARD.md artifacts/perf/frankentorch-kgs4.128/gauntlet_20260619T0521Z/summary.md` | zero critical or warning findings |
 | Formatting | `rustfmt --edition 2024 --check crates/ft-api/benches/pytorch_gauntlet_bench.rs`; `git diff --check` | passed for the kgs4.128 changed surface |
+| Criterion | `cargo bench -p ft-api --bench pytorch_gauntlet_bench -- 'gauntlet_conv3d_grad' --noplot` | kgs4.119 completed locally with PyTorch `2.12.1+cpu`; current FrankenTorch median `24.095 ms`, PyTorch median `10.126 ms`, ratio `2.38x` slower |
+| Same-worker A/B | `rch exec -- cargo bench -p ft-api --bench pytorch_gauntlet_bench -- 'gauntlet_conv3d_grad/frankentorch_kgs4_119' --noplot` | on `ovh-a`, disabled save-copy median `19.429 ms`, current borrowed-input median `15.632 ms`; borrowed-input is `1.24x` faster and kept |
+| Remote routing | same command | initial current-only run on `vmi1152480` median `28.364 ms`; no same-worker disabled/PyTorch comparator, so neutral routing evidence only |
+| Compile | `rch exec -- cargo check -p ft-api --bench pytorch_gauntlet_bench` | passed on `vmi1152480` for the kgs4.119 Conv3d gauntlet harness |
+| Correctness | `rch exec -- cargo test -p ft-api conv3d --lib -- --nocapture` | passed on `vmi1293453`: `10 passed; 0 failed` |
+| Conformance | `rch exec -- cargo test -p ft-conformance` | passed on `vmi1227854`: lib `199/0`, bins/integration/smoke/doc tests all green |
+| Clippy | `rch exec -- cargo clippy -p ft-api --bench pytorch_gauntlet_bench -- -D warnings` | passed on `vmi1227854` |
+| Formatting | `rustfmt --edition 2024 --check crates/ft-api/benches/pytorch_gauntlet_bench.rs`; `python3 -m py_compile crates/ft-api/benches/pytorch_conv3d_grad.py`; `git diff --check` | kgs4.119 changed benchmark/docs surface passed |
 
 Known caveat: `cargo fmt --check -p ft-api` remains blocked by pre-existing
 crate-wide formatting debt in unrelated examples and long `ft-api/src/lib.rs`
@@ -300,3 +308,8 @@ The `7wru6` result rejects max_pool3d report-skipping/persistent-grad-only API
 work. The next max_pool3d attempt should be a true fused loss/backward primitive
 or a scheduler/arena rewrite with same-worker proof on the full PyTorch gauntlet
 row, not another wrapper around the generic backward report path.
+The `.119` result keeps borrowed Conv3d autograd inputs as a real same-worker
+win, but the row still loses to PyTorch by `2.38x`; the next Conv3d pass should
+target whole-row autograd/tape allocation, scalar-loss gradient materialization,
+persistent workspaces, or a direct fused Conv3d sum-backward primitive rather
+than revisiting saved-input copy removal.
