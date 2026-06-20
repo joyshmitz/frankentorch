@@ -1,0 +1,791 @@
+  [2m2026-06-20T18:39:54.450430Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSelected worker: hz2 at root@178.104.77.29 (0 slots remaining after reservation, speed 50.0)[0m
+    [2;3mat[0m rch/src/hook.rs:921 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:39:54.665074Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mStarting remote compilation pipeline for frankentorch-cod-b-bold-20260620T182046Z (hash: ee103c7afc6f3ad6)[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:241 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:39:54.665105Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mPrepared dependency sync manifest for 13 roots[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:263 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:39:56.356707Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mSyncing project to worker hz2...[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:323 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:39:56.356764Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:39:58.948171Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2591ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:39:58.948258Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-api -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-api on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:00.916247Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1967ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:00.916319Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-autograd -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-autograd on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:02.780143Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1863ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:02.780221Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-conformance -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-conformance on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:04.681627Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1901ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:04.681703Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-core -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-core on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:06.579405Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1897ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:06.579490Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-data -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-data on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:08.491036Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1911ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:08.491119Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-device -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-device on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:10.357882Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1866ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:10.357987Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-dispatch -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-dispatch on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:12.249721Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1891ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:12.249791Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-kernel-cpu -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-kernel-cpu on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:14.121630Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1871ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:14.121709Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-nn -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-nn on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:16.026143Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1904ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:16.026225Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-optim -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-optim on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:17.861220Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1834ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:17.861289Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-runtime -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-runtime on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:19.777271Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1915ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:19.777344Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-serialize -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-serialize on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:21.674294Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1896ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:21.674325Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mSync complete: 4396 files, 189336 bytes in 25307ms[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:486 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:28.594388Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mExecuting command remotely: cargo test -p ft-kernel-cpu --lib -- --nocapture[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:529 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:28.594426Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRewriting CARGO_TARGET_DIR for remote execution (worker-scoped path): /data/projects/.rch-targets/frankentorch-cod-b -> /data/projects/frankentorch-cod-b-bold-20260620T182046Z/.rch-target-hz2-pool-fc90aa071d7c954cac200fbdf4731255[0m
+    [2;3mat[0m rch/src/transfer.rs:799 [2;3mon[0m ThreadId(1)
+
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded bit-set v0.8.0
+  Downloaded anes v0.1.6
+  Downloaded anstyle v1.0.14
+  Downloaded autocfg v1.5.0
+  Downloaded bit-vec v0.8.0
+  Downloaded bytemuck v1.25.0
+  Downloaded is-terminal v0.4.17
+  Downloaded aho-corasick v1.1.4
+  Downloaded tinytemplate v1.2.1
+  Downloaded same-file v1.0.6
+  Downloaded unarray v0.1.4
+  Downloaded crossbeam-epoch v0.9.18
+  Downloaded getrandom v0.3.4
+  Downloaded plotters-backend v0.3.7
+  Downloaded serde_core v1.0.228
+  Downloaded similar v2.7.0
+  Downloaded console v0.16.3
+  Downloaded itoa v1.0.18
+  Downloaded rand v0.9.4
+  Downloaded bitflags v2.11.1
+  Downloaded proc-macro2 v1.0.106
+  Downloaded rand_xorshift v0.4.0
+  Downloaded clap v4.6.1
+  Downloaded serde v1.0.228
+  Downloaded serde_json v1.0.149
+  Downloaded ciborium-io v0.2.2
+  Downloaded regex-syntax v0.8.10
+  Downloaded rusty-fork v0.3.1
+  Downloaded unicode-ident v1.0.24
+  Downloaded wide v0.7.33
+  Downloaded plotters v0.3.7
+  Downloaded either v1.15.0
+  Downloaded insta v1.47.2
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded rand_core v0.9.5
+  Downloaded zmij v1.0.21
+  Downloaded bytemuck_derive v1.10.2
+  Downloaded ciborium v0.2.2
+  Downloaded serde_derive v1.0.228
+  Downloaded criterion-plot v0.5.0
+  Downloaded clap_lex v1.1.0
+  Downloaded half v2.7.1
+  Downloaded wait-timeout v0.2.1
+  Downloaded fastrand v2.4.1
+  Downloaded fnv v1.0.7
+  Downloaded num-complex v0.4.6
+  Downloaded rand_chacha v0.9.0
+  Downloaded tempfile v3.27.0
+  Downloaded matrixmultiply v0.3.10
+  Downloaded rawpointer v0.2.1
+  Downloaded safe_arch v0.7.4
+  Downloaded cast v0.3.0
+  Downloaded ciborium-ll v0.2.2
+  Downloaded quick-error v1.2.3
+  Downloaded walkdir v2.5.0
+  Downloaded crossbeam-deque v0.8.6
+  Downloaded errno v0.3.14
+  Downloaded proptest v1.11.0
+  Downloaded quote v1.0.45
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded plotters-svg v0.3.7
+  Downloaded oorandom v11.1.5
+  Downloaded cfg-if v1.0.4
+  Downloaded once_cell v1.21.4
+  Downloaded rayon-core v1.13.0
+  Downloaded memchr v2.8.0
+  Downloaded zerocopy-derive v0.8.48
+  Downloaded num-traits v0.2.19
+  Downloaded criterion v0.5.1
+  Downloaded regex v1.12.3
+  Downloaded clap_builder v4.6.0
+  Downloaded itertools v0.10.5
+  Downloaded libm v0.2.16
+  Downloaded syn v2.0.117
+  Downloaded rayon v1.12.0
+  Downloaded zerocopy v0.8.48
+  Downloaded rustix v1.1.4
+  Downloaded regex-automata v0.4.14
+  Downloaded libc v0.2.185
+  Downloaded linux-raw-sys v0.12.1
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.185
+   Compiling cfg-if v1.0.4
+   Compiling autocfg v1.5.0
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.48
+   Compiling crossbeam-utils v0.8.21
+   Compiling serde_core v1.0.228
+   Compiling rustix v1.1.4
+   Compiling linux-raw-sys v0.12.1
+   Compiling zmij v1.0.21
+   Compiling serde v1.0.228
+   Compiling once_cell v1.21.4
+   Compiling bitflags v2.11.1
+   Compiling rayon-core v1.13.0
+   Compiling regex-syntax v0.8.10
+   Compiling either v1.15.0
+   Compiling fastrand v2.4.1
+   Compiling serde_json v1.0.149
+   Compiling clap_lex v1.1.0
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.0
+   Compiling plotters-backend v0.3.7
+   Compiling ciborium-io v0.2.2
+   Compiling num-traits v0.2.19
+   Compiling anstyle v1.0.14
+   Compiling matrixmultiply v0.3.10
+   Compiling itertools v0.10.5
+   Compiling cast v0.3.0
+   Compiling bit-vec v0.8.0
+   Compiling plotters-svg v0.3.7
+   Compiling clap_builder v4.6.0
+   Compiling same-file v1.0.6
+   Compiling quick-error v1.2.3
+   Compiling libm v0.2.16
+   Compiling fnv v1.0.7
+   Compiling crossbeam-epoch v0.9.18
+   Compiling bit-set v0.8.0
+   Compiling walkdir v2.5.0
+   Compiling unarray v0.1.4
+   Compiling anes v0.1.6
+   Compiling similar v2.7.0
+   Compiling rawpointer v0.2.1
+   Compiling syn v2.0.117
+   Compiling oorandom v11.1.5
+   Compiling crossbeam-deque v0.8.6
+   Compiling wait-timeout v0.2.1
+   Compiling console v0.16.3
+   Compiling is-terminal v0.4.17
+   Compiling rand_core v0.9.5
+   Compiling num-complex v0.4.6
+   Compiling plotters v0.3.7
+   Compiling rand v0.9.4
+   Compiling rand_xorshift v0.4.0
+   Compiling criterion-plot v0.5.0
+   Compiling rayon v1.12.0
+   Compiling regex-automata v0.4.14
+   Compiling tempfile v3.27.0
+   Compiling rusty-fork v0.3.1
+   Compiling insta v1.47.2
+   Compiling clap v4.6.1
+   Compiling regex v1.12.3
+   Compiling zerocopy-derive v0.8.48
+   Compiling bytemuck_derive v1.10.2
+   Compiling serde_derive v1.0.228
+   Compiling bytemuck v1.25.0
+   Compiling safe_arch v0.7.4
+   Compiling wide v0.7.33
+   Compiling tinytemplate v1.2.1
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling ciborium-ll v0.2.2
+   Compiling rand_chacha v0.9.0
+   Compiling ft-core v0.1.0 (/data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-core)
+   Compiling ciborium v0.2.2
+   Compiling proptest v1.11.0
+   Compiling criterion v0.5.1
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch-cod-b-bold-20260620T182046Z/crates/ft-kernel-cpu)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.00s
+     Running unittests src/lib.rs (.rch-target-hz2-pool-fc90aa071d7c954cac200fbdf4731255/debug/deps/ft_kernel_cpu-d26c108ecd1e4673)
+
+running 506 tests
+test tests::abs_scalar_positive_unchanged ... ok
+test tests::abs_scalar_returns_expected_value ... ok
+test tests::abs_scalar_zero_is_zero ... ok
+test tests::abs_tensor_contiguous_empty_returns_empty ... ok
+test tests::abs_tensor_contiguous_returns_expected_values ... ok
+test tests::acos_scalar_returns_expected_value ... ok
+test tests::acos_tensor_contiguous_returns_expected_values ... ok
+test tests::add_scalar_rejects_dtype_mismatch ... ok
+test tests::add_scalar_returns_expected_value ... ok
+test tests::add_tensor_contiguous_empty_shape_returns_empty_output ... ok
+test tests::add_tensor_broadcast_scalar_to_vector ... ok
+test tests::add_tensor_contiguous_preserves_simd_tail_values ... ok
+test tests::add_tensor_contiguous_rejects_device_mismatch ... ok
+test tests::add_tensor_contiguous_rejects_dtype_mismatch ... ok
+test tests::add_tensor_contiguous_rejects_insufficient_storage ... ok
+test tests::add_tensor_contiguous_returns_expected_values ... ok
+test tests::addmm_alpha_zero_scales_input_after_validation ... ok
+test tests::addmm_tensor_contiguous_f32_rejects_insufficient_input_storage ... ok
+test tests::addmm_tensor_contiguous_rejects_insufficient_input_storage ... ok
+test tests::addmv_alpha_zero_scales_input_after_validation ... ok
+test tests::argmax_dim_1d_reduces_to_scalar ... ok
+test tests::addmm_tensor_contiguous_rejects_non_contiguous_mat2 ... ok
+test tests::argmax_dim_reduces_along_dim1 ... ok
+test tests::argmax_dim_invalid_dim_returns_error ... ok
+test tests::argmin_dim_reduces_along_dim0 ... ok
+test tests::argmin_dim_1d_reduces_to_scalar ... ok
+test tests::argmin_dim_reduces_along_dim1 ... ok
+test tests::atan_scalar_returns_expected_value ... ok
+test tests::argmax_dim_reduces_along_dim0 ... ok
+test tests::atan_tensor_contiguous_returns_expected_values ... ok
+test tests::asin_scalar_returns_expected_value ... ok
+test tests::asin_tensor_contiguous_returns_expected_values ... ok
+test tests::addmm_tensor_contiguous_accepts_contiguous_operands ... ok
+test tests::argmax_max_over_empty_dim_error ... ok
+test tests::avg_pool2d_2x2s2_backward_matches_generic_bit_exact ... ok
+test tests::avg_pool1d_sum_scalar_backward_matches_materialized_bits ... ok
+test tests::argmin_dim_invalid_dim_returns_error ... ok
+test tests::batch_norm_f32_scalar_backward_matches_scaled_dy_tolerance ... ok
+test tests::batch_norm_f32_scalar_backward_matches_unit_dy_bits ... ok
+test tests::bench_conv2d_1x1_fast_vs_im2col ... ignored, perf A/B; run with --ignored --nocapture
+test tests::banded_to_tridiagonal_preserves_eigenvalues ... ok
+test tests::batch_norm_f64_spatial1_row_parallel_matches_serial_reference_bits ... ok
+test tests::avg_pool2d_2x2s2_direct_matches_generic_bit_exact ... ok
+test tests::batch_norm_f32_unit_dy_matches_general_reference_bits ... ok
+test tests::bmm_tensor_contiguous_respects_storage_offsets_and_batch_order ... ok
+test tests::broadcast_incompatible_shapes_fails ... ok
+test tests::bmm_tensor_contiguous_rejects_output_shape_overflow ... ok
+test tests::cat_along_dim0 ... ok
+test tests::cat_along_dim1 ... ok
+test tests::cat_along_dim1_f32 ... ok
+test tests::cat_skips_empty_input_with_offset ... ok
+test tests::batch_norm_f64_scalar_backward_matches_scaled_dy_tolerance ... ok
+test tests::cdist_forward_f64_pairwise_l2_matches_torch_golden ... ok
+test tests::ceil_scalar_returns_expected_value ... ok
+test tests::ceil_tensor_contiguous_returns_expected_values ... ok
+test tests::batch_norm_f64_scalar_backward_matches_unit_dy_bits ... ok
+test tests::cholesky_1x1 ... ok
+test tests::cholesky_2x2_spd ... ok
+test tests::cholesky_3x3_reconstruction ... ok
+test tests::cholesky_not_positive_definite ... ok
+test tests::cholesky_identity ... ok
+test tests::avg_pool1d_direct_matches_2d_h1_forward_backward_bit_exact ... ok
+test tests::cholesky_solve_2x2 ... ok
+test tests::cholesky_solve_identity_factor ... ok
+test tests::cholesky_upper_flag ... ok
+test tests::clamp_min_greater_than_max_returns_max ... ok
+test tests::clamp_scalar_above_max ... ok
+test tests::clamp_scalar_below_min ... ok
+test tests::clamp_scalar_within_range ... ok
+test tests::clamp_tensor_contiguous_returns_expected_values ... ok
+test tests::complex_abs_returns_magnitude ... ok
+test tests::complex_angle_returns_phase ... ok
+test tests::complex_conj_negates_imaginary ... ok
+test tests::complex_imag_extracts_imaginary_parts ... ok
+test tests::batch_norm_f64_spatial_unit_dy_matches_general_reference_bits ... ok
+test tests::complex_mul_follows_algebra ... ok
+test tests::complex_real_extracts_real_parts ... ok
+test tests::complex_from_real_imag_constructs_correctly ... ok
+test tests::cos_scalar_returns_expected_value ... ok
+test tests::cos_tensor_contiguous_returns_expected_values ... ok
+test tests::conv2d_1x1_fast_path_matches_im2col_bitexact ... ok
+test tests::conv3d_backward_ones_dout_fast_path_matches_generic_reference ... ok
+test tests::atan2_f32_parallel_matches_serial_bit_exact ... ok
+test tests::banded_to_tridiagonal_band_packed_is_bit_exact ... ok
+test tests::cosh_tensor_contiguous_returns_expected_values ... ok
+test tests::cosh_scalar_returns_expected_value ... ok
+test tests::cumprod_1d ... ok
+test tests::cumprod_2d_dim0 ... ok
+test tests::cumprod_2d_dim1 ... ok
+test tests::cumprod_backward_interior_zero_matches_definition ... ok
+test tests::cumsum_1d ... ok
+test tests::cumsum_2d_dim0 ... ok
+test tests::cumsum_2d_dim1 ... ok
+test tests::cumsum_backward_is_reverse_cumsum ... ok
+test tests::cumsum_invalid_dim ... ok
+test tests::det_1x1 ... ok
+test tests::det_empty_matrix ... ok
+test tests::det_identity ... ok
+test tests::depthwise_conv2d_forward_matches_naive_reference ... ok
+test tests::det_known_3x3 ... ok
+test tests::depthwise_conv3d_forward_matches_naive_reference ... ok
+test tests::det_negative ... ok
+test tests::det_non_square_errors ... ok
+test tests::det_scaled_identity ... ok
+test tests::det_singular_is_zero ... ok
+test tests::depthwise_conv2d_backward_matches_naive_reference ... ok
+test tests::div_scalar_rejects_device_mismatch ... ok
+test tests::div_scalar_returns_expected_value ... ok
+test tests::dot_tensor_contiguous_pairwise_precision_at_large_n ... ok
+test tests::bmm_tensor_contiguous_pairwise_precision_at_large_k ... ok
+test tests::eig_diagonal_3x3 ... ok
+test tests::cumprod_invalid_dim ... ok
+test tests::div_tensor_supports_non_contiguous_layout ... ok
+test tests::eig_eigenvectors_satisfy_av_lambda_v ... ok
+test tests::eig_identity_2x2 ... ok
+test tests::eig_francis_shadow_profile_matches_full_eig_vectors_bit_exact ... ok
+test tests::cholesky_solve_f32_solves_spd_system ... ok
+test tests::eig_rotation_has_complex_eigenvalues ... ok
+test tests::eigh_f32_native_reconstructs_and_matches_torch ... ok
+test tests::cholesky_f32_blocked_reconstructs_and_lower_triangular ... ok
+test tests::eigh_identity ... ok
+test tests::eigh_known_2x2 ... ok
+test tests::eigh_reconstruction_3x3 ... ok
+test tests::eig_parallel_schur_vector_update_matches_single_thread_bit_exact ... ok
+test tests::eigh_tred2_tql2_orthonormal_and_reconstructs_24x24 ... ok
+test tests::eigh_tred2_values_only_full_lower_matches_packed_bit_exact ... ok
+test tests::eigvals_companion_complex_roots ... ok
+test tests::eigvals_matches_eig ... ok
+test tests::cumsum_parallel_matches_serial_bit_exact ... ok
+test tests::eigvalsh_f32_native_matches_torch_and_f64 ... ok
+test tests::eigvalsh_matches_eigh ... ok
+test tests::eigvalsh_two_stage_matches_live ... ok
+test tests::elementwise_strided_parallel_matches_serial_bit_exact ... ok
+test tests::elu_value_uses_expm1_bit_exact_torch ... ok
+test tests::empty_tensor_mean_is_nan ... ok
+test tests::empty_tensor_sum_is_zero ... ok
+test tests::eq_ne_scalar_respect_ieee_special_values ... ok
+test tests::eq_ne_tensor_contiguous_respect_ieee_special_values ... ok
+test tests::eq_scalar_returns_expected_values ... ok
+test tests::eq_tensor_contiguous_returns_expected_values ... ok
+test tests::exp_f64x4_matches_scalar_within_tolerance ... ok
+test tests::exp_log_roundtrip ... ok
+test tests::exp_scalar_of_one ... ok
+test tests::exp_scalar_returns_expected_value ... ok
+test tests::exp_tensor_contiguous_returns_expected_values ... ok
+test tests::expand_multiple_singleton_dims ... ok
+test tests::expand_non_singleton_fails ... ok
+test tests::expand_rank_mismatch_fails ... ok
+test tests::expand_same_shape_is_identity ... ok
+test tests::expand_singleton_dim ... ok
+test tests::expm1_scalar_returns_expected_value ... ok
+test tests::expm1_tensor_contiguous_returns_expected_values ... ok
+test tests::eigvalsh_blocked_matches_packed ... ok
+test tests::floor_scalar_returns_expected_value ... ok
+test tests::floor_tensor_contiguous_returns_expected_values ... ok
+test tests::gather_dim0_picks_values ... ok
+test tests::gather_dim1_picks_values ... ok
+test tests::gather_invalid_dim_returns_error ... ok
+test tests::gather_negative_index_returns_error ... ok
+test tests::gather_non_integer_index_returns_error ... ok
+test tests::gather_shape_mismatch_returns_error ... ok
+test tests::ge_tensor_contiguous_returns_expected_values ... ok
+test tests::gelu_scalar_returns_expected_value ... ok
+test tests::gelu_tensor_contiguous_returns_expected_values ... ok
+GOLDEN_EXTREMUM_BITS last_max0=8000000000000000 last_min1=0000000000000000 last_nan=7ff8000000005678 strided_max0=8000000000000000 strided_min1=0000000000000000 strided_nan=7ff8000000005678
+test tests::extremum_dim_values_contiguous_f64_matches_serial_bits ... ok
+test tests::eig_francis_shadow_profile_matches_values_path_bit_exact ... ok
+test tests::group_norm_f32_unit_dy_matches_general_reference_bits ... ok
+test tests::eig_francis_shadow_profile_matches_scalar_streams_bit_exact ... ok
+test tests::gt_tensor_contiguous_returns_expected_values ... ok
+test tests::group_norm_f64_unit_dy_matches_general_reference_bits ... ok
+test tests::index_select_dim0_swaps_rows ... ok
+test tests::index_select_dim1_picks_columns ... ok
+test tests::index_select_huge_index_returns_error ... ok
+test tests::index_select_invalid_dim_returns_error ... ok
+test tests::index_select_nan_index_returns_error ... ok
+test tests::dgemm_bt_matches_materialized_transpose_bit_exact ... ok
+test tests::index_select_negative_index_returns_error ... ok
+test tests::index_select_out_of_bounds_index_returns_error ... ok
+test tests::index_select_single_index ... ok
+test tests::inf_in_softmax_produces_nan_due_to_stability_trick ... ok
+test tests::inv_identity_3x3 ... ok
+test tests::inv_known_2x2 ... ok
+test tests::inv_requires_square_matrix ... ok
+test tests::inv_round_trip_matches_identity ... ok
+test tests::inv_singular_matrix_returns_error ... ok
+test tests::eig_large_real_av_eq_lambda_v_blocked_paths ... ok
+test tests::kernels_do_not_dirty_mxcsr ... ok
+test tests::layer_norm_f32_unit_dy_matches_general_reference_bits ... ok
+test tests::layer_norm_f64_unit_dy_matches_general_reference_bits ... ok
+test tests::le_ge_scalar_returns_expected_values ... ok
+test tests::le_tensor_contiguous_returns_expected_values ... ok
+test tests::leaky_relu_scalar_returns_expected_value ... ok
+test tests::leaky_relu_tensor_contiguous_returns_expected_values ... ok
+test tests::hessenberg_blocked_reconstructs_and_is_hessenberg ... ok
+test tests::log10_scalar_returns_expected_value ... ok
+test tests::log10_tensor_contiguous_returns_expected_values ... ok
+test tests::log1p_scalar_returns_expected_value ... ok
+test tests::log1p_tensor_contiguous_returns_expected_values ... ok
+test tests::log2_scalar_returns_expected_value ... ok
+test tests::log2_tensor_contiguous_returns_expected_values ... ok
+test tests::log_of_zero_is_negative_infinity ... ok
+test tests::log_scalar_of_e ... ok
+test tests::eig_francis_profile_matches_eigvals_bit_exact ... ok
+test tests::log_scalar_returns_expected_value ... ok
+test tests::log_softmax_dim_values ... ok
+test tests::log_softmax_preserves_precision_at_large_magnitudes ... ok
+test tests::log_tensor_contiguous_returns_expected_values ... ok
+test tests::log_softmax_dim_pairwise_logsumexp_at_large_n ... ok
+test tests::lt_gt_le_ge_scalar_respect_ieee_special_values ... ok
+test tests::lt_gt_le_ge_tensor_contiguous_respect_ieee_special_values ... ok
+test tests::lt_gt_scalar_returns_expected_values ... ok
+test tests::lt_tensor_contiguous_returns_expected_values ... ok
+test tests::lu_factor_1x1 ... ok
+test tests::lu_factor_already_upper_triangular ... ok
+test tests::lu_factor_empty_matrix ... ok
+test tests::lstsq_qr_recovers_overdetermined_solution_and_defers_rank_deficient ... ok
+test tests::lu_factor_identity_3x3 ... ok
+test tests::lu_factor_known_3x3 ... ok
+test tests::kernel_error_display_diagnostic_snapshot ... ok
+test tests::gemm_col_split_matches_single_bit_exact ... ok
+test tests::lu_factor_requires_2d ... ok
+test tests::lu_factor_requires_square ... ok
+test tests::lu_factor_zeros_on_diagonal_needs_pivoting ... ok
+test tests::lu_solve_3x3_system ... ok
+test tests::lu_solve_dimension_mismatch_errors ... ok
+test tests::lobpcg_top_k_matches_eigh ... ok
+test tests::lu_factor_f32_native_solves_and_reconstructs ... ok
+test tests::gemm_row_split_matches_single_bit_exact ... ok
+test tests::lu_solve_multiple_rhs ... ok
+test tests::lu_solve_simple_system ... ok
+test tests::masked_fill_all_masked ... ok
+test tests::masked_fill_none_masked ... ok
+test tests::masked_fill_replaces_masked_positions ... ok
+test tests::masked_fill_shape_mismatch_returns_error ... ok
+test tests::matmul_tensor_contiguous_pairwise_dot_product_precision_at_large_k ... ok
+test tests::matmul_tensor_contiguous_rejects_inner_dimension_mismatch ... ok
+test tests::matmul_tensor_contiguous_rejects_output_shape_overflow ... ok
+test tests::matmul_tensor_contiguous_rejects_rank_mismatch ... ok
+test tests::matmul_tensor_contiguous_returns_expected_values ... ok
+test tests::matrix_exp_defining_properties ... ok
+test tests::matrix_exp_f32_defining_properties ... ok
+test tests::max_dim_3d_reduces_middle_dim ... ok
+test tests::max_dim_invalid_dim_returns_error ... ok
+test tests::max_dim_reduces_along_dim0 ... ok
+test tests::max_dim_reduces_along_dim1 ... ok
+test tests::max_pool1d_direct_matches_2d_h1_first_tie_forward_backward_bit_exact ... ok
+test tests::max_pool2d_indices_preserve_first_tie_backward ... ok
+test tests::max_pool3d_2x2s2_backward_matches_generic_first_tie_bits ... ok
+test tests::lu_solve_mixed_refine_matches_f64_reference_and_residual ... ok
+test tests::max_pool3d_sum_scalar_backward_matches_materialized_bits ... ok
+test tests::max_scalar_returns_expected_value ... ok
+test tests::max_tensor_contiguous_returns_expected_values ... ok
+test tests::mean_dim_reduces_along_dim0 ... ok
+test tests::mean_dim_reduces_along_dim1 ... ok
+test tests::mean_tensor_contiguous_empty_returns_nan ... ok
+test tests::mean_tensor_contiguous_returns_expected_value ... ok
+test tests::mean_tensor_contiguous_single_element ... ok
+test tests::min_dim_invalid_dim_returns_error ... ok
+test tests::min_dim_reduces_along_dim0 ... ok
+test tests::min_dim_reduces_along_dim1 ... ok
+test tests::min_scalar_returns_expected_value ... ok
+test tests::min_tensor_contiguous_returns_expected_values ... ok
+test tests::mul_scalar_rejects_device_mismatch ... ok
+test tests::mul_scalar_returns_expected_value ... ok
+test tests::mul_tensor_broadcast_row_and_column ... ok
+test tests::mul_tensor_contiguous_rejects_shape_mismatch ... ok
+test tests::nan_propagation_in_min_max ... ok
+test tests::narrow_3d_tensor ... ok
+test tests::narrow_dim0_middle_rows ... ok
+test tests::narrow_dim1_selects_columns ... ok
+test tests::narrow_invalid_dim_fails ... ok
+test tests::narrow_out_of_bounds_fails ... ok
+test tests::narrow_start_plus_length_overflow_fails_closed ... ok
+test tests::ne_scalar_returns_expected_values ... ok
+test tests::ne_tensor_contiguous_returns_expected_values ... ok
+test tests::neg_scalar_double_negation_identity ... ok
+test tests::lu_factor_parallel_golden_output_matches_fixture ... ok
+test tests::neg_scalar_returns_expected_value ... ok
+test tests::neg_scalar_zero_is_zero ... ok
+test tests::neg_tensor_contiguous_empty_shape_returns_empty_output ... ok
+test tests::max_pool3d_indices_scatter_matches_rescan_first_tie_bits ... ok
+test tests::neg_tensor_contiguous_respects_storage_offset ... ok
+test tests::neg_tensor_contiguous_returns_expected_values ... ok
+test tests::neg_tensor_supports_non_contiguous_layout ... ok
+test tests::neg_tensor_contiguous_rejects_insufficient_storage ... ok
+test tests::norm_inf_propagates_nan ... ok
+test tests::outer_tensor_contiguous_rejects_output_shape_overflow ... ok
+test tests::lu_solve_f32_inverts_general_matrix ... ok
+test tests::pairwise_sum_map_parallel_matches_serial_bit_exact ... ok
+test tests::pairwise_sum_parallel_matches_serial_bit_exact ... ok
+test tests::parallel_argmax_argmin_dim_matches_serial_with_ties_and_nan ... ok
+test tests::parallel_max_min_dim_matches_serial_with_ties_and_nan ... ok
+test tests::parallel_sum_prod_dim_matches_serial ... ok
+test tests::parallel_var_std_dim_matches_serial ... ok
+test tests::pinv_qr_defers_rank_deficient_inputs ... ok
+test tests::pinv_qr_matches_known_full_rank_diagonal_embeddings ... ok
+test tests::parallel_gather_matches_serial_and_errors ... ok
+test tests::pow_parallel_matches_elementwise_bit_exact ... ok
+test tests::norm_tensor_contiguous_l2_pairwise_correctness_at_large_n ... ok
+test tests::pow_parallel_golden_output_matches_fixture ... ok
+test tests::pow_scalar_returns_expected_value ... ok
+test tests::pow_scalar_matches_libm_pow_negative_zero_fractional_exponent ... ok
+test tests::pow_scalar_zero_exponent ... ok
+test tests::pow_tensor_contiguous_negative_exponent ... ok
+test tests::pow_tensor_contiguous_returns_expected_values ... ok
+test tests::pow_tensor_f32_matches_libm_for_negative_zero_fractional_exponent ... ok
+test tests::pow_tensor_matches_libm_for_negative_zero_fractional_exponent ... ok
+test tests::pow_tensor_negative_infinity_base_fractional_exponent_matches_libm ... ok
+test tests::prod_dim_empty_with_storage_offset_returns_ones ... ok
+test tests::prod_dim_invalid_dim_returns_error ... ok
+test tests::prod_dim_reduces_along_dim0 ... ok
+test tests::prod_dim_reduces_along_dim1 ... ok
+test tests::pow_scalar_fractional_exponent ... ok
+test tests::lu_factor_reconstructs_pa_eq_lu ... ok
+test tests::prop_broadcast_shape_is_symmetric ... ok
+test tests::prop_cholesky_reconstruction_positive_definite ... ok
+test tests::prop_broadcast_add_scalar_matches_elementwise ... ok
+test tests::prop_broadcast_mul_is_commutative ... ok
+test tests::prop_det_of_diagonal_is_product_of_diag ... ok
+test tests::prop_det_of_identity_is_one ... ok
+test tests::prop_cumprod_backward_matches_finite_difference ... ok
+test tests::norm_dim_general_p_parallel_matches_serial_bit_exact ... ok
+test tests::prop_exp_log_round_trip ... ok
+test tests::prop_inv_roundtrip_diagonally_dominant ... ok
+test tests::prop_mean_dim_is_sum_dim_over_count ... ok
+test tests::prop_qr_reconstruction_square_matrix ... ok
+test tests::prop_softmax_sums_to_one ... ok
+test tests::prop_matmul_matches_naive_triple_loop ... ok
+test tests::prop_svd_reconstruction_within_tolerance ... ok
+test tests::qr_1x1 ... ok
+test tests::prop_svd_singular_values_are_nonnegative ... ok
+test tests::qr_empty_matrix ... ok
+test tests::prop_sum_reduction_matches_naive ... ok
+test tests::qr_identity_3x3_complete ... ok
+test tests::qr_known_3x3_reduced ... ok
+test tests::prop_unary_neg_is_self_inverse ... ok
+test tests::qr_r_is_upper_triangular ... ok
+test tests::qr_rejects_1d_tensor ... ok
+test tests::qr_tall_matrix_4x2_complete ... ok
+test tests::qr_tall_matrix_4x2_reduced ... ok
+test tests::qr_wide_matrix_2x4_reduced ... ok
+test tests::reciprocal_of_zero_is_infinity ... ok
+test tests::reciprocal_scalar_negative ... ok
+test tests::reciprocal_scalar_of_one ... ok
+test tests::reciprocal_scalar_returns_expected_value ... ok
+test tests::reciprocal_tensor_contiguous_returns_expected_values ... ok
+test tests::prop_var_dim_matches_naive_two_pass ... ok
+test tests::reduce_sum_for_broadcast_multiple_singletons ... ok
+test tests::qr_blocked_tall_reconstructs_and_orthonormal ... ok
+test tests::reduce_sum_for_broadcast_rejects_gradient_len_mismatch ... ok
+test tests::reduce_sum_for_broadcast_rejects_invalid_broadcast_contract ... ok
+test tests::reduce_sum_for_broadcast_rejects_rank_mismatch ... ok
+test tests::reduce_sum_for_broadcast_singleton_leading_dim ... ok
+test tests::relu_scalar_negative_returns_zero ... ok
+test tests::relu_scalar_positive_passes_through ... ok
+test tests::relu_scalar_zero_returns_zero ... ok
+test tests::relu_tensor_contiguous_preserves_simd_tail_values ... ok
+test tests::relu_tensor_contiguous_returns_expected_values ... ok
+test tests::round_scalar_ties_to_even ... ok
+test tests::round_tensor_contiguous_f32_ties_to_even ... ok
+test tests::round_tensor_contiguous_f64_ties_to_even ... ok
+test tests::scaled_gemm_matches_post_scale_reference ... ok
+test tests::reduce_sum_for_broadcast_f32_parallel_matches_serial_scatter_bit_exact ... ok
+test tests::scatter_add_parallel_matches_serial_with_collisions_bit_exact ... ok
+test tests::scatter_dim0_places_values ... ok
+test tests::scatter_dim1_places_values ... ok
+test tests::scatter_empty_index_returns_input_view ... ok
+test tests::scatter_f32_empty_index_returns_input_view ... ok
+test tests::scatter_invalid_dim_returns_error ... ok
+test tests::scatter_negative_index_returns_error ... ok
+test tests::scatter_non_finite_index_returns_error ... ok
+test tests::sigmoid_scalar_at_zero_returns_half ... ok
+test tests::sigmoid_scalar_large_negative_approaches_zero ... ok
+test tests::sigmoid_scalar_large_positive_approaches_one ... ok
+test tests::sigmoid_tensor_contiguous_returns_expected_values ... ok
+test tests::sign_scalar_nan_is_zero ... ok
+test tests::sign_scalar_returns_expected_value ... ok
+test tests::sign_tensor_contiguous_nan_is_zero ... ok
+test tests::sign_tensor_contiguous_returns_expected_values ... ok
+test tests::silu_scalar_returns_expected_value ... ok
+test tests::silu_tensor_contiguous_returns_expected_values ... ok
+test tests::simd_and_scalar_paths_produce_same_results ... ok
+test tests::scatter_add_f32_parallel_matches_serial_with_collisions_bit_exact ... ok
+test gemm::tile_iso_tests::gemm_col_parallel_is_bit_exact_vs_serial ... ok
+test tests::sinh_scalar_returns_expected_value ... ok
+test tests::sinh_tensor_contiguous_returns_expected_values ... ok
+test tests::slogdet_identity ... ok
+test tests::slogdet_large_det ... ok
+test tests::slogdet_matches_det ... ok
+test tests::slogdet_negative_det ... ok
+test tests::slogdet_singular ... ok
+test tests::reduce_sum_for_broadcast_parallel_matches_serial_scatter_bit_exact ... ok
+test tests::cholesky_solve_f32_blocked_path_upper_inverse_n256 ... ok
+test tests::simd_unary_parallel_path_matches_serial_bit_exact ... ok
+test tests::smooth_l1_reduced_f64_empty_matches_tensor_reductions ... ok
+test tests::cholesky_solve_blocked_path_upper_inverse_n256 ... ok
+test tests::softmax_dim_invalid_dim ... ok
+test tests::simd_binary_parallel_path_matches_serial_bit_exact ... ok
+test tests::softmax_dim_preserves_relative_order ... ok
+test tests::softmax_dim_sums_to_one ... ok
+test tests::cholesky_solve_f32_blocked_path_inverse_n256 ... ok
+test tests::smooth_l1_reduced_f64_matches_materialized_pairwise_bits ... ok
+test tests::softmax_handles_large_values_without_overflow ... ok
+test tests::qr_f32_native_reconstructs_and_orthonormal ... ok
+test tests::softmax_dim_pairwise_sums_exactly_to_one_at_large_n ... ok
+test tests::softmax_with_finite_extremes_is_well_defined ... ok
+test tests::softmax_log_softmax_strided_shift_invariance_and_exp_consistency ... ok
+test tests::sort_1d_ascending ... ok
+test tests::sort_1d_descending ... ok
+test tests::sort_invalid_dim ... ok
+test tests::sort_2d_along_dim1 ... ok
+test tests::sort_places_nan_as_largest ... ok
+test tests::sort_f32_radix_path_matches_comparison_bit_exact ... ok
+test tests::sparse_coo_add_combines_tensors ... ok
+test tests::sparse_coo_coalesce_sums_duplicates ... ok
+test tests::softmax_family_parallel_matches_serial_bit_exact ... ok
+test tests::sqrt_scalar_of_one ... ok
+test tests::sparse_coo_matmul_dense_matches_dense_matmul ... ok
+test tests::sqrt_scalar_of_zero ... ok
+test tests::sqrt_scalar_returns_expected_value ... ok
+test tests::sqrt_tensor_contiguous_returns_expected_values ... ok
+test tests::stack_along_dim0 ... ok
+test tests::sort_radix_path_matches_comparison_bit_exact ... ok
+test tests::stack_along_dim1_f32 ... ok
+test tests::std_dim_reduces_along_dim0 ... ok
+test tests::stack_along_dim1 ... ok
+test tests::sub_scalar_rejects_dtype_mismatch ... ok
+test tests::sub_scalar_returns_expected_value ... ok
+test tests::sub_tensor_contiguous_respects_storage_offsets ... ok
+test tests::sum_dim_1d_reduces_to_scalar ... ok
+test tests::sum_dim_empty_with_storage_offset_returns_zeros ... ok
+test tests::sum_dim_3d_reduces_middle_dim ... ok
+test tests::sum_dim_f32_empty_with_storage_offset_returns_zeros ... ok
+test tests::sum_dim_invalid_dim_returns_error ... ok
+test tests::sum_dim_reduces_along_dim0 ... ok
+test tests::sum_dim_reduces_along_dim1 ... ok
+test tests::sum_parallel_crossover_probe ... ignored, perf probe: SUM_PARALLEL_THRESHOLD crossover (run with --ignored --nocapture)
+test tests::cholesky_solve_blocked_path_inverse_n256 ... ok
+test tests::softmax_family_parallel_golden_output_matches_fixture ... ok
+test tests::smooth_l1_backward_reduced_f64_matches_uniform_dloss_bits ... ok
+test tests::sort_parallel_matches_serial_bit_exact ... ok
+test tests::sum_tensor_contiguous_empty_returns_zero ... ok
+test tests::sum_tensor_contiguous_respects_storage_offset ... ok
+test tests::sum_tensor_contiguous_pairwise_handles_block_boundary ... ok
+test tests::sum_tensor_contiguous_returns_expected_value ... ok
+test tests::sum_dim_tensor_contiguous_pairwise_general_strided_at_large_n ... ok
+test tests::svd_deferred_left_rejects_rank_deficient_square ... ok
+test tests::qr_parallel_apply_reconstructs_and_orthonormal ... ok
+test tests::svd_identity_2x2 ... ok
+test tests::svd_diagonal_sorted ... ok
+test tests::svd_lowrank_recovers_exact_low_rank ... ok
+test tests::svd_rank_deficient_reconstructs ... ok
+test tests::svd_ill_conditioned_hilbert ... ok
+test tests::svd_rank_deficient_square_fast_path_skips_well_conditioned ... ok
+test tests::svd_reconstruction_3x3 ... ok
+test tests::svd_tall_3x2 ... ok
+test tests::sum_dim_tensor_contiguous_pairwise_fast_path_at_large_n ... ok
+test tests::svd_tall_orthonormal_and_reconstructs_40x24 ... ok
+test tests::sum_tensor_contiguous_golden_output_is_stable ... ok
+test tests::svd_wide_2x3 ... ok
+test tests::svdvals_matches_full_svd ... ok
+test tests::symmetric_rank2k_lower_update_finite_matches_two_gemm_bits ... ok
+test tests::sum_tensor_contiguous_pairwise_beats_naive_on_adversarial_input ... ok
+test tests::symmetric_rank2k_lower_update_matches_scalar_reference ... ok
+test tests::symmetric_rank2k_lower_update_nonfinite_matches_two_gemm_bits ... ok
+test tests::symmetric_to_banded_reconstructs_and_is_banded ... ok
+test tests::symmetric_to_banded_rejects_short_input ... ok
+test tests::tanh_scalar_at_zero_returns_zero ... ok
+test tests::tanh_scalar_is_odd_function ... ok
+test tests::tanh_scalar_large_positive_approaches_one ... ok
+test tests::tanh_tensor_contiguous_returns_expected_values ... ok
+test tests::topk_2d_along_dim1 ... ok
+test tests::svdvals_matches_full_svd_tall_and_wide ... ok
+test tests::topk_k_exceeds_dim_returns_error ... ok
+test tests::topk_f32_bounded_selection_matches_full_sort_bit_exact ... ok
+test tests::topk_largest_selects_nan_first ... ok
+test tests::topk_largest_sorted ... ok
+test tests::topk_smallest_sorted ... ok
+test tests::svd_deferred_left_full_rank_square_contract_96 ... ok
+test tests::trunc_scalar_returns_expected_value ... ok
+test tests::trunc_tensor_contiguous_returns_expected_values ... ok
+test tests::topk_parallel_matches_serial_bit_exact ... ok
+test tests::softmax_f32_parallel_matches_serial_bit_exact ... ok
+test tests::var_dim_empty_with_storage_offset_returns_nan ... ok
+test tests::var_dim_reduces_along_dim0 ... ok
+test tests::var_dim_reduces_along_dim1 ... ok
+test tests::eigh_f32_tql2_deferred_parallel_reconstructs_n288 ... ok
+test tests::where_all_false ... ok
+test tests::where_all_true ... ok
+test tests::where_selects_by_condition ... ok
+test tests::winograd_conv2d_f32_matches_direct_within_tolerance ... ok
+test tests::winograd_conv2d_matches_direct_within_tolerance ... ok
+test tests::var_dim_tensor_contiguous_pairwise_precision_at_large_n ... ok
+test tests::unary_strided_parallel_matches_serial_bit_exact ... ok
+test tests::svd_deferred_left_thread_count_bit_exact ... ok
+test tests::inv_blocked_path_round_trip_n256 ... ok
+test tests::smooth_l1_backward_reduced_one_sided_helpers_match_full_bits ... ok
+test tests::sum_parallel_is_bit_identical_to_serial ... ok
+test tests::lu_solve_f32_blocked_path_inverse_n256 ... ok
+test tests::symmetric_to_banded_values_matches_unblocked ... ok
+test tests::triangular_solve_blocked_matches_serial_n256 ... ok
+test tests::svd_rank_deficient_square_fast_path_contract_128 ... ok
+test tests::eigh_tql2_deferred_parallel_reconstructs_n288 ... ok
+test tests::cholesky_blocked_matches_serial_and_reconstructs ... ok
+test tests::svd_tall_parallel_bidiag_reconstructs_n384 ... ok
+test gemm::tile_iso_tests::gemm_2d_parallel_is_bit_exact_vs_serial ... ok
+
+test result: ok. 504 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 3.11s
+
+  [2m2026-06-20T18:40:52.471656Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mRemote command finished: exit=0 in 23877ms[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:653 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:52.471948Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mRetrieving build artifacts...[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:702 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:52.471965Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRetrieving artifacts from /data/projects/frankentorch-cod-b-bold-20260620T182046Z on hz2[0m
+    [2;3mat[0m rch/src/transfer.rs:2246 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:54.470685Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mArtifacts retrieved in 1998ms (1 files, 1180 bytes)[0m
+    [2;3mat[0m rch/src/transfer.rs:2301 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T18:40:54.470706Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mArtifacts retrieved: 1 files, 1180 bytes in 1998ms[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:735 [2;3mon[0m ThreadId(1)
+
+[RCH] remote hz2 (60.0s)

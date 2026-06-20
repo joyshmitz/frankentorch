@@ -103,6 +103,76 @@ is explicitly satisfied.
   - `artifacts/perf/frankentorch-kgs4.139/gauntlet_20260620T1822Z/ubs_docs_artifact.log`
   - `artifacts/perf/frankentorch-kgs4.139/gauntlet_20260620T1822Z/summary.md`
 
+## 2026-06-20 - frankentorch-kgs4.120 - RMSNorm f64 unit-dy no-ship
+
+- Lever attempted: the existing code-first f64 `rms_norm_backward_f64`
+  all-ones-`dy` specialization, which guard-scanned `dy`, `x`, and `weight`,
+  precomputed per-row `rstd` values, and skipped dense upstream-gradient loads
+  in the scalar-sum RMSNorm backward.
+- Workload: f64 RMSNorm train scalar sum, shape `[2048,1024]`, affine weight
+  gradient enabled, measured through `ops_bench` `rms_norm/grad_2048x1024`.
+- Source of idea: branch-specialized all-ones upstream, partial evaluation of
+  scalar-loss backward, row-stat reuse, and the alien-graveyard warnings that
+  local SIMD/cache tricks must still beat incumbent constant factors before
+  deeper arena/tape/layout work is justified.
+- Active same-worker evidence: rch Criterion on `vmi1153651`, release-profile
+  active branch time `[51.215 ms, 59.289 ms, 67.477 ms]`.
+- Generic-disabled same-worker evidence: same worker and target dir, branch
+  condition disabled, time `[52.546 ms, 58.407 ms, 64.377 ms]`; Criterion
+  reported `[-8.3699% +4.5426% +18.757%]`, `p=0.55`, no detected change.
+- Reverted/final same-worker evidence: same worker and target dir, f64 branch,
+  helper, and branch-specific bit-reference guard removed from product source,
+  time `[46.294 ms, 64.615 ms, 87.183 ms]`; Criterion reported
+  `[-19.462% +11.833% +54.456%]`, `p=0.58`, no detected change.
+- PyTorch comparator: local CPU PyTorch `2.12.1+cpu`, 32 threads, clone/detach
+  per rep, same f64 shape and scalar loss, median `13.241798 ms`, mean
+  `13.273885 ms`, min `6.298722 ms`, p95 `17.442162 ms`. rch workers still
+  lack `torch`, so this remains a mixed-location PyTorch ratio.
+- Ratios: active branch/generic-disabled `1.0151x` slower; active
+  branch/PyTorch `4.4774x` slower; generic-disabled/PyTorch `4.4110x` slower;
+  final source/PyTorch `4.8796x` slower.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Verdict: reject and revert. Removed the f64 unit-dy branch, removed
+  `rms_norm_backward_f64_unit_dy_finite`, removed the now-misleading
+  branch-specific bit-reference test, and kept the generic f64 RMSNorm
+  backward as the only product path.
+- Retry condition: do not retry a f64 RMSNorm all-ones-`dy` branch that
+  materializes per-row `rstds` and guard-scans `dy`, `x`, and `weight`. A retry
+  must move below this abstraction boundary: persistent row-stat reuse from
+  forward into backward, scalar-loss fusion in the tape scheduler, arena/bump
+  allocation for session/tensor/grad buffers, f64-native storage/layout, or a
+  generated fused f64 RMSNorm-sum primitive with a same-worker keep gate.
+- Gates:
+  - `rch exec -- cargo test -p ft-kernel-cpu --lib -- --nocapture`: passed,
+    `504 passed; 0 failed; 2 ignored`.
+  - `rch exec -- cargo test -p ft-api functional_rms_norm --lib -- --nocapture`:
+    passed, `6 passed; 0 failed`.
+  - `rch exec -- cargo test -p ft-conformance strict_scheduler -- --nocapture`:
+    passed, strict-scheduler conformance green.
+  - `rch exec -- cargo check -p ft-kernel-cpu --lib`: passed.
+  - `rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings`: passed.
+  - `git diff --check`: passed.
+  - `ubs` on the scoped source/docs/artifact summary surface: passed with `0`
+    critical issues; it still reports the existing broad warning inventory in
+    the large kernel file.
+  - `rustfmt --edition 2024 --check crates/ft-kernel-cpu/src/lib.rs` remains
+    blocked by existing whole-file rustfmt drift outside this lane; no broad
+    reformat was applied.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/current_active_rch_rms_norm_grad.log`
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/generic_disabled_rch_rms_norm_grad.log`
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/final_removed_rch_rms_norm_grad.log`
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/local_pytorch_rms_norm_f64_sum.log`
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/test_ft_kernel_cpu_lib.log`
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/test_ft_api_functional_rms_norm.log`
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/test_ft_conformance_strict_scheduler.log`
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/check_ft_kernel_cpu_lib.log`
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/clippy_ft_kernel_cpu_lib.log`
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/rustfmt_ft_kernel_cpu_check.log`
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/git_diff_check.log`
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/ubs_scoped.log`
+  - `artifacts/perf/frankentorch-kgs4.120/gauntlet_20260620T1822Z/summary.md`
+
 ## 2026-06-20 - frankentorch-kgs4.123 - RMSNorm f32 unit-dy no-ship
 
 - Lever attempted: the existing code-first f32 `rms_norm_backward_f32`

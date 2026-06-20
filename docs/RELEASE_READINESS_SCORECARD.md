@@ -8,6 +8,7 @@ Updated: 2026-06-20
 |---|---:|---:|---:|---|
 | `frankentorch-kgs4.139` | BatchNorm1d f64 automatic `tensor_sum` shortcut `[16,128,256]` NCL | same-host `7.42x` slower | internal keep; local ordinary native `11.622 ms` -> automatic shortcut `6.6151 ms` (`1.76x` faster); rch after row `6.0836 ms`; explicit scalar API still faster at `5.1754 ms` | kept; route remaining gap to BatchNorm output deforestation, generated scalar-loss kernels, tape/session arena reuse, and saved-stat workspace reuse |
 | `frankentorch-kgs4.138` | BatchNorm1d f64 fused scalar-sum train step `[16,128,256]` NCL | same-host `4.52x` slower | internal keep; local native `11.178 ms` -> scalar-sum `4.7944 ms` (`2.33x` faster); rch same-run scalar/native `25.058 ms` / `43.610 ms` (`1.74x` faster) | kept; route remaining gap to automatic scalar-loss pattern matching, tape/session arena reuse, saved-stat workspace reuse, and algebraic zero-`dx` proof |
+| `frankentorch-kgs4.120` | RMSNorm f64 train scalar-sum step `[2048,1024]` | mixed-location `4.88x` slower | no gain; active f64 unit-dy branch `59.289 ms` vs generic-disabled `58.407 ms`, `p=0.55`; final source `64.615 ms`, `p=0.58` | rejected/reverted f64 unit-dy branch; route to automatic scalar-loss fusion, persistent row-stat/workspace reuse, arena allocation, f64-native layout, or generated fused code |
 | `frankentorch-kgs4.137` | RMSNorm f64 scalar-sum train step `[2048,1024]` | mixed-location `0.86x` PyTorch median, not release-counted | no gain; same-worker scalar `12.329 ms` vs materialized same-run `12.086 ms` and baseline `12.229 ms` | rejected/no source landed; route to tape/session allocation, workspace reuse, automatic scalar-loss fusion, or f32-native layout |
 | `frankentorch-kgs4.125` | BatchNorm1d f64 native NCL train step `[16,128,256]` | same-host `4.85x` slower | internal keep; RCH native `4.3741 ms` vs fold `30.484 ms`; local row-coarsening `11.865 ms` -> `10.914 ms` | kept; route remaining gap to f64 scalar-loss fusion, dense-dy removal, tape/workspace reuse, and saved-stat reuse |
 | `frankentorch-kgs4.123` | RMSNorm f32 train scalar-sum step `[2048,1024]` | mixed-location `1.79x` slower | no gain; active f32 unit-dy branch `67.574 ms` vs final generic `19.613 ms` on `vmi1149989` | rejected/reverted f32 unit-dy branch; keep benchmark row; route to row-stat reuse, scalar-loss tape fusion, arena allocation, and f32 storage/layout |
@@ -30,8 +31,8 @@ Updated: 2026-06-20
 | `frankentorch-kgs4.133` | conv2d f64 train step `[4,64,64,64]`, 64 3x3 filters | `1.91x` slower; candidate `1.86x` slower | no gain; same-worker rch `121.07 ms` -> `117.92 ms`, `p=0.38`, no change detected | rejected; removed dormant all-ones-dout branch |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `23/23` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 22L / 1N`; the RMSNorm scalar-sum comparator is neutral for
+Measured-discipline score: `24/24` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 23L / 1N`; the RMSNorm scalar-sum comparator is neutral for
 release scoring because the candidate was faster than local PyTorch by
 mixed-location ratio but failed the same-worker FrankenTorch keep gate.
 Correctness guards are green and the SDPA, MaxPool3d,
@@ -75,6 +76,27 @@ large-file drift, but the touched BatchNorm shortcut hunks were manually
 formatted and the touched-symbol rustfmt grep is clean. Scoped UBS timed out
 after 240s on the giant Rust files with no findings emitted; docs/artifact-only
 UBS exited 0 but reported Markdown as no recognizable language.
+
+### 2026-06-20 RMSNorm f64 unit-dy no-ship (`frankentorch-kgs4.120`)
+
+The existing f64 all-ones-`dy` RMSNorm backward branch was batch-verified and
+removed. On `vmi1153651`, the active branch measured
+`[51.215 ms, 59.289 ms, 67.477 ms]` for
+`rms_norm/grad_2048x1024`; the temporary generic-disabled probe measured
+`[52.546 ms, 58.407 ms, 64.377 ms]` with no detected change (`p=0.55`), and
+the final source after removing the branch/helper/test measured
+`[46.294 ms, 64.615 ms, 87.183 ms]` with no detected change (`p=0.58`).
+The active branch was `1.0151x` slower than the generic-disabled median.
+
+Local PyTorch CPU `2.12.1+cpu`, 32 threads, clone/detach per rep, measured
+`13.241798 ms` median for the same f64 scalar-sum train row. The final
+FrankenTorch path is still `4.88x` slower by this mixed-location ratio; the
+active rejected branch was `4.48x` slower. Gates passed for full
+`ft-kernel-cpu` lib tests (`504 passed; 0 failed; 2 ignored`), API RMSNorm
+tests (`6 passed; 0 failed`), strict-scheduler conformance, `ft-kernel-cpu`
+check, `ft-kernel-cpu` clippy, `git diff --check`, and scoped UBS with `0`
+critical issues. Whole-file rustfmt on the touched giant file remains blocked
+by existing unrelated drift, so no broad formatting rewrite was applied.
 
 ### 2026-06-20 RMSNorm f32 unit-dy no-ship (`frankentorch-kgs4.123`)
 
