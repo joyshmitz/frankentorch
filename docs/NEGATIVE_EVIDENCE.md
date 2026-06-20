@@ -4,6 +4,44 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-20 - frankentorch-kgs4.115 - f32 GroupNorm unit-dy keep with PyTorch loss
+
+- Lever verified: already-landed f32 `group_norm_backward_f32` all-ones-`dy`
+  fast path for the f32 GroupNorm training row. This closeout verifies the
+  code-first change; no source edits were made in this pass.
+- Workload: f32 GroupNorm forward plus backward, `[N,C,H,W]=[8,64,28,28]`,
+  `num_groups=32`, affine weight and bias require gradients, scalar `sum`
+  loss.
+- Same-worker rch A/B on `hz1`: parent baseline at `e1927d48` fused
+  `19.13 ms`; current fused `11.72 ms`; current/parent latency ratio
+  `0.6126x`, or `1.63x` faster. Current composed-vs-fused diagnostic was
+  `101.96 ms -> 11.72 ms` (`8.70x`).
+- PyTorch head-to-head: local PyTorch `2.12.1+cpu` in
+  `/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python`; PyTorch
+  best-of-12 `0.615446 ms`, median `0.989997 ms`; current FrankenTorch best
+  `11.72 ms`; ratio vs PyTorch best `19.04x` slower.
+- Remote PyTorch caveat: rch was used for Rust build/bench proof, but the
+  workers still lack `torch`; PyTorch ratio evidence is local oracle-only.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Verdict: keep the f32 GroupNorm unit-dy path as a measured internal win;
+  classify as a PyTorch-loss row for release readiness. No source revert.
+- Retry condition: do not retry another narrow `dy == 1` GroupNorm branch for
+  this shape unless a fresh profile shows the primitive remains dominant after
+  session setup, tape allocation, tensor materialization, and scalar-sum
+  backward are separated. Route the remaining gap to arena-backed tensor/tape
+  allocation, fused training primitives, persistent workspaces, parallel f32
+  scheduling, or an explicit f32 Criterion/PyTorch gauntlet row for
+  `[32,256,28,28]`.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.115/gauntlet_20260620T0126Z/SCORECARD.md`
+  - `artifacts/perf/frankentorch-kgs4.115/gauntlet_20260620T0126Z/NEGATIVE_EVIDENCE_LEDGER.md`
+  - `artifacts/perf/frankentorch-kgs4.115/gauntlet_20260620T0126Z/current_rch_group_norm_f32_ab.log`
+  - `artifacts/perf/frankentorch-kgs4.115/gauntlet_20260620T0126Z/baseline_parent_rch_group_norm_f32_ab.log`
+  - `artifacts/perf/frankentorch-kgs4.115/gauntlet_20260620T0126Z/local_pytorch_group_norm_f32_grad.log`
+  - `artifacts/perf/frankentorch-kgs4.115/gauntlet_20260620T0126Z/test_ft_kernel_cpu_group_norm_f32_unit_dy.log`
+  - `artifacts/perf/frankentorch-kgs4.115/gauntlet_20260620T0126Z/test_ft_api_group_norm_f32_grad.log`
+  - `artifacts/perf/frankentorch-kgs4.115/gauntlet_20260620T0126Z/test_ft_conformance_strict_scheduler.log`
+
 ## 2026-06-19 - frankentorch-kgs4.113 - SDPA backward scaled GEMM alpha keep with PyTorch loss
 
 - Lever: fold SDPA backward's final `scale` multiply for `dQ` and `dK` into

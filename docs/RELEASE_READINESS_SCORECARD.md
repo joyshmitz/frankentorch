@@ -1,11 +1,12 @@
 # FrankenTorch Release-Readiness Scorecard
 
-Updated: 2026-06-19
+Updated: 2026-06-20
 
 ## Performance Gauntlet
 
 | Bead | Workload | Result vs PyTorch | Before/after verdict | Release action |
 |---|---:|---:|---:|---|
+| `frankentorch-kgs4.115` | GroupNorm f32 train step `[8,64,28,28]`, groups `32` | `19.04x` slower | internal keep; same-worker rch parent `19.13 ms` -> current `11.72 ms` | kept; route remaining gap to allocation/tape/fusion/parallel f32 scheduling |
 | `frankentorch-kgs4.113` | SDPA f64 train step `[16,512,64]` | `1.29x` slower | internal keep; same-worker rch `114.40 ms` old post-scale -> `82.730 ms` scaled alpha | kept; route remaining gap to SDPA scheduling/allocation/fusion |
 | `frankentorch-kgs4.112` | avg_pool2d f64 train step `[8,64,64,64]` | `4.54x` slower | existing 2x2s2 fast path verified; direct-assignment candidate `58.600 ms` -> `68.624 ms` rejected | keep gauntlet harness/evidence; product source unchanged |
 | `frankentorch-kgs4.117` | max_pool3d f64 train step `[2,32,16,32,32]` | `9.73x` slower | internal keep; `20.585 ms` -> `15.794 ms`; remote PyTorch arm unavailable on `hz2` | kept; profile deeper end-to-end gap |
@@ -17,10 +18,10 @@ Updated: 2026-06-19
 | `frankentorch-kgs4.128` | max_pool3d f64 train step `[2,32,16,32,32]` | `9.38x` slower clean baseline | no gain; borrowed-input median `22.764 ms`, unit-dout median `16.160 ms`, sequential unit-dout median `22.465 ms` | reverted product candidates; keep stage probe |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `10/10` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 10L / 0N`. Correctness guards are green and the SDPA, MaxPool3d, Linear,
-and SmoothL1 levers include real internal speedups, but no measured workload is
-performance-dominant against PyTorch yet.
+Measured-discipline score: `11/11` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 11L / 0N`. Correctness guards are green and the SDPA, MaxPool3d,
+Linear, GroupNorm, and SmoothL1 levers include real internal speedups, but no
+measured workload is performance-dominant against PyTorch yet.
 
 ### 2026-06-19 root-cause — the pooling-train-step losses are the generic backward machinery (`frankentorch-96e5d`)
 
@@ -64,10 +65,22 @@ CPU remains much faster at `7.593859 ms`, so current FT/PyTorch is still `3.50x`
 slower. Gates: ft-kernel-cpu conv3d 2/0, ft-api conv3d 10/0, strict scheduler
 conformance 1/0.
 
+GroupNorm f32 unit-dy (`frankentorch-kgs4.115`): existing code-first f32 all-ones
+`dy` fast path is now batch-verified. Same-worker `hz1` parent baseline at
+`e1927d48` fused `19.13 ms` -> current `11.72 ms` (`1.63x` faster) on
+`group_norm_f32_grad_ab`; current composed-vs-fused diagnostic is `101.96 ms`
+-> `11.72 ms` (`8.70x`). Local PyTorch CPU `2.12.1+cpu` remains much faster at
+`0.615446 ms` best-of-12, so current FT/PyTorch is still `19.04x` slower.
+Gates: ft-kernel-cpu f32 unit-dy guard 1/0, ft-api f32 grad parity 1/0, strict
+scheduler conformance 1/0.
+
 ## Current Gates
 
 | Gate | Scope | Result |
 |---|---|---|
+| Rust A/B | `rch exec -- cargo run --release -p ft-api --example group_norm_f32_grad_ab` | `frankentorch-kgs4.115` current ran on `hz1`: composed `101.96 ms`, fused current `11.72 ms`; detached parent `e1927d48` on `hz1`: fused `19.13 ms`; current is `1.63x` faster |
+| PyTorch oracle | local CPU torch f32 GroupNorm best-of-12, `[8,64,28,28]`, groups `32`, affine grads, sum loss | PyTorch `2.12.1+cpu` best `0.615446 ms`, median `0.989997 ms`; current FrankenTorch best `11.72 ms`, ratio `19.04x` slower |
+| Correctness | `rch exec -- cargo test -p ft-kernel-cpu group_norm_f32_unit_dy_matches_general_reference_bits`; `rch exec -- cargo test -p ft-api functional_group_norm_f32_grad_matches_f64_path`; `rch exec -- cargo test -p ft-conformance strict_scheduler` | all passed for `frankentorch-kgs4.115` on rch workers `vmi1153651`, `ovh-a`, and `vmi1152480` |
 | Criterion | `cargo bench -p ft-api --bench ops_bench -- smooth_l1/grad_8m --noplot` | `frankentorch-grefr` direct local A/B completed; paired-randn candidate `469.36 ms` vs pre-lever `588.51 ms`; PyTorch `347.528377 ms`, ratio `1.35x` slower |
 | Remote build/bench | `rch exec -- cargo bench -p ft-api --bench ops_bench -- smooth_l1/grad_8m --noplot` | pre-lever remote row on `vmi1264463` `2.1181 s`; paired-randn candidate row on `vmi1293453` `944.17 ms`; candidate retry selected `vmi1264463` but fell back local after sync timeout; remote rows are routing evidence, not decisive A/B proof |
 | Compile | `rch exec -- cargo check -p ft-api` | passed for `frankentorch-grefr` |
