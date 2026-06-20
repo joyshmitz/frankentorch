@@ -1,0 +1,523 @@
+  [2m2026-06-20T10:59:14.702600Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSelected worker: vmi1149989 at root@212.90.121.76 (6 slots remaining after reservation, speed 50.0)[0m
+    [2;3mat[0m rch/src/hook.rs:921 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:14.967546Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mStarting remote compilation pipeline for frankentorch (hash: dbca29276fa80333)[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:241 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:14.967605Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mPrepared dependency sync manifest for 13 roots[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:263 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:16.531420Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mSyncing project to worker vmi1149989...[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:323 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:16.531465Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch -> /data/projects/frankentorch on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:24.855771Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 8324ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:24.855840Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-api -> /data/projects/frankentorch/crates/ft-api on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:26.709882Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1854ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:26.709973Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-autograd -> /data/projects/frankentorch/crates/ft-autograd on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:28.530630Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1820ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:28.530708Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-conformance -> /data/projects/frankentorch/crates/ft-conformance on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:30.353554Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1822ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:30.353630Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-core -> /data/projects/frankentorch/crates/ft-core on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:32.182987Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1829ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:32.183070Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-data -> /data/projects/frankentorch/crates/ft-data on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:34.057068Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1873ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:34.057145Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-device -> /data/projects/frankentorch/crates/ft-device on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:35.987800Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1930ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:35.987903Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-dispatch -> /data/projects/frankentorch/crates/ft-dispatch on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:37.853360Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1865ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:37.853452Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-kernel-cpu -> /data/projects/frankentorch/crates/ft-kernel-cpu on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:39.720358Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1866ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:39.720443Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-nn -> /data/projects/frankentorch/crates/ft-nn on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:41.609194Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1888ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:41.609272Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-optim -> /data/projects/frankentorch/crates/ft-optim on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:43.492835Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1883ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:43.492920Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-runtime -> /data/projects/frankentorch/crates/ft-runtime on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:45.538998Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 2046ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:45.539085Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-serialize -> /data/projects/frankentorch/crates/ft-serialize on vmi1149989[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:47.498447Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1959ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:47.498492Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mSync complete: 53525 files, 2049935 bytes in 30959ms[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:486 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:54.505867Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mExecuting command remotely: cargo clippy -p ft-api --all-targets -- -D warnings[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:529 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-20T10:59:54.505919Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRewriting CARGO_TARGET_DIR for remote execution (worker-scoped path): /data/projects/.rch-targets/frankentorch-cod-a -> /data/projects/frankentorch/.rch-target-vmi1149989-pool-a7b1c8c357b0059b1f61676dcab2f583[0m
+    [2;3mat[0m rch/src/transfer.rs:799 [2;3mon[0m ThreadId(1)
+
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded autocfg v1.5.0
+  Downloaded cfg-if v1.0.4
+  Downloaded clap_lex v1.1.0
+  Downloaded ciborium-io v0.2.2
+  Downloaded ciborium-ll v0.2.2
+  Downloaded itoa v1.0.18
+  Downloaded anstyle v1.0.14
+  Downloaded bytemuck_derive v1.10.2
+  Downloaded either v1.15.0
+  Downloaded anes v0.1.6
+  Downloaded criterion-plot v0.5.0
+  Downloaded crossbeam-deque v0.8.6
+  Downloaded is-terminal v0.4.17
+  Downloaded ciborium v0.2.2
+  Downloaded bytemuck v1.25.0
+  Downloaded aho-corasick v1.1.4
+  Downloaded half v2.7.1
+  Downloaded clap v4.6.1
+  Downloaded crossbeam-epoch v0.9.18
+  Downloaded cast v0.3.0
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded tinytemplate v1.2.1
+  Downloaded criterion v0.5.1
+  Downloaded zmij v1.0.21
+  Downloaded oorandom v11.1.5
+  Downloaded plotters-backend v0.3.7
+  Downloaded itertools v0.10.5
+  Downloaded memchr v2.8.0
+  Downloaded num-traits v0.2.19
+  Downloaded plotters-svg v0.3.7
+  Downloaded rawpointer v0.2.1
+  Downloaded safe_arch v0.7.4
+  Downloaded serde_core v1.0.228
+  Downloaded num-complex v0.4.6
+  Downloaded rayon-core v1.13.0
+  Downloaded clap_builder v4.6.0
+  Downloaded quote v1.0.45
+  Downloaded proc-macro2 v1.0.106
+  Downloaded same-file v1.0.6
+  Downloaded matrixmultiply v0.3.10
+  Downloaded serde_derive v1.0.228
+  Downloaded unicode-ident v1.0.24
+  Downloaded walkdir v2.5.0
+  Downloaded once_cell v1.21.4
+  Downloaded plotters v0.3.7
+  Downloaded serde v1.0.228
+  Downloaded wide v0.7.33
+  Downloaded zerocopy-derive v0.8.48
+  Downloaded regex v1.12.3
+  Downloaded libm v0.2.16
+  Downloaded rayon v1.12.0
+  Downloaded serde_json v1.0.149
+  Downloaded zerocopy v0.8.48
+  Downloaded syn v2.0.117
+  Downloaded regex-syntax v0.8.10
+  Downloaded regex-automata v0.4.14
+  Downloaded libc v0.2.185
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling autocfg v1.5.0
+   Compiling zerocopy v0.8.48
+   Compiling crossbeam-utils v0.8.21
+    Checking cfg-if v1.0.4
+   Compiling rayon-core v1.13.0
+    Checking either v1.15.0
+   Compiling serde_core v1.0.228
+   Compiling libm v0.2.16
+   Compiling zmij v1.0.21
+   Compiling serde v1.0.228
+    Checking rawpointer v0.2.1
+   Compiling serde_json v1.0.149
+   Compiling libc v0.2.185
+    Checking regex-syntax v0.8.10
+    Checking itoa v1.0.18
+   Compiling num-traits v0.2.19
+   Compiling matrixmultiply v0.3.10
+    Checking clap_lex v1.1.0
+    Checking anstyle v1.0.14
+    Checking crossbeam-epoch v0.9.18
+    Checking memchr v2.8.0
+    Checking plotters-backend v0.3.7
+    Checking ciborium-io v0.2.2
+    Checking clap_builder v4.6.0
+    Checking plotters-svg v0.3.7
+    Checking crossbeam-deque v0.8.6
+    Checking itertools v0.10.5
+    Checking cast v0.3.0
+   Compiling syn v2.0.117
+    Checking same-file v1.0.6
+    Checking regex-automata v0.4.14
+    Checking walkdir v2.5.0
+    Checking num-complex v0.4.6
+    Checking plotters v0.3.7
+    Checking anes v0.1.6
+    Checking rayon v1.12.0
+    Checking once_cell v1.21.4
+    Checking oorandom v11.1.5
+    Checking is-terminal v0.4.17
+    Checking clap v4.6.1
+    Checking criterion-plot v0.5.0
+    Checking regex v1.12.3
+   Compiling bytemuck_derive v1.10.2
+   Compiling zerocopy-derive v0.8.48
+   Compiling serde_derive v1.0.228
+    Checking bytemuck v1.25.0
+    Checking safe_arch v0.7.4
+    Checking wide v0.7.33
+    Checking tinytemplate v1.2.1
+    Checking half v2.7.1
+    Checking ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+    Checking ciborium-ll v0.2.2
+    Checking ciborium v0.2.2
+    Checking criterion v0.5.1
+    Checking ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+    Checking ft-runtime v0.1.0 (/data/projects/frankentorch/crates/ft-runtime)
+    Checking ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+    Checking ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+    Checking ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+error: this operation has no effect
+  --> crates/ft-api/examples/conv2d_gradpenalty_probe.rs:11:28
+   |
+11 |     let xv: Vec<f64> = (0..2 * 1 * 5 * 5).map(|i| (i % 7) as f64 * 0.1 - 0.3).collect();
+   |                            ^^^^^ help: consider reducing it to: `2`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#identity_op
+   = note: `-D clippy::identity-op` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::identity_op)]`
+
+error: this operation has no effect
+  --> crates/ft-api/examples/conv2d_gradpenalty_probe.rs:12:28
+   |
+12 |     let wv: Vec<f64> = (0..3 * 1 * 3 * 3).map(|i| (i % 5) as f64 * 0.2 - 0.4).collect();
+   |                            ^^^^^ help: consider reducing it to: `3`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#identity_op
+
+error: could not compile `ft-api` (example "conv2d_gradpenalty_probe") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: approximate value of `f{32, 64}::consts::FRAC_1_SQRT_2` found
+  --> crates/ft-api/tests/complex_fft_autograd_parity.rs:78:16
+   |
+78 |         &[0.6, 0.707106781, -0.707106781, 0.707106781],
+   |                ^^^^^^^^^^^
+   |
+   = help: consider using the constant directly
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+   = note: `#[deny(clippy::approx_constant)]` on by default
+
+error: approximate value of `f{32, 64}::consts::FRAC_1_SQRT_2` found
+  --> crates/ft-api/tests/complex_fft_autograd_parity.rs:78:30
+   |
+78 |         &[0.6, 0.707106781, -0.707106781, 0.707106781],
+   |                              ^^^^^^^^^^^
+   |
+   = help: consider using the constant directly
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: approximate value of `f{32, 64}::consts::FRAC_1_SQRT_2` found
+  --> crates/ft-api/tests/complex_fft_autograd_parity.rs:78:43
+   |
+78 |         &[0.6, 0.707106781, -0.707106781, 0.707106781],
+   |                                           ^^^^^^^^^^^
+   |
+   = help: consider using the constant directly
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: approximate value of `f{32, 64}::consts::FRAC_1_SQRT_2` found
+  --> crates/ft-api/tests/complex_fft_autograd_parity.rs:83:16
+   |
+83 |         &[0.8, 0.707106781, 0.707106781, -0.707106781],
+   |                ^^^^^^^^^^^
+   |
+   = help: consider using the constant directly
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: approximate value of `f{32, 64}::consts::FRAC_1_SQRT_2` found
+  --> crates/ft-api/tests/complex_fft_autograd_parity.rs:83:29
+   |
+83 |         &[0.8, 0.707106781, 0.707106781, -0.707106781],
+   |                             ^^^^^^^^^^^
+   |
+   = help: consider using the constant directly
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: approximate value of `f{32, 64}::consts::FRAC_1_SQRT_2` found
+  --> crates/ft-api/tests/complex_fft_autograd_parity.rs:83:43
+   |
+83 |         &[0.8, 0.707106781, 0.707106781, -0.707106781],
+   |                                           ^^^^^^^^^^^
+   |
+   = help: consider using the constant directly
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: could not compile `ft-api` (test "complex_fft_autograd_parity") due to 6 previous errors
+error: approximate value of `f{32, 64}::consts::FRAC_PI_6` found
+     --> crates/ft-api/src/lib.rs:88949:27
+      |
+88949 |         chk(&mut s, asin, 0.523_598_775_6, "asin");
+      |                           ^^^^^^^^^^^^^^^
+      |
+      = help: consider using the constant directly
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+      = note: `#[deny(clippy::approx_constant)]` on by default
+
+error: approximate value of `f{32, 64}::consts::FRAC_PI_3` found
+     --> crates/ft-api/src/lib.rs:88951:27
+      |
+88951 |         chk(&mut s, acos, 1.047_197_551_2, "acos");
+      |                           ^^^^^^^^^^^^^^^
+      |
+      = help: consider using the constant directly
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: approximate value of `f{32, 64}::consts::FRAC_PI_4` found
+     --> crates/ft-api/src/lib.rs:88953:27
+      |
+88953 |         chk(&mut s, atan, 0.785_398_163_4, "atan");
+      |                           ^^^^^^^^^^^^^^^
+      |
+      = help: consider using the constant directly
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: manual `RangeInclusive::contains` implementation
+     --> crates/ft-api/src/lib.rs:91235:21
+      |
+91235 |             assert!(g >= 0.0 && g <= 0.25 + 1e-10, "sigmoid grad in [0, 0.25]");
+      |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use: `(0.0..=0.25 + 1e-10).contains(&g)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_range_contains
+      = note: `-D clippy::manual-range-contains` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::manual_range_contains)]`
+
+error: approximate value of `f{32, 64}::consts::SQRT_2` found
+      --> crates/ft-api/src/lib.rs:102206:20
+       |
+102206 |             (2.0, [1.41421356, 2.0, 1.0, 2.23606798, 2.0, 1.41421356]),
+       |                    ^^^^^^^^^^
+       |
+       = help: consider using the constant directly
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: approximate value of `f{32, 64}::consts::SQRT_2` found
+      --> crates/ft-api/src/lib.rs:102206:59
+       |
+102206 |             (2.0, [1.41421356, 2.0, 1.0, 2.23606798, 2.0, 1.41421356]),
+       |                                                           ^^^^^^^^^^
+       |
+       = help: consider using the constant directly
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: approximate value of `f{32, 64}::consts::LN_2` found
+      --> crates/ft-api/src/lib.rs:102849:31
+       |
+102849 |         chk(&mut s, logabs, &[0.6931471805599453]);
+       |                               ^^^^^^^^^^^^^^^^^^
+       |
+       = help: consider using the constant directly
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: approximate value of `f{32, 64}::consts::LN_10` found
+      --> crates/ft-api/src/lib.rs:102971:26
+       |
+102971 |         chk(&mut s, o, &[2.302_585_092_994_046]);
+       |                          ^^^^^^^^^^^^^^^^^^^^^
+       |
+       = help: consider using the constant directly
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: this operation has no effect
+      --> crates/ft-api/src/lib.rs:103213:21
+       |
+103213 |         assert!((iv[1 * 4 + 1] - 0.229167).abs() < 1e-4);
+       |                     ^^^^^ help: consider reducing it to: `4`
+       |
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#identity_op
+       = note: `-D clippy::identity-op` implied by `-D warnings`
+       = help: to override `-D warnings` add `#[allow(clippy::identity_op)]`
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+      --> crates/ft-api/src/lib.rs:114747:21
+       |
+114747 |         assert_bits(&got_x, &expected_x, "dx");
+       |                     ^^^^^^ help: change this to: `got_x`
+       |
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_borrow
+       = note: `-D clippy::needless-borrow` implied by `-D warnings`
+       = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+      --> crates/ft-api/src/lib.rs:114747:29
+       |
+114747 |         assert_bits(&got_x, &expected_x, "dx");
+       |                             ^^^^^^^^^^^ help: change this to: `expected_x`
+       |
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_borrow
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+      --> crates/ft-api/src/lib.rs:114748:21
+       |
+114748 |         assert_bits(&got_w, &expected_w, "dweight");
+       |                     ^^^^^^ help: change this to: `got_w`
+       |
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_borrow
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+      --> crates/ft-api/src/lib.rs:114748:29
+       |
+114748 |         assert_bits(&got_w, &expected_w, "dweight");
+       |                             ^^^^^^^^^^^ help: change this to: `expected_w`
+       |
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_borrow
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+      --> crates/ft-api/src/lib.rs:114749:21
+       |
+114749 |         assert_bits(&got_b, &expected_b, "dbias");
+       |                     ^^^^^^ help: change this to: `got_b`
+       |
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_borrow
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+      --> crates/ft-api/src/lib.rs:114749:29
+       |
+114749 |         assert_bits(&got_b, &expected_b, "dbias");
+       |                             ^^^^^^^^^^^ help: change this to: `expected_b`
+       |
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_borrow
+
+error: approximate value of `f{32, 64}::consts::SQRT_2` found
+      --> crates/ft-api/src/lib.rs:117699:13
+       |
+117699 |             1.4142135623730951,
+       |             ^^^^^^^^^^^^^^^^^^
+       |
+       = help: consider using the constant directly
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: approximate value of `f{32, 64}::consts::SQRT_2` found
+      --> crates/ft-api/src/lib.rs:117734:13
+       |
+117734 |             1.4142135623730951,
+       |             ^^^^^^^^^^^^^^^^^^
+       |
+       = help: consider using the constant directly
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: it looks like you're manually copying between slices
+      --> crates/ft-api/src/lib.rs:121559:13
+       |
+121559 | /             for k in 0..=m {
+121560 | |                 fr[k] = xr[k];
+121561 | |                 fi[k] = xi[k];
+121562 | |             }
+       | |_____________^
+       |
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_memcpy
+       = note: `-D clippy::manual-memcpy` implied by `-D warnings`
+       = help: to override `-D warnings` add `#[allow(clippy::manual_memcpy)]`
+help: try replacing the loop by
+       |
+121559 ~             fr[..(m + 1)].copy_from_slice(&xr[..(m + 1)]);
+121560 +     fi[..(m + 1)].copy_from_slice(&xi[..(m + 1)]);
+       |
+
+error: approximate value of `f{32, 64}::consts::LOG2_10` found
+      --> crates/ft-api/src/lib.rs:127856:17
+       |
+127856 |                 3.321928094887362,
+       |                 ^^^^^^^^^^^^^^^^^
+       |
+       = help: consider using the constant directly
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: approximate value of `f{32, 64}::consts::LN_2` found
+      --> crates/ft-api/src/lib.rs:127871:25
+       |
+127871 |             &[0.0, 1.0, 0.6931471805599453, 1.3132616875182228],
+       |                         ^^^^^^^^^^^^^^^^^^
+       |
+       = help: consider using the constant directly
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#approx_constant
+
+error: this operation has no effect
+      --> crates/ft-api/src/lib.rs:136295:21
+       |
+136295 |                 (0..1 * 2 * 2 * 2).map(|i| (i + 1) as f64).collect(),
+       |                     ^^^^^ help: consider reducing it to: `2`
+       |
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#identity_op
+
+error: useless use of `vec!`
+     --> crates/ft-api/src/lib.rs:94830:21
+      |
+94830 |         let mut r = vec![0.0_f64; 3 * 3];
+      |                     ^^^^^^^^^^^^^^^^^^^^ help: you can use an array directly: `[0.0_f64; 3 * 3]`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#useless_vec
+      = note: `-D clippy::useless-vec` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::useless_vec)]`
+
+error: useless use of `vec!`
+      --> crates/ft-api/src/lib.rs:113221:19
+       |
+113221 |         let dir = vec![0.3, -0.2, 0.5, 0.1, -0.4, 0.25];
+       |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: you can use an array directly: `[0.3, -0.2, 0.5, 0.1, -0.4, 0.25]`
+       |
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#useless_vec
+
+error: useless use of `vec!`
+      --> crates/ft-api/src/lib.rs:132555:19
+       |
+132555 |         let dir = vec![0.3, -0.2, 0.0, 0.5, -0.4, 0.0, 0.1];
+       |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: you can use an array directly: `[0.3, -0.2, 0.0, 0.5, -0.4, 0.0, 0.1]`
+       |
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#useless_vec
+
+error: could not compile `ft-api` (lib test) due to 24 previous errors
+  [2m2026-06-20T11:01:07.573384Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mRemote command finished: exit=101 in 73067ms[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:653 [2;3mon[0m ThreadId(1)
+
+[RCH] remote vmi1149989 failed (exit 101)

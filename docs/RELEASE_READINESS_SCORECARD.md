@@ -6,6 +6,7 @@ Updated: 2026-06-20
 
 | Bead | Workload | Result vs PyTorch | Before/after verdict | Release action |
 |---|---:|---:|---:|---|
+| `frankentorch-kgs4.135` | GroupNorm f32 fused scalar-sum train step `[8,64,28,28]`, groups `32` | direct A/B `5.58x` slower | internal keep; rch direct path `8.30 ms` fused -> `2.10 ms` scalar-sum; Criterion `17.139 ms` materialized -> `8.9874 ms` scalar-sum | kept; route remaining gap to automatic loss fusion, arena/tape allocation, f32 storage/layout, and scheduler work |
 | `frankentorch-kgs4.116` | LayerNorm f64 train step `[2048,1024]` | `3.58x` slower | internal keep; same-worker rch parent `90.723 ms` -> current `29.606 ms`; f32 diagnostic `1930.66 ms` -> `293.49 ms` | kept; route remaining gap to allocation/tape/loss fusion/workspaces/parallel reductions |
 | `frankentorch-kgs4.115` | GroupNorm f32 train step `[8,64,28,28]`, groups `32` | `19.04x` slower | internal keep; same-worker rch parent `19.13 ms` -> current `11.72 ms` | kept; route remaining gap to allocation/tape/fusion/parallel f32 scheduling |
 | `frankentorch-kgs4.114` | BatchNorm2d f32 train step `[32,256,28,28]` | final `28.14x` slower | no gain; same-worker rch `vmi1152480` disabled/final `147.30 ms`, active unit-dy branch `157.93 ms` | rejected/reverted unit-dy branch; keep gauntlet harness |
@@ -23,8 +24,8 @@ Updated: 2026-06-20
 | `frankentorch-kgs4.133` | conv2d f64 train step `[4,64,64,64]`, 64 3x3 filters | `1.91x` slower; candidate `1.86x` slower | no gain; same-worker rch `121.07 ms` -> `117.92 ms`, `p=0.38`, no change detected | rejected; removed dormant all-ones-dout branch |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `16/16` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 16L / 0N`. Correctness guards are green and the SDPA, MaxPool3d,
+Measured-discipline score: `17/17` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 17L / 0N`. Correctness guards are green and the SDPA, MaxPool3d,
 Linear, LayerNorm, GroupNorm, and SmoothL1 levers include real internal
 speedups, but no measured workload is performance-dominant against PyTorch yet.
 
@@ -90,6 +91,17 @@ GroupNorm f32 unit-dy (`frankentorch-kgs4.115`): existing code-first f32 all-one
 Gates: ft-kernel-cpu f32 unit-dy guard 1/0, ft-api f32 grad parity 1/0, strict
 scheduler conformance 1/0.
 
+GroupNorm f32 scalar-sum (`frankentorch-kgs4.135`): a dedicated affine
+`functional_group_norm_sum` path computes the scalar loss directly and uses a
+scalar upstream backward helper instead of materializing the output tensor,
+`tensor_sum` node, and dense all-ones `dy`. The direct rch A/B row improved the
+existing fused path from `8.30 ms` to `2.10 ms` (`3.96x` faster), and Criterion
+moved the materialized median from `17.139 ms` to `8.9874 ms` (`1.91x` faster).
+Local PyTorch CPU `2.12.1+cpu` with prebuilt tensors and clone/detach per rep
+still has best `0.376163 ms`, so the direct scalar-sum row is `5.58x` slower.
+Gates: ft-api scalar-sum tests 2/0, ft-kernel-cpu unit-dy guard 1/0, strict
+scheduler conformance 1/0, lib clippy clean for ft-api and ft-kernel-cpu.
+
 LayerNorm unit-dy (`frankentorch-kgs4.116`): existing code-first f64/f32
 all-ones `dy` fast path is now batch-verified. Same-worker `hz2` parent
 baseline at `2aa78200` `layer_norm/grad_2048x1024` `90.723 ms` -> current
@@ -124,6 +136,11 @@ regressed `+15.953%`. The source hook was reverted.
 
 | Gate | Scope | Result |
 |---|---|---|
+| PyTorch oracle | local CPU torch f32 GroupNorm `[8,64,28,28]`, groups `32`, affine grads, prebuilt tensors plus clone/detach per rep | PyTorch `2.12.1+cpu` best `0.376163 ms`, median `0.512991 ms`; direct scalar-sum FrankenTorch row `2.10 ms`, ratio `5.58x` slower |
+| Remote direct A/B | `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo run --release -p ft-api --example group_norm_f32_grad_ab` | `frankentorch-kgs4.135` candidate on `ovh-a`: composed `69.33 ms`, existing fused `8.30 ms`, scalar-sum `2.10 ms`; scalar/fused `0.2525x`, `3.96x` faster |
+| Criterion | `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo bench -p ft-api --bench ops_bench -- group_norm/grad_f32 --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot` | `group_norm/grad_f32_8x64x28x28` median `17.139 ms`; `group_norm/grad_f32_sum_8x64x28x28` median `8.9874 ms`; scalar-sum `1.91x` faster |
+| Correctness / conformance | `rch exec -- cargo test -p ft-api functional_group_norm_f32_sum --lib`; `rch exec -- cargo test -p ft-kernel-cpu group_norm_f32_unit_dy_matches_general_reference_bits --lib`; `rch exec -- cargo test -p ft-conformance strict_scheduler` | all passed for `frankentorch-kgs4.135` |
+| Compile / clippy / formatting / static | `rch exec -- cargo check -p ft-api --all-targets`; `rch exec -- cargo check -p ft-kernel-cpu --all-targets`; `rch exec -- cargo clippy -p ft-api --lib -- -D warnings`; `rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings`; `git diff --check`; `ubs <scoped files>`; `rch exec -- cargo fmt --check -p ft-api -p ft-kernel-cpu` | check, lib clippy, and diff whitespace passed; UBS was interrupted after more than 3 minutes with no findings emitted; broader all-target clippy and crate fmt remain blocked by existing unrelated example/test lint and rustfmt debt |
 | PyTorch gauntlet | `PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b cargo bench -p ft-api --bench pytorch_gauntlet_bench -- batch_norm2d_f32 --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot` | `frankentorch-kgs4.114` active branch local FT `228.85 ms`, PyTorch `6.8744 ms`, `33.29x` slower; disabled/final local FT `238.33 ms`, PyTorch `8.4699 ms`, `28.14x` slower |
 | Remote same-worker A/B | `RCH_WORKER=vmi1152480 RCH_WORKERS=vmi1152480 CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b rch exec -- cargo bench -p ft-api --bench pytorch_gauntlet_bench -- gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114 --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot` | disabled/final `147.30 ms`; active unit-dy branch `157.93 ms`; active/disabled `1.072x` slower, Criterion `[+1.2713% +7.2142% +13.421%]`, `p=0.05`; product branch reverted |
 | Correctness / conformance | `rch exec -- cargo test -p ft-kernel-cpu batch_norm_f32_unit_dy_matches_general_reference_bits -- --nocapture`; `rch exec -- cargo test -p ft-api functional_batch_norm2d_f32_grad_matches_f64_path -- --nocapture`; `rch exec -- cargo test -p ft-conformance` | all passed for `frankentorch-kgs4.114`; full conformance green on `hz2` |

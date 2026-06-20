@@ -4,6 +4,77 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-20 - frankentorch-kgs4.135 - f32 GroupNorm scalar-sum keep with PyTorch loss
+
+- Lever attempted: add an affine f32 `functional_group_norm_sum` scalar-loss
+  path backed by `group_norm_sum_forward_f32` and
+  `group_norm_backward_scalar_f32`. The path computes
+  `sum(group_norm(input, weight, bias))` directly and backpropagates the scalar
+  upstream gradient without materializing the normalized output tensor, the
+  `tensor_sum` tape node, or a dense all-ones `dy` buffer.
+- Workload: f32 GroupNorm forward plus backward, `[N,C,H,W]=[8,64,28,28]`,
+  `num_groups=32`, affine weight and bias require gradients, scalar `sum`
+  loss.
+- Baseline/routing evidence:
+  - rch baseline on `hz1`: composed path `105.01 ms`, existing fused
+    GroupNorm unit-dy path `11.52 ms`, composed/fused speedup `9.12x`.
+  - Local PyTorch fair oracle with prebuilt tensors and clone/detach per rep:
+    PyTorch `2.12.1+cpu`, 32 compute/inter-op threads, best `0.376163 ms`,
+    median `0.512991 ms`.
+- Candidate evidence:
+  - rch direct A/B on `ovh-a`: composed path `69.33 ms`, existing fused path
+    `8.30 ms`, new scalar-sum path `2.10 ms`. Scalar-sum/fused latency ratio
+    `0.2525x`, or `3.96x` faster than the previous internal fused row.
+  - Criterion rch run on `vmi1167313`: materialized
+    `group_norm/grad_f32_8x64x28x28` median `17.139 ms`; scalar-sum
+    `group_norm/grad_f32_sum_8x64x28x28` median `8.9874 ms`; scalar-sum ratio
+    `0.5244x`, or `1.91x` faster.
+  - Direct A/B scalar-sum `2.10 ms` vs local PyTorch best `0.376163 ms`
+    leaves FrankenTorch `5.58x` slower. The Criterion median comparison is
+    `23.89x` slower and is treated as secondary because it is a different
+    harness than the direct A/B example.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Verdict: keep. The scalar-sum path is behavior-equivalent in focused API
+  tests, keeps the prior f32 GroupNorm unit-dy branch as its shared scalar
+  backward helper, and removes whole tensor/tape work from the measured scalar
+  loss lane. It narrows the gap substantially but does not dominate PyTorch.
+- Retry condition: do not retry another narrow GroupNorm all-ones-`dy` branch
+  for this row. The remaining gap should move deeper into automatic scalar-loss
+  fusion, arena/bump allocation for tape and tensor buffers, persistent f32
+  tensor storage, dtype-conversion removal, cache-blocked affine reductions, or
+  scheduler/layout work backed by same-worker PyTorch-ratio evidence.
+- Gates:
+  - `rch exec -- cargo test -p ft-api functional_group_norm_f32_sum --lib`:
+    passed, 2 focused tests.
+  - `rch exec -- cargo test -p ft-kernel-cpu group_norm_f32_unit_dy_matches_general_reference_bits --lib`:
+    passed, 1 focused test.
+  - `rch exec -- cargo test -p ft-conformance strict_scheduler`: passed.
+  - `rch exec -- cargo check -p ft-api --all-targets`: passed with an existing
+    unrelated `hessian_probe.rs` warning.
+  - `rch exec -- cargo check -p ft-kernel-cpu --all-targets`: passed with
+    existing unrelated `gemm_golden.rs` warnings.
+  - `rch exec -- cargo clippy -p ft-api --lib -- -D warnings`: passed.
+  - `rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings`: passed.
+  - `git diff --check` on the scoped commit surface: passed.
+  - `ubs` on the scoped commit surface was interrupted after more than three
+    minutes with no findings emitted, matching existing large-file scanner
+    timeout behavior.
+  - Broader `--all-targets` clippy remains blocked by existing unrelated
+    example/test lint debt; crate-scoped `cargo fmt --check` remains blocked by
+    existing unrelated rustfmt drift in large files.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.135/gauntlet_20260620T1035Z/baseline_rch_group_norm_f32_ab.log`
+  - `artifacts/perf/frankentorch-kgs4.135/gauntlet_20260620T1035Z/baseline_local_pytorch_group_norm_f32_grad_clone.log`
+  - `artifacts/perf/frankentorch-kgs4.135/gauntlet_20260620T1035Z/candidate_rch_group_norm_f32_ab.log`
+  - `artifacts/perf/frankentorch-kgs4.135/gauntlet_20260620T1035Z/candidate_rch_ops_group_norm_f32_bench.log`
+  - `artifacts/perf/frankentorch-kgs4.135/gauntlet_20260620T1035Z/test_ft_api_group_norm_f32_sum_after_reapply.log`
+  - `artifacts/perf/frankentorch-kgs4.135/gauntlet_20260620T1035Z/test_ft_kernel_cpu_group_norm_unit_dy_after_reapply.log`
+  - `artifacts/perf/frankentorch-kgs4.135/gauntlet_20260620T1035Z/test_ft_conformance_strict_scheduler.log`
+  - `artifacts/perf/frankentorch-kgs4.135/gauntlet_20260620T1035Z/check_ft_api_all_targets.log`
+  - `artifacts/perf/frankentorch-kgs4.135/gauntlet_20260620T1035Z/check_ft_kernel_cpu_all_targets.log`
+  - `artifacts/perf/frankentorch-kgs4.135/gauntlet_20260620T1035Z/clippy_ft_api_lib.log`
+  - `artifacts/perf/frankentorch-kgs4.135/gauntlet_20260620T1035Z/clippy_ft_kernel_cpu_lib.log`
+
 ## 2026-06-20 - frankentorch-kgs4.114 - f32 BatchNorm unit-dy reject
 
 - Lever attempted: specialize `batch_norm_backward_f32` for exact all-ones

@@ -1,0 +1,107 @@
+[RCH] local (no admissible workers: critical_pressure=2,insufficient_slots=6,active_project_exclusion=3)
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+   Compiling ft-data v0.1.0 (/data/projects/frankentorch/crates/ft-data)
+   Compiling ft-optim v0.1.0 (/data/projects/frankentorch/crates/ft-optim)
+   Compiling ft-nn v0.1.0 (/data/projects/frankentorch/crates/ft-nn)
+   Compiling ft-conformance v0.1.0 (/data/projects/frankentorch/crates/ft-conformance)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.25s
+     Running unittests src/lib.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/ft_conformance-5d0786f34b4ee14d)
+
+running 1 test
+test tests::strict_scheduler_conformance_is_green ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 198 filtered out; finished in 0.00s
+
+     Running unittests src/bin/build_failure_forensics_index.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/build_failure_forensics_index-7ecc6440ed4beb0a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running unittests src/bin/check_benchmark_regression.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/check_benchmark_regression-5e9d9f50a2623d54)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running unittests src/bin/check_perf_slos.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/check_perf_slos-02bd13a339e11b96)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running unittests src/bin/check_reliability_budgets.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/check_reliability_budgets-32a416dc6ec44d8d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running unittests src/bin/emit_packet_sidecar.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/emit_packet_sidecar-bbe0824a2d07451e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/run_differential_report.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/run_differential_report-e3e587b84e0bc76c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/run_e2e_matrix.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/run_e2e_matrix-dadf6ea992370f81)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/run_perf_slos.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/run_perf_slos-7c13aedb71a28fdc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running unittests src/bin/run_raptorq_durability_pipeline.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/run_raptorq_durability_pipeline-2da2f93594bb9f8e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running unittests src/bin/triage_forensics_failures.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/triage_forensics_failures-d2e15b3340191465)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running unittests src/bin/validate_phase2c_artifacts.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/validate_phase2c_artifacts-7ca7563db32f7d5b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/e2e_training.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/e2e_training-a2c143785926b851)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/pytorch_avg_pool2d_conformance.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/pytorch_avg_pool2d_conformance-a8ec231fcc3179be)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/pytorch_ldexp_conformance.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/pytorch_ldexp_conformance-82e56cfffc9e2ca1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/smoke.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/smoke-19fe58550b06fdac)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+

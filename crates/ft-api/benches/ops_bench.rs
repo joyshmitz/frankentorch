@@ -982,6 +982,47 @@ fn bench_group_norm(c: &mut Criterion) {
             black_box(session.tensor_backward(loss).unwrap())
         });
     });
+    group.bench_function("grad_f32_8x64x28x28", |b| {
+        let (n, ch, h, w, groups) = (8usize, 64usize, 28usize, 28usize, 32usize);
+        let xv: Vec<f32> = (0..n * ch * h * w)
+            .map(|i| ((i % 877) as f32 - 400.0) * 0.002)
+            .collect();
+        let wv: Vec<f32> = (0..ch).map(|j| 1.0 + (j % 13) as f32 * 0.01).collect();
+        let bv: Vec<f32> = (0..ch).map(|j| (j % 7) as f32 * 0.01 - 0.03).collect();
+        b.iter(|| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session
+                .tensor_variable_f32(xv.clone(), vec![n, ch, h, w], true)
+                .unwrap();
+            let wt = session.tensor_variable_f32(wv.clone(), vec![ch], true).unwrap();
+            let bias = session.tensor_variable_f32(bv.clone(), vec![ch], true).unwrap();
+            let out = session
+                .functional_group_norm(x, groups, Some(wt), Some(bias), 1e-5)
+                .unwrap();
+            let loss = session.tensor_sum(out).unwrap();
+            black_box(session.tensor_backward(loss).unwrap())
+        });
+    });
+    group.bench_function("grad_f32_sum_8x64x28x28", |b| {
+        let (n, ch, h, w, groups) = (8usize, 64usize, 28usize, 28usize, 32usize);
+        let xv: Vec<f32> = (0..n * ch * h * w)
+            .map(|i| ((i % 877) as f32 - 400.0) * 0.002)
+            .collect();
+        let wv: Vec<f32> = (0..ch).map(|j| 1.0 + (j % 13) as f32 * 0.01).collect();
+        let bv: Vec<f32> = (0..ch).map(|j| (j % 7) as f32 * 0.01 - 0.03).collect();
+        b.iter(|| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session
+                .tensor_variable_f32(xv.clone(), vec![n, ch, h, w], true)
+                .unwrap();
+            let wt = session.tensor_variable_f32(wv.clone(), vec![ch], true).unwrap();
+            let bias = session.tensor_variable_f32(bv.clone(), vec![ch], true).unwrap();
+            let loss = session
+                .functional_group_norm_sum(x, groups, Some(wt), Some(bias), 1e-5)
+                .unwrap();
+            black_box(session.tensor_backward(loss).unwrap())
+        });
+    });
     group.finish();
 }
 
