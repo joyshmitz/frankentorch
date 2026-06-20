@@ -287,6 +287,18 @@ statistically neutral despite a lower median. Gates: ft-autograd 476/0, ft-api
 avg_pool1d bit regression 1/0, strict scheduler conformance 1/0, ft-autograd clippy
 clean.
 
+Owned-grad move (`frankentorch-kwarf`): the cbe4t lazy slot's first-contribution path
+still did `reserve + push(0.0+v)` (fresh alloc + copy). The CustomFunction backward arm
+(avg_pool/max_pool/conv/norms/every elementwise `apply_function` op) hands the engine an
+owned, cache-hot `din` Vec; `accumulate_tensor_gradient_owned` now MOVES it into the slot
+on first contribution (in-place `-0.0->+0.0` normalize, bit-identical), eliminating the
+alloc + copy. Same-process A/B (m=4M f64 = avg_pool1d din, 60 reps): OLD alloc+copy
+`9804 us` -> NEW normalize+move `1211 us` = **8.10x** on the eliminated work. Traffic/
+allocation reduction → core-count-independent, unlike parallelism levers which are dead in
+the cgroup-capped ~10-core rch exec sandbox (`available_parallelism`=10 even on 64-core
+hosts; see NEGATIVE_EVIDENCE 2026-06-20b). Gates: ft-autograd 476/0, conformance 199/0 +
+all sub-suites, clippy clean. Commit `8191f4ae`.
+
 Fused avg_pool1d scalar-sum (`frankentorch-kgs4.134`): a dedicated
 `functional_avg_pool1d_sum` f64 path computes the pooled scalar sum directly and
 backprops scalar upstream gradient without materializing the pooled output
