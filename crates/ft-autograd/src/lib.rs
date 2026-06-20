@@ -4226,6 +4226,21 @@ pub struct TensorTape {
     detect_anomaly: bool,
 }
 
+#[derive(Debug, Clone)]
+struct TensorGradientSlot {
+    values: Vec<f64>,
+    expected_len: usize,
+}
+
+impl TensorGradientSlot {
+    fn new(expected_len: usize) -> Self {
+        Self {
+            values: Vec::new(),
+            expected_len,
+        }
+    }
+}
+
 impl Default for TensorTape {
     fn default() -> Self {
         Self {
@@ -11010,22 +11025,9 @@ impl TensorTape {
         let mut grads = self
             .nodes
             .iter()
-            .enumerate()
-            .map(|(idx, node)| {
-                if reachable[idx] {
-                    // Complex nodes carry their gradient as an interleaved real
-                    // buffer of length 2*numel (torch view_as_real convention), so a
-                    // complex tensor's grad has somewhere to store both re/im parts.
-                    // Real nodes are unchanged (multiplier 1). frankentorch-ng1hw.
-                    let meta = node.tensor.meta();
-                    let mult = if meta.dtype().is_complex() { 2 } else { 1 };
-                    vec![0.0; meta.numel() * mult]
-                } else {
-                    Vec::new()
-                }
-            })
+            .map(|node| TensorGradientSlot::new(Self::tensor_gradient_buffer_len(node)))
             .collect::<Vec<_>>();
-        grads[root.0] = vec![1.0; self.nodes[root.0].tensor.meta().numel()];
+        grads[root.0].values = vec![1.0; self.nodes[root.0].tensor.meta().numel()];
         // Tracks IndexSelect inputs that requested a sparse-gradient surfacing.
         // Populated at the end with a SparseCOOTensor extracted from the
         // dense gradient (sparse_dim=1, dim=0).
@@ -11046,8 +11048,11 @@ impl TensorTape {
             // into `grads[node_id.0]` at the end of the loop body so post-backward
             // gradient lookups see the hook-adjusted incoming. (Replaces two
             // per-node ~numel f64 clones that capped through-tape throughput.)
-            let incoming =
-                self.apply_tensor_hooks(node_id, std::mem::take(&mut grads[node_id.0]))?;
+            let mut incoming = std::mem::take(&mut grads[node_id.0].values);
+            if incoming.is_empty() && grads[node_id.0].expected_len > 0 {
+                incoming.resize(grads[node_id.0].expected_len, 0.0);
+            }
+            let incoming = self.apply_tensor_hooks(node_id, incoming)?;
             execution_order.push(node_id);
 
             match self.nodes[node_id.0].op {
@@ -14406,7 +14411,7 @@ impl TensorTape {
             // loop so post-backward lookups for this node return it. A node is
             // never its own input, so `grads[node_id.0]` was untouched by the
             // match arms above and this move is the single owner write-back.
-            grads[node_id.0] = incoming;
+            grads[node_id.0].values = incoming;
         }
 
         // Move completed gradient buffers into the report instead of cloning
@@ -14414,9 +14419,12 @@ impl TensorTape {
         let gradients: Vec<Option<Vec<f64>>> = grads
             .into_iter()
             .enumerate()
-            .map(|(idx, grad)| {
+            .map(|(idx, mut grad)| {
                 if self.nodes[idx].requires_grad && reachable[idx] {
-                    Some(grad)
+                    if grad.values.is_empty() && grad.expected_len > 0 {
+                        grad.values.resize(grad.expected_len, 0.0);
+                    }
+                    Some(grad.values)
                 } else {
                     None
                 }
@@ -19483,6 +19491,26 @@ impl TensorTape {
 
     fn accumulate_tensor_gradient(
         node: TensorNodeId,
+        target: &mut TensorGradientSlot,
+        contribution: &[f64],
+    ) -> Result<(), AutogradError> {
+        Self::ensure_tensor_len(node, target.expected_len, contribution.len())?;
+        if target.values.is_empty() {
+            target.values.reserve(contribution.len());
+            for &value in contribution {
+                target.values.push(0.0 + value);
+            }
+            return Ok(());
+        }
+        Self::ensure_tensor_len(node, target.values.len(), contribution.len())?;
+        for (target_value, value) in target.values.iter_mut().zip(contribution.iter()) {
+            *target_value += value;
+        }
+        Ok(())
+    }
+
+    fn accumulate_existing_tensor_gradient(
+        node: TensorNodeId,
         target: &mut [f64],
         contribution: &[f64],
     ) -> Result<(), AutogradError> {
@@ -19518,7 +19546,7 @@ impl TensorTape {
 
     fn accumulate_tensor_gradient_zip_map<F>(
         node: TensorNodeId,
-        target: &mut [f64],
+        target: &mut TensorGradientSlot,
         incoming: &[f64],
         values: &[f64],
         f: F,
@@ -19526,12 +19554,31 @@ impl TensorTape {
     where
         F: Fn(f64, f64) -> f64 + Send + Sync,
     {
-        Self::ensure_tensor_len(node, target.len(), incoming.len())?;
+        Self::ensure_tensor_len(node, target.expected_len, incoming.len())?;
         Self::ensure_tensor_len(node, values.len(), incoming.len())?;
         const PAR_MIN: usize = 1 << 15;
+        if target.values.is_empty() {
+            if incoming.len() >= PAR_MIN {
+                use rayon::prelude::*;
+                target.values = incoming
+                    .par_iter()
+                    .copied()
+                    .zip(values.par_iter().copied())
+                    .map(|(grad, value)| 0.0 + f(grad, value))
+                    .collect();
+            } else {
+                target.values.reserve(incoming.len());
+                for (grad, value) in incoming.iter().copied().zip(values.iter().copied()) {
+                    target.values.push(0.0 + f(grad, value));
+                }
+            }
+            return Ok(());
+        }
+        Self::ensure_tensor_len(node, target.values.len(), incoming.len())?;
         if incoming.len() >= PAR_MIN {
             use rayon::prelude::*;
             target
+                .values
                 .par_iter_mut()
                 .zip(incoming.par_iter().copied().zip(values.par_iter().copied()))
                 .for_each(|(target_value, (grad, value))| {
@@ -19539,6 +19586,7 @@ impl TensorTape {
                 });
         } else {
             for ((target_value, grad), value) in target
+                .values
                 .iter_mut()
                 .zip(incoming.iter().copied())
                 .zip(values.iter().copied())
@@ -19558,15 +19606,33 @@ impl TensorTape {
     /// write-then-read round trip through the scratch buffer.
     fn accumulate_tensor_gradient_with<F: FnMut(usize) -> f64>(
         node: TensorNodeId,
-        target: &mut [f64],
+        target: &mut TensorGradientSlot,
         contribution_len: usize,
         mut contribution: F,
     ) -> Result<(), AutogradError> {
-        Self::ensure_tensor_len(node, target.len(), contribution_len)?;
-        for (index, target_value) in target.iter_mut().enumerate() {
+        Self::ensure_tensor_len(node, target.expected_len, contribution_len)?;
+        if target.values.is_empty() {
+            target.values.reserve(contribution_len);
+            for index in 0..contribution_len {
+                target.values.push(0.0 + contribution(index));
+            }
+            return Ok(());
+        }
+        Self::ensure_tensor_len(node, target.values.len(), contribution_len)?;
+        for (index, target_value) in target.values.iter_mut().enumerate() {
             *target_value += contribution(index);
         }
         Ok(())
+    }
+
+    fn tensor_gradient_buffer_len(node: &TensorNode) -> usize {
+        // Complex nodes carry gradients as an interleaved real buffer of length
+        // 2*numel (torch view_as_real convention). Real nodes use one slot per
+        // element. This preserves the eager buffer contract while allowing the
+        // actual Vec allocation to wait until the first contribution arrives.
+        let meta = node.tensor.meta();
+        let mult = if meta.dtype().is_complex() { 2 } else { 1 };
+        meta.numel() * mult
     }
 
     /// Borrow a node's contiguous values as `&[f64]` with zero copy when the
@@ -19658,7 +19724,9 @@ impl TensorTape {
             };
             let node = TensorNodeId(idx);
             match self.persistent_grads.get_mut(&idx) {
-                Some(existing) => Self::accumulate_tensor_gradient(node, existing, gradient)?,
+                Some(existing) => {
+                    Self::accumulate_existing_tensor_gradient(node, existing, gradient)?;
+                }
                 None => {
                     self.persistent_grads.insert(idx, gradient.to_vec());
                 }
@@ -21190,7 +21258,10 @@ mod tests {
 
     #[test]
     fn tensor_accumulate_gradient_mismatch_is_fail_closed() {
-        let mut target = vec![0.0, 0.0];
+        let mut target = super::TensorGradientSlot {
+            values: vec![0.0, 0.0],
+            expected_len: 2,
+        };
         let err = TensorTape::accumulate_tensor_gradient(TensorNodeId(1), &mut target, &[1.0])
             .expect_err("shape mismatch must fail closed");
         assert!(matches!(
@@ -21201,7 +21272,7 @@ mod tests {
                 actual: 1
             } if node == TensorNodeId(1)
         ));
-        assert_eq!(target, vec![0.0, 0.0]);
+        assert_eq!(target.values, vec![0.0, 0.0]);
     }
 
     proptest! {

@@ -45,6 +45,17 @@ Same-process A/B (clone+kernel vs borrow+kernel, m=4M): `5.89x` mean / `9.05x` m
 avg_pool1d forward phase fell ~20 ms → ~6.8 ms. Bit-exact, can't-regress. Gates: ft-api
 avg_pool1d 7/0 + max_pool1d 1/0, conformance 199/0 + all sub-suites, clippy clean.
 
+First-contribution backward slot slice (`frankentorch-cbe4t`): `TensorTape` now delays
+per-node gradient buffer materialization until the first contribution, preserving the
+old `0.0 + contribution` bit semantics and the public zero-gradient fallback for
+reachable requires-grad nodes. Local PyTorch-enabled `avg_pool1d` train row improved
+FT median `89.360 ms -> 70.206 ms` (`21.4%` faster); PyTorch was `6.7081 ms` baseline
+and `6.9328 ms` candidate, so the FT/PyTorch loss narrowed from `13.32x` to `10.13x`
+slower. Remote `rch` workers lacked Torch; same-worker `ovh-a` FT-only row was
+statistically neutral despite a lower median. Gates: ft-autograd 476/0, ft-api
+avg_pool1d bit regression 1/0, strict scheduler conformance 1/0, ft-autograd clippy
+clean.
+
 ## Current Gates
 
 | Gate | Scope | Result |

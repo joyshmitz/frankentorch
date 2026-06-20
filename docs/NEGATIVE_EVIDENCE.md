@@ -693,3 +693,33 @@ is explicitly satisfied.
 - Scope note: avg_pool2d/3d use the create_graph apply_function variant (double-backward
   / gradient-penalty, cqmed) which has no borrowed-forward equivalent yet — a borrowed-
   forward+create_graph infra variant would extend this to them (future, larger).
+
+## 2026-06-20a - frankentorch-cbe4t - WIN shipped locally / PyTorch loss remains: first-contribution tensor grad slots
+
+- Lever: `TensorTape::backward_with_options` no longer allocates and zero-fills a
+  full gradient `Vec<f64>` for every reachable tensor node before any gradient arrives.
+  Each node now carries an expected gradient length plus an initially empty slot; the
+  first contribution materializes the slot directly with the same `0.0 + contribution`
+  arithmetic the eager zero buffer used, and fan-in still uses the old `+=` path. Report
+  materialization preserves the public `Some(vec![0.0; len])` fallback for reachable
+  requires-grad nodes with no contribution.
+- Local PyTorch-enabled head-to-head (`PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python cargo bench -p ft-api --bench pytorch_gauntlet_bench -- avg_pool1d --noplot`):
+  baseline FT `89.360 ms`, PyTorch `6.7081 ms`, FT/PyTorch `13.32x` slower.
+  Candidate FT `70.206 ms`, PyTorch `6.9328 ms`, FT/PyTorch `10.13x` slower.
+  Verdict vs PyTorch: LOSS remains, but the measured gap shrank `1.31x` and the FT
+  median improved `21.4%` on the root-cause lane.
+- Remote `rch` evidence: `ovh-a` FT baseline `73.254 ms`; candidate `69.674 ms`, but
+  Criterion called it statistically neutral (`p=0.17`) and remote PyTorch failed on
+  both runs with `ModuleNotFoundError: No module named 'torch'`. A later routed `hz2`
+  candidate row was `101.92 ms` and also lacked Torch, so it is routing/environment
+  evidence, not a keep/reject comparator.
+- Correctness gates GREEN: `ft-autograd --lib` 476/0, `ft-api` avg_pool1d bit
+  regression 1/0, strict scheduler conformance 1/0, `ft-autograd` clippy clean,
+  `git diff --check` clean. Whole-workspace `cargo fmt --check` and package/file
+  `ft-autograd` rustfmt checks still report pre-existing formatting drift outside
+  this hunk; no formatter was run to avoid unrelated churn. `ubs
+  crates/ft-autograd/src/lib.rs` completed and reports the existing whole-file
+  inventory, including pre-existing panic/unwrap/token-comparison heuristics outside
+  this hunk.
+- W/L/N vs PyTorch for this row: `0 / 1 / 0`. Do not count remote worker rows as
+  PyTorch comparisons until Torch is installed on the selected worker.
