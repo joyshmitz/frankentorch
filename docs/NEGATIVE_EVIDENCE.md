@@ -1473,3 +1473,31 @@ is explicitly satisfied.
   workspaces, direct fused `conv3d(...).sum().backward()`, or an exotic layout/kernel
   plan with fresh same-worker proof. Do not re-chase saved-input copying for this row.
 - Evidence: `artifacts/perf/frankentorch-kgs4.119/gauntlet_20260620T1112Z/NEGATIVE_EVIDENCE_LEDGER.md`.
+
+## 2026-06-20 - frankentorch-kgs4.113 - REFUTED (env-bound): SDPA forward q-block nested parallelism
+
+- Hypothesis: `sdpa_forward_f64` (flash-attention block-row kernel) parallelizes ONLY
+  over `num_bh` via `out.par_chunks_mut(o_stride)`. For the gauntlet `[16,512,64]` shape
+  `num_bh=16`, so on >16-core workers most cores idle while PyTorch's MKL (32 threads in
+  the bench) uses all of them. Lever: nest a second `o_chunk.par_chunks_mut(BR*d_v)` over
+  the per-head query blocks (each tile writes a disjoint o_block + owns its score scratch
+  → independent), giving `num_bh × ceil(seq/BR)` = 128-way parallelism.
+- BIT-EXACT confirmed: nested output == shipped output, maxdiff 0.0 (each (bh,q-block)
+  tile is computed with identical gemm+softmax arithmetic; reordering across threads
+  changes nothing).
+- MEASURED, same-process A/B (shipped num_bh-par vs nested), forced thread counts via
+  `rayon::ThreadPoolBuilder` (rch does NOT forward RAYON_NUM_THREADS):
+  - Worker had **8 physical cores** (`available_parallelism`=8). num_bh=16 already
+    saturates 8 cores, so nesting adds nothing: ratios **0.98–1.08x** at forced
+    threads 8/16/24/32/48 (the >8 counts merely oversubscribe 8 physical cores).
+- Root cause: on the ~8-core rch workers the gauntlet runs on, SDPA forward is ALREADY
+  core-saturated at `num_bh=16 ≥ cores`. The `1.29x` (`kgs4.113`) gap is therefore raw
+  GEMM-vs-MKL efficiency + softmax `exp` cost, NOT under-parallelization. The nested
+  variant is bit-exact and NEUTRAL (never regresses; rayon work-steals the extra tiles),
+  and WOULD help only on a worker with physical cores > num_bh — unavailable here.
+- Verdict: NOT SHIPPED (neutral on every available worker; shipping an unverified
+  speculative perf change violates measured-discipline). Probe reverted (gemm module
+  re-privatized, example removed). Retry condition: re-measure ONLY if a ≥24-physical-
+  core rch worker becomes routable AND num_bh < cores for the target shape; otherwise the
+  SDPA gap needs a faster small-GEMM microkernel or tolerance-policy SIMD exp, not more
+  threads.
