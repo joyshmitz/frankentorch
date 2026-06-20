@@ -17,10 +17,12 @@ Updated: 2026-06-20
 | `frankentorch-kgs4.126` | max_pool1d f64 train step `[8,64,8192]` | `12.31x` slower | no gain; candidate median `184.41 ms` vs parent `178.47 ms` | reverted |
 | `frankentorch-kgs4.127` | SmoothL1 f64 one-sided input grad, 8M elems | `1.79x` slower | internal keep; same-host local `746.26 ms` -> `647.44 ms` | kept; route remaining gap to tape/allocation/SIMD |
 | `frankentorch-kgs4.128` | max_pool3d f64 train step `[2,32,16,32,32]` | `9.38x` slower clean baseline | no gain; borrowed-input median `22.764 ms`, unit-dout median `16.160 ms`, sequential unit-dout median `22.465 ms` | reverted product candidates; keep stage probe |
+| `frankentorch-maxpool3d-scalar-loss-grad-buffers-7wru6` | max_pool3d f64 fused sum train step `[2,32,16,32,32]` | baseline `2.46x` slower; accumulate-only candidate `3.02x` slower | no gain; fused median `5.7046 ms`, accumulate-only `5.7846 ms`; raw stage rows regressed | reverted no-report accumulation path |
+| `frankentorch-kgs4.133` | conv2d f64 train step `[4,64,64,64]`, 64 3x3 filters | `1.91x` slower; candidate `1.86x` slower | no gain; same-worker rch `121.07 ms` -> `117.92 ms`, `p=0.38`, no change detected | rejected; removed dormant all-ones-dout branch |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `12/12` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 12L / 0N`. Correctness guards are green and the SDPA, MaxPool3d,
+Measured-discipline score: `14/14` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 14L / 0N`. Correctness guards are green and the SDPA, MaxPool3d,
 Linear, LayerNorm, GroupNorm, and SmoothL1 levers include real internal
 speedups, but no measured workload is performance-dominant against PyTorch yet.
 
@@ -85,10 +87,38 @@ still `3.58x` slower. Gates: ft-kernel-cpu LayerNorm unit-dy guards 2/0, ft-api
 functional LayerNorm 7/0, strict scheduler conformance 1/0 after canceling a
 stale-progress `vmi1264463` run and retrying on `hz2`.
 
+Conv2d all-ones dout (`frankentorch-kgs4.133`): the parked f64
+`conv2d_backward_f64` candidate that collapses all-ones `dout` into one shared
+`dweight` row and one shared `dpanel` row did not clear the same-worker keep
+gate. On `vmi1152480`, current `ops_bench` `conv2d/grad_hw/64` was `121.07 ms`;
+the active candidate was `117.92 ms`, but Criterion reported
+`[-7.9705% -2.5970% +2.8489%]`, `p=0.38`, and no detected change. Local PyTorch
+CPU `2.12.1+cpu` median for the same f64 scalar-sum train row was `63.449849 ms`,
+so current FT/PyTorch is `1.91x` slower and the no-ship candidate remained
+`1.86x` slower. The dormant branch was removed from product source.
+
+MaxPool3d scalar-loss accumulation
+(`frankentorch-maxpool3d-scalar-loss-grad-buffers-7wru6`): a no-report
+`tensor_backward_accumulate` path that moved only leaf/`retain_grad` buffers
+into persistent `.grad` did not move the fused max_pool3d sum-loss row. Baseline
+`pytorch_gauntlet_bench` fused median was `5.7046 ms` against PyTorch
+`2.3231 ms` (`2.46x` slower). The candidate median was `5.7846 ms` against
+same-run PyTorch `1.9164 ms` (`3.02x` slower), while raw kernel
+forward+indices regressed `+11.695%` and raw kernel backward-from-indices
+regressed `+15.953%`. The source hook was reverted.
+
 ## Current Gates
 
 | Gate | Scope | Result |
 |---|---|---|
+| PyTorch gauntlet | `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b cargo bench -p ft-api --bench pytorch_gauntlet_bench -- max_pool3d --noplot` | `frankentorch-maxpool3d-scalar-loss-grad-buffers-7wru6` baseline fused median `5.7046 ms`, PyTorch median `2.3231 ms`, ratio `2.46x` slower; no-report accumulate-only candidate `5.7846 ms`, same-run PyTorch `1.9164 ms`, ratio `3.02x` slower |
+| Correctness / compile | `rch exec -- cargo check -p ft-api --bench pytorch_gauntlet_bench`; `rch exec -- cargo test -p ft-api functional_max_pool3d_sum_matches_pool_sum_backward_bits -- --nocapture` | trial code compiled and passed focused bit-exact gradient proof before rejection; source hook reverted because performance did not clear the keep gate |
+| Criterion | `RCH_WORKER=vmi1152480 RCH_WORKERS=vmi1152480 CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo bench -p ft-api --bench ops_bench -- conv2d/grad_hw/64 --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot` | `frankentorch-kgs4.133` same-worker current `121.07 ms`; active all-ones-dout candidate `117.92 ms`; `p=0.38`, no change detected |
+| PyTorch oracle | local CPU torch f64 Conv2d `[4,64,64,64]`, 64 3x3 filters, padding 1, sum loss | PyTorch `2.12.1+cpu` median `63.449849 ms`, min `59.068578 ms`; current FrankenTorch ratio `1.91x` slower, candidate ratio `1.86x` slower |
+| Compile | `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo check -p ft-kernel-cpu --all-targets` | passed on `hz1`; existing example warning in `gemm_golden.rs` remains outside the removed conv2d branch |
+| Clippy | `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings` | passed on `vmi1293453`; broader `--all-targets` is still blocked by pre-existing lint debt in examples/tests and unrelated helper code |
+| Correctness | `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo test -p ft-kernel-cpu conv2d -- --nocapture` | passed: 5 tests ok, 1 perf-only ignored |
+| Static checks | `git diff --check`; `ubs crates/ft-kernel-cpu/src/lib.rs docs/NEGATIVE_EVIDENCE.md docs/RELEASE_READINESS_SCORECARD.md artifacts/perf/frankentorch-kgs4.133/gauntlet_20260620T0533Z/SCORECARD.md artifacts/perf/frankentorch-kgs4.133/gauntlet_20260620T0533Z/NEGATIVE_EVIDENCE_LEDGER.md`; `rustfmt --edition 2024 --check crates/ft-kernel-cpu/src/lib.rs` | diff whitespace passed; UBS found 0 critical issues and existing large-file warning inventory; whole-file rustfmt remains blocked by pre-existing formatting drift outside this deletion |
 | Rust A/B | `rch exec -- cargo bench -p ft-api --bench ops_bench -- layer_norm/grad_2048x1024 --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot` | `frankentorch-kgs4.116` current ran on `hz2`: `29.606 ms`; detached parent `2aa78200` on `hz2`: `90.723 ms`; current is `3.06x` faster |
 | Rust diagnostic | `rch exec -- cargo run --release -p ft-api --example layernorm_f32_grad_ab` | `frankentorch-kgs4.116` current ran on `hz2`: composed `1930.66 ms`, fused `293.49 ms`, `6.58x` faster |
 | PyTorch oracle | local CPU torch f64 LayerNorm `[2048,1024]`, affine grads, sum loss | PyTorch `2.12.1+cpu` median `8.261743 ms`, min `5.949352 ms`; current FrankenTorch Criterion estimate `29.606 ms`, ratio `3.58x` slower |
@@ -213,3 +243,12 @@ autograd and standalone unit-`dout` scatter branches; the next viable route is
 end-to-end fusion that removes the sum-generated gradient buffer/tape edge,
 allocator/arena work proven on the whole training row, or a fundamentally
 different layout/kernel plan with fresh ratio evidence.
+The `.133` result rejects materialized-im2col conv2d all-ones row collapse:
+the constants and allocations ate the theoretical win. The next conv2d attempt
+should avoid this family unless a fresh profile proves a new primitive, such as
+direct no-panel all-ones backward, workspace-backed panel reuse, cache-blocked
+col2im, or fused loss/backward/tape work, moves the full train row.
+The `7wru6` result rejects max_pool3d report-skipping/persistent-grad-only API
+work. The next max_pool3d attempt should be a true fused loss/backward primitive
+or a scheduler/arena rewrite with same-worker proof on the full PyTorch gauntlet
+row, not another wrapper around the generic backward report path.

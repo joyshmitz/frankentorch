@@ -4,6 +4,86 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-20 - frankentorch-maxpool3d-scalar-loss-grad-buffers-7wru6 - MaxPool3d accumulate-only report reject
+
+- Lever attempted: add a PyTorch-style `tensor_backward_accumulate` path that
+  skips dense `TensorBackwardReport` gradient materialization and moves only
+  leaf/`retain_grad` buffers into persistent `.grad` for the scalar
+  `functional_max_pool3d_sum(...).backward()` training row.
+- Workload: `pytorch_gauntlet_bench` `max_pool3d`, f64
+  `[N,C,D,H,W]=[2,32,16,32,32]`, kernel `(2,2,2)`, stride `(2,2,2)`,
+  scalar fused sum loss.
+- Baseline local PyTorch oracle run:
+  - `frankentorch_fused_sum_loss` median `5.7046 ms`.
+  - PyTorch `2.12` CPU median `2.3231 ms`; baseline FT/PyTorch ratio
+    `2.46x` slower.
+  - Stage probe: setup tensor `208.23 us`, forward-only `1.6696 ms`,
+    sum-only `846.53 us`, backward-only `5.4904 ms`,
+    raw kernel forward+indices `758.99 us`, raw kernel backward-from-indices
+    `1.6236 ms`.
+- Candidate run:
+  - `frankentorch_fused_sum_loss_accumulate_only` median `5.7846 ms`, ratio
+    to baseline fused loss `1.014x` slower.
+  - Same run PyTorch median `1.9164 ms`; candidate FT/PyTorch ratio `3.02x`
+    slower.
+  - Existing rows and stage probes did not improve: `frankentorch_kgs4_117`
+    regressed `+22.475%`, `frankentorch_fused_sum_loss` regressed
+    `+25.423%`, setup tensor regressed `+46.429%`, raw kernel
+    forward+indices regressed `+11.695%`, and raw kernel
+    backward-from-indices regressed `+15.953%`.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Verdict: rejected and reverted. The no-report accumulation API was correct in
+  a focused bit-exact test, but it did not move the measured train row and made
+  the PyTorch ratio worse on the candidate run.
+- Retry condition: do not retry report-skipping, leaf-only persistent-grad
+  moves, or another public `tensor_backward_accumulate` wrapper for this row.
+  Revisit only with a deeper primitive that bypasses the generic scheduler/report
+  path entirely, such as a true fused `max_pool3d_sum_backward`, an arena-backed
+  gradient/tape allocator proven on the full row, or a layout/saved-index plan
+  that shows same-worker end-to-end ratio movement.
+- Evidence:
+  - `artifacts/perf/frankentorch-maxpool3d-scalar-loss-grad-buffers-7wru6/gauntlet_20260620T0534Z/baseline_local_pytorch_max_pool3d.log`
+  - `artifacts/perf/frankentorch-maxpool3d-scalar-loss-grad-buffers-7wru6/gauntlet_20260620T0534Z/candidate_local_pytorch_max_pool3d.log`
+  - `artifacts/perf/frankentorch-maxpool3d-scalar-loss-grad-buffers-7wru6/gauntlet_20260620T0534Z/check_ft_api_accumulate_only.log`
+  - `artifacts/perf/frankentorch-maxpool3d-scalar-loss-grad-buffers-7wru6/gauntlet_20260620T0534Z/test_ft_api_max_pool3d_accumulate_bits.log`
+
+## 2026-06-20 - frankentorch-kgs4.133 - Conv2d all-ones dout row-collapse reject
+
+- Lever attempted: activate the parked f64 `conv2d_backward_f64` all-ones-`dout`
+  specialization for scalar `sum(conv2d(...))` loss. The candidate reduced
+  `dout`-dependent work by computing one shared `dweight` row, one shared
+  `dpanel` row, broadcasting `dweight` across output channels, and filling
+  `dbias` with the patch count.
+- Workload: `ops_bench` `conv2d/grad_hw/64`, f64
+  `[N,Cin,H,W]=[4,64,64,64]`, `[Cout,Cin,K,K]=[64,64,3,3]`, stride 1,
+  padding 1, scalar `sum` loss.
+- Same-worker rch A/B on `vmi1152480`: current baseline median estimate
+  `121.07 ms`; active candidate median estimate `117.92 ms`; candidate/current
+  latency ratio `0.9740x`. Criterion reported `[-7.9705% -2.5970% +2.8489%]`,
+  `p = 0.38`, and `No change in performance detected`.
+- PyTorch head-to-head: local PyTorch `2.12.1+cpu` in
+  `/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python`, 32 compute and
+  interop threads; PyTorch median `63.449849 ms`, min `59.068578 ms`. Current
+  FrankenTorch ratio vs PyTorch median was `1.91x` slower; the active candidate
+  was still `1.86x` slower.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Verdict: rejected. Removed the compile-time-false parked branch from
+  `conv2d_backward_f64` instead of leaving no-op experiment code in the hot
+  kernel.
+- Retry condition: do not retry this exact materialized-im2col all-ones
+  row-collapse shape, or another branch that still builds the full im2col panel
+  and allocates ones vectors for small GEMMs. Revisit conv2d only with fresh
+  profile evidence for a different primitive: workspace-backed panel reuse,
+  direct no-panel all-ones convolution backward, cache-blocked col2im,
+  arena-backed temporary storage, f32-native end-to-end ratio work, or a fused
+  loss/backward path that removes tape and gradient-buffer traffic.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.133/gauntlet_20260620T0533Z/SCORECARD.md`
+  - `artifacts/perf/frankentorch-kgs4.133/gauntlet_20260620T0533Z/NEGATIVE_EVIDENCE_LEDGER.md`
+  - `artifacts/perf/frankentorch-kgs4.133/gauntlet_20260620T0533Z/baseline_current_rch_ops_conv2d_grad_hw64.log`
+  - `artifacts/perf/frankentorch-kgs4.133/gauntlet_20260620T0533Z/candidate_active_rch_ops_conv2d_grad_hw64.log`
+  - `artifacts/perf/frankentorch-kgs4.133/gauntlet_20260620T0533Z/local_pytorch_conv2d_f64_grad_hw64.log`
+
 ## 2026-06-20 - frankentorch-kgs4.116 - LayerNorm unit-dy keep with PyTorch loss
 
 - Lever verified: already-landed f64/f32 `layer_norm_backward` all-ones-`dy`
