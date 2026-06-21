@@ -3969,48 +3969,61 @@ pub fn sdpa_forward_f32(
     let k_stride = seq_k * d_k;
     let v_stride = seq_k * d_v;
     let o_stride = seq_q * d_v;
-    out.par_chunks_mut(o_stride)
-        .enumerate()
-        .for_each(|(bh, o_chunk)| {
-            let qh = &q[bh * q_stride..bh * q_stride + q_stride];
-            let kh = &k[bh * k_stride..bh * k_stride + k_stride];
-            let vh = &v[bh * v_stride..bh * v_stride + v_stride];
-            let mut scores = vec![0.0f32; BR.min(seq_q) * seq_k];
+    // One independent BR-row block (f32 mirror of the f64 kernel). Blocks within a head are
+    // independent, so they are the unit of both the serial loop and the parallel split.
+    let block = |bh: usize, q0: usize, o_block: &mut [f32]| {
+        let br = o_block.len() / d_v;
+        let qh = &q[bh * q_stride..bh * q_stride + q_stride];
+        let kh = &k[bh * k_stride..bh * k_stride + k_stride];
+        let vh = &v[bh * v_stride..bh * v_stride + v_stride];
+        let mut sc = vec![0.0f32; br * seq_k];
+        let q_block = &qh[q0 * d_k..(q0 + br) * d_k];
+        gemm::sgemm_bt(br, d_k, seq_k, q_block, kh, &mut sc);
+        for r in 0..br {
+            let qi = q0 + r;
+            let limit = if causal { (qi + 1).min(seq_k) } else { seq_k };
+            let row = &mut sc[r * seq_k..(r + 1) * seq_k];
+            let mut m = f32::NEG_INFINITY;
+            for s in row.iter_mut().take(limit) {
+                *s *= scale;
+                if *s > m {
+                    m = *s;
+                }
+            }
+            let mut sum = 0.0f32;
+            for s in row.iter_mut().take(limit) {
+                let e = (*s - m).exp();
+                *s = e;
+                sum += e;
+            }
+            for s in row.iter_mut().take(limit) {
+                *s /= sum;
+            }
+            for s in row.iter_mut().skip(limit) {
+                *s = 0.0;
+            }
+        }
+        gemm::sgemm(br, seq_k, d_v, &sc, vh, o_block);
+    };
+    // Few heads but many cores: also split each head's independent BR-row blocks across the
+    // pool (same guard/rationale as the f64 kernel; head-heavy inputs keep the serial loop).
+    if num_bh < rayon::current_num_threads() && seq_q > BR {
+        out.par_chunks_mut(o_stride).enumerate().for_each(|(bh, o_chunk)| {
+            o_chunk
+                .par_chunks_mut(BR * d_v)
+                .enumerate()
+                .for_each(|(blk, o_block)| block(bh, blk * BR, o_block));
+        });
+    } else {
+        out.par_chunks_mut(o_stride).enumerate().for_each(|(bh, o_chunk)| {
             let mut q0 = 0;
             while q0 < seq_q {
                 let br = (q0 + BR).min(seq_q) - q0;
-                let q_block = &qh[q0 * d_k..(q0 + br) * d_k];
-                let sc = &mut scores[..br * seq_k];
-                gemm::sgemm_bt(br, d_k, seq_k, q_block, kh, sc);
-                for r in 0..br {
-                    let qi = q0 + r;
-                    let limit = if causal { (qi + 1).min(seq_k) } else { seq_k };
-                    let row = &mut sc[r * seq_k..(r + 1) * seq_k];
-                    let mut m = f32::NEG_INFINITY;
-                    for s in row.iter_mut().take(limit) {
-                        *s *= scale;
-                        if *s > m {
-                            m = *s;
-                        }
-                    }
-                    let mut sum = 0.0f32;
-                    for s in row.iter_mut().take(limit) {
-                        let e = (*s - m).exp();
-                        *s = e;
-                        sum += e;
-                    }
-                    for s in row.iter_mut().take(limit) {
-                        *s /= sum;
-                    }
-                    for s in row.iter_mut().skip(limit) {
-                        *s = 0.0;
-                    }
-                }
-                let o_block = &mut o_chunk[q0 * d_v..(q0 + br) * d_v];
-                gemm::sgemm(br, seq_k, d_v, sc, vh, o_block);
+                block(bh, q0, &mut o_chunk[q0 * d_v..(q0 + br) * d_v]);
                 q0 += br;
             }
         });
+    }
     out
 }
 
