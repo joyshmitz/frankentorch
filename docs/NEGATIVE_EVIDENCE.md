@@ -4083,3 +4083,18 @@ ft-api matrix_norm 7/0 + nuclear 2/0 (no regression). ★ svd-DERIVED ops unlock
 wins: PyTorch loops svd for cond/matrix_rank/norm2/nuc (137-251ms) -> FT routes batched input through batched
 svdvals + reduce. 19 vs-PyTorch wins. NEXT (bead ogu1e): matrix_rank + cond (same batched-svdvals+reduce
 pattern; matrix_rank=count(sv>tol), cond=max/min sv) + f32 geev/svd 2-D kernels.
+
+## 2026-06-21ca - NEW WINS (20th+21st): batched matrix_rank + cond (svd-derived) = 5.7-8.9x vs PyTorch
+
+tensor_linalg_matrix_rank batched path (route [...,m,n] -> batched svdvals + per-plane threshold-count -> [...])
++ tensor_linalg_cond batched path (p=+-2: batched svdvals + per-plane sigma_max/sigma_min via tensor_max_dim/
+min_dim/div -> [...]). NO new kernel -- pure ft-api composition over the shipped batched svdvals. MEASURED
+(examples/batched_cond_rank_h2h.rs, well-conditioned diag-dominant data):
+  cond [100000,4,4] FT 17.9 vs 159.4ms = 8.93x | k=16 6.26x (OK matches torch)
+  rank [100000,4,4] (rank-deficient, row-dup) FT 16.9 vs 118.0ms = 7.00x, rsum EXACT MATCH (rank=k-1) | k=16 5.73x exact
+ft-api cond 11/0 + matrix_rank 4/0 (no regression). NOTE: on ILL-conditioned random data matrix_rank can
+disagree with torch on a few borderline planes (13/20000 at k=16) -- the svd-tolerance ~1e-5 flips a
+near-threshold singular value's count; inherent rank threshold-discontinuity, NOT a bug (well-conditioned =
+exact match). cond on (near-)singular data -> inf/NaN both sides (undefined). 21 vs-PyTorch wins. SVD-DERIVED
+family DONE (norm2/nuc/cond/matrix_rank, all via batched svdvals composition). NEXT (bead ogu1e): f32 geev/svd
+2-D kernels (eigvals/eig/svd/svdvals f32 -- bigger lift).
