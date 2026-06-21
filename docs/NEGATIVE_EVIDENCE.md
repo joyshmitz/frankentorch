@@ -4442,3 +4442,30 @@ VERIFIED: `lstsq_qr_batched_matches_looping_2d_and_defers` and
 `ft-conformance` passed on RCH `vmi1153651`. Score for this pass: `3W / 0L / 0N` vs PyTorch.
 Batched-linalg class now includes f64 `lstsq` QR on top of the SVD fallback. REMAINING: qr/eig batched
 grad, `svdvals` f32, tiny-k `svd`, and f32 mirrors of eigvals/eig.
+
+## 2026-06-21cu - NEGATIVE: 4-D SDPA f64 row-block retuning does not close the PyTorch gap
+
+Targeted the real-world 4-D SDPA loss called out by `sdpa_4d_headtohead`: standard
+`[B=2,H=8,SEQ=512,D=64]` f64 no-grad attention, where PyTorch is much faster than the
+old 3-D gauntlet layout suggested. The current FT path already flattens `[B,H]` to `BH`
+and borrows contiguous q/k/v buffers into `sdpa_forward_f64`, so the radical lever tested
+here was cache/GEMM row-block scheduling in the fused kernel score tile.
+
+MEASURED current 64-row source via RCH build and retrieved release binary:
+`AGENT_NAME=cod-a CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+rch exec -- cargo run --release -p ft-api --example sdpa_4d_headtohead`, then local
+same-machine PyTorch sidecar because RCH workers lacked torch:
+  current `BR=64` run A: FT 7.423ms vs PyTorch 5.923ms = 1.25x SLOWER
+  current `BR=64` run B: FT 7.019ms vs PyTorch 6.285ms = 1.12x SLOWER
+
+REJECTED candidates:
+  `BR=32`: remote FT 8.544ms; local same-machine FT 7.627ms vs PyTorch 5.949ms = 1.28x SLOWER
+  `BR=128`: remote FT 8.492ms; local same-machine FT 8.050ms vs PyTorch 6.478ms = 1.24x SLOWER
+
+Both candidates were slower than the current 64-row kernel in absolute FT time and did not improve
+the ratio-vs-PyTorch. Source disposition: reverted to `BR=64`; no kernel change shipped. Score for
+this pass: `0W / 2L / 0N` vs the current FT source, and the remaining 4-D SDPA row stays a PyTorch
+loss at roughly `1.12-1.25x` slower on local same-machine evidence. NEXT: do not retune this scalar
+`BR` constant again. Retry only after phase timing (`sdpa_inference_headtohead` raw-kernel vs API
+readback) points to a deeper lever: online softmax plus fused V accumulation, vectorized `exp`
+preserving tolerance, or a matrixmultiply/SIMD-class kernel change.
