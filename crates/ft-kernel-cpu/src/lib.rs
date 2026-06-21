@@ -19258,6 +19258,55 @@ pub fn triangular_solve_backward_grad_a_f64(
     grad_a
 }
 
+/// Batched singular-value BACKWARD (VJP): given `grad_sigma [B*kk]` and the saved reduced-SVD factors
+/// `u [B*m*kk]`, `vh [B*kk*n]` (A = U Σ Vʰ, kk=min(m,n)), returns `grad_A [B*m*n]` where each plane's
+/// `grad_A = U diag(grad_σ) Vʰ` (i.e. `grad_A[i][j] = Σ_l grad_σ_l·U[i][l]·Vh[l][j]`). FUSED + parallel
+/// over the batch — the backward of batched svdvals. Bit-identical to looping the 2-D svdvals backward.
+/// frankentorch-batched-eigh. (BlackThrush)
+pub fn svdvals_grad_batched_contiguous_f64(
+    grad_sigma: &[f64],
+    u: &[f64],
+    vh: &[f64],
+    m: usize,
+    n: usize,
+) -> Result<Vec<f64>, KernelError> {
+    if grad_sigma.is_empty() {
+        return Ok(Vec::new());
+    }
+    let kk = m.min(n);
+    if kk == 0 || grad_sigma.len() % kk != 0 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![grad_sigma.len()],
+            rhs: vec![kk],
+        });
+    }
+    let bb = grad_sigma.len() / kk;
+    let (u_plane, vh_plane, a_plane) = (m * kk, kk * n, m * n);
+    if u.len() != bb * u_plane || vh.len() != bb * vh_plane {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![u.len(), vh.len()],
+            rhs: vec![bb * u_plane, bb * vh_plane],
+        });
+    }
+    let mut out = vec![0.0f64; bb * a_plane];
+    out.par_chunks_mut(a_plane)
+        .zip(u.par_chunks(u_plane))
+        .zip(vh.par_chunks(vh_plane))
+        .zip(grad_sigma.par_chunks(kk))
+        .for_each(|(((o, up), vp), gs)| {
+            for i in 0..m {
+                for j in 0..n {
+                    let mut acc = 0.0;
+                    for l in 0..kk {
+                        acc += gs[l] * up[i * kk + l] * vp[l * n + j];
+                    }
+                    o[i * n + j] = acc;
+                }
+            }
+        });
+    Ok(out)
+}
+
 /// Batched symmetric-eigenvalue BACKWARD (VJP): given `grad_evals [B*k]` and the saved eigenvectors
 /// `evecs [B*k*k]` (columns of V per plane), returns `grad_A [B*k*k]` where each plane's
 /// `grad_A = V diag(grad_λ) Vᵀ` (i.e. `grad_A[a][b] = Σ_i V[a][i]·grad_λ_i·V[b][i]`). FUSED + parallel
@@ -31311,6 +31360,30 @@ mod tests {
             let s = super::svdvals_contiguous_f64(&data[b * m * n..(b + 1) * m * n], &pmeta).unwrap();
             for i in 0..mn {
                 assert_eq!(out[b * mn + i].to_bits(), s[i].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn svdvals_grad_batched_reconstructs_a_when_grads_is_sigma() {
+        // With grad_σ = σ, the VJP grad_A = U diag(σ) Vʰ = A. Feeding (σ, U, Vh) from the reduced SVD
+        // must reconstruct A — strong correctness check (square + tall).
+        for (bb, m, n) in [(7usize, 5usize, 5usize), (6, 7, 4)] {
+            let mut a = vec![0.0f64; bb * m * n];
+            for x in 0..bb * m * n {
+                a[x] = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
+            }
+            let meta = TensorMeta::from_shape(vec![bb, m, n], DType::F64, Device::Cpu);
+            let (u, s, vh) = super::svd_batched_contiguous_f64(&a, &meta, false).unwrap();
+            let grad_a = super::svdvals_grad_batched_contiguous_f64(&s, &u, &vh, m, n).unwrap();
+            assert_eq!(grad_a.len(), bb * m * n);
+            for t in 0..bb * m * n {
+                assert!(
+                    (grad_a[t] - a[t]).abs() < 1e-8,
+                    "grad_A != A at {t} (m={m},n={n}): {} vs {}",
+                    grad_a[t],
+                    a[t]
+                );
             }
         }
     }

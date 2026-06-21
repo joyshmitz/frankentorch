@@ -4330,3 +4330,15 @@ lesson (grad-step tape-overhead masks the kernel win, from CHEAP scan kernels) d
 eigvalsh FORWARD is EXPENSIVE (eigh) + the backward is a FUSED kernel -> the fwd-dominated step wins 6-9x.
 The fused-kernel pattern EXTENDS to GRADIENTS. 34 wins. NEXT: svdvals/qr/eig batched grad (same fused-
 backward-kernel pattern, per-op VJP).
+
+## 2026-06-21cr - WIN (35th): batched svdvals GRADIENT (fwd+bwd step) = 6.6-9.3x vs PyTorch
+
+svdvals_grad_batched_contiguous_f64 (FUSED backward: grad_A = U diag(grad_σ) Vʰ per plane, parallel) +
+tensor_linalg_svdvals batched grad path (fused fwd svd_batched saving U+Vh, via tensor_apply_function).
+MEASURED (examples/svdvals_grad_h2h.rs, loss = sum(σ²) -> grad = 2A):
+  [100000,4,4]  FT 35.5ms vs torch 329.6ms = 9.28x FASTER
+  [20000,16,16] FT 94.0ms vs torch 615.7ms = 6.55x
+CORRECT: grad-2A err ~1e-15 (kernel test svdvals_grad_batched_reconstructs_a_when_grads_is_sigma: grad_σ=σ
+-> grad_A = U diag(σ) Vʰ = A, square + tall). ft-kernel-cpu 528/0 + ft-api svdvals 3/0. GRAD vein:
+eigvalsh (cq) + svdvals (cr), both 6-9x via fused-backward-kernel + apply_function (in-lane). 35 wins.
+NEXT: qr/eig batched grad (more complex VJPs).
