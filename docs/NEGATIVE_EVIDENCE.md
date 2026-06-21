@@ -3305,3 +3305,21 @@ SDPA op wins; the composed layer loses. BROAD lever (architectural, not pursued)
 API overhead (node creation + intermediate clones across composed ops) — the real composed-op-inference
 bottleneck. The SDPA clone-elision fixed ONE op; composed ops would need it systemically + lighter nodes.
 (Measurement note: caught the sin()-in-timed-loop bug again, 172->145 ms after precomputing inputs.)
+
+## 2026-06-21aj - MHA loss localized: matmul-MKL-wall + ~18-op accumulation (no single pathology) — not a quick lever
+
+Profiled MHA's component ops at scale (examples/mha_component_timing.rs, min-time) to find whether the
+5.77x MHA loss (2026-06-21ai) is one slow primitive (broad lever) or distributed:
+- matmul [2048,512]@[512,512]: 7.41 ms  (~1 GFLOP @ ~135 GF/s — ~3x slower than MKL; the GEMM wall)
+- reshape ->[seq,batch,heads,d]: 1.00 ms
+- permute ->[batch,heads,seq,d]: 1.85 ms
+- session_new + 1 leaf [2048,512]: 0.56 ms
+
+=> NO single pathology. MHA's ~145 ms = accumulation of ~18 composed ops (3 in-proj matmuls + biases +
+3 head reshapes + 3 permutes + sdpa + merge permute/reshape + out-proj matmul): the 4 matmuls ~30 ms are
+MKL-walled (matrixmultiply ~3x slower than MKL, the known unbeatable GEMM wall), the ~14 reshape/permute/
+bias ops are individually cheap (~1-2 ms) but add up, + per-op node/read overhead. PyTorch fuses the whole
+layer (~25 ms). So the MHA loss is FUNDAMENTAL: (a) matmul-vs-MKL wall (can't beat in pure Rust) + (b)
+per-op-overhead accumulation across the layer (architectural — op-fusion / lighter nodes; not a quick lever).
+Confirms 2026-06-21ai: raw SDPA wins, the composed transformer block loses, and the loss is not clone-
+elidable (unlike SDPA — matmul's kernel itself is MKL-walled, so eliding its clones wouldn't flip it).
