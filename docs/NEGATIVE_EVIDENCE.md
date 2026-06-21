@@ -2971,3 +2971,28 @@ not allocator-independent as first assumed. So its existing ~2x head-to-head WIN
 fair allocator. EVERY gauntlet lane is allocator-bound to some degree -> the caching allocator is a
 UNIVERSAL FT-side lever (cleaner workers showed avg_pool1d 2.86x, 2026-06-21t). All lanes bit-consistent
 across both allocators => the ~50-LOC pure-Rust allocator is sound. Confirms the DOMINATE path needs no C.
+
+## 2026-06-21v - REFINED (honest correction): caching-allocator win is alloc-HEAVY-specific; naive allocator regresses small ops
+
+Extended the pure-Rust caching-allocator A/B to 5 lanes (3 runs, same-process, gradient checksum
+bit-identical each => sound). This REFINES/corrects the "every lane is allocator-bound / universal
+lever" framing of 2026-06-21u:
+| lane | sys->cache ratio | nature |
+|---|---:|---|
+| avg_pool1d | ~2.7x | strongly alloc-bound (4M leaf grad + distribute buffers) — the lever's real value |
+| sdpa       | ~1.5x | alloc-bound (~5-6k small allocs/step in the blocked flash-attn backward) |
+| conv3d     | ~1.01x | NEUTRAL — GEMM-walled (im2col buffer IS cached, but matrixmultiply dominates) |
+| linear     | ~0.91-0.95x | slight REGRESSION — alloc-light (few allocs); naive scan overhead > savings |
+| max_pool3d | ~0.75-0.87x | REGRESSION — tiny op (~4.5ms); naive 256-slot linear-scan per alloc costs more |
+
+★ HONEST TAKEAWAYS:
+1. The caching allocator is a BIG, real lever on the ALLOC-HEAVY lanes (avg_pool1d 2.7x, sdpa 1.5x) —
+   which ARE the worst gauntlet losses, so it closes the gaps that matter.
+2. My ~50-LOC NAIVE linear-scan allocator REGRESSES small/alloc-light ops (its per-alloc 256-slot scan
+   exceeds the page-fault savings). => a PRODUCTION allocator (mimalloc, O(1) size-class, thread-local
+   segments) is the correct ship vehicle — it keeps the heavy wins WITHOUT the small-op overhead. This
+   VALIDATES cod-a's mimalloc adoption over a roll-your-own naive allocator.
+3. conv3d stays a loss even with caching (GEMM/oneDNN-walled) — not an allocator gap.
+All 5 lanes bit-consistent across both allocators => the demo allocator is sound (correctness, not
+production-perf). Prior 2.86x single-lane (avg_pool1d, 2026-06-21t) stands; the "universal" gloss
+of 2026-06-21u is corrected to "alloc-heavy-specific" here.
