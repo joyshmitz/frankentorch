@@ -3753,6 +3753,78 @@ pub fn sdpa_forward_f64(
     out
 }
 
+/// Flash SDPA forward with an ADDITIVE attention mask (the explicit-`attn_mask` case,
+/// which otherwise composes through bmm+softmax+bmm and materialises the [.., seq_q, seq_k]
+/// score matrix — the same f64 gap that makes PyTorch's CPU masked SDPA slow). `mask` is the
+/// row-major additive mask; `mask_bh_stride` is 0 for a [seq_q, seq_k] mask shared across all
+/// heads, or `seq_q*seq_k` for a per-head [num_bh, seq_q, seq_k] mask. Matches the bmm+softmax+
+/// bmm result to fp tolerance (same as the unmasked flash kernel). frankentorch-sdpamask.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn sdpa_forward_masked_f64(
+    q: &[f64],
+    k: &[f64],
+    v: &[f64],
+    num_bh: usize,
+    seq_q: usize,
+    seq_k: usize,
+    d_k: usize,
+    d_v: usize,
+    scale: f64,
+    mask: &[f64],
+    mask_bh_stride: usize,
+) -> Vec<f64> {
+    const BR: usize = 64;
+    let mut out = vec![0.0f64; num_bh * seq_q * d_v];
+    let q_stride = seq_q * d_k;
+    let k_stride = seq_k * d_k;
+    let v_stride = seq_k * d_v;
+    let o_stride = seq_q * d_v;
+    out.par_chunks_mut(o_stride)
+        .enumerate()
+        .for_each(|(bh, o_chunk)| {
+            let qh = &q[bh * q_stride..bh * q_stride + q_stride];
+            let kh = &k[bh * k_stride..bh * k_stride + k_stride];
+            let vh = &v[bh * v_stride..bh * v_stride + v_stride];
+            let mask_base = bh * mask_bh_stride;
+            let mut scores = vec![0.0f64; BR.min(seq_q) * seq_k];
+            let mut q0 = 0;
+            while q0 < seq_q {
+                let br = (q0 + BR).min(seq_q) - q0;
+                let q_block = &qh[q0 * d_k..(q0 + br) * d_k];
+                let sc = &mut scores[..br * seq_k];
+                gemm::dgemm_bt(br, d_k, seq_k, q_block, kh, sc);
+                // Per row: scale*scores + mask, then stable softmax over all seq_k
+                // (masked positions carry -inf in `mask` -> exp -> 0, exactly as torch).
+                for r in 0..br {
+                    let qi = q0 + r;
+                    let mrow = &mask[mask_base + qi * seq_k..mask_base + (qi + 1) * seq_k];
+                    let row = &mut sc[r * seq_k..(r + 1) * seq_k];
+                    let mut m = f64::NEG_INFINITY;
+                    for (s, &mv) in row.iter_mut().zip(mrow.iter()) {
+                        *s = *s * scale + mv;
+                        if *s > m {
+                            m = *s;
+                        }
+                    }
+                    let mut sum = 0.0f64;
+                    for s in row.iter_mut() {
+                        let e = (*s - m).exp();
+                        *s = e;
+                        sum += e;
+                    }
+                    for s in row.iter_mut() {
+                        *s /= sum;
+                    }
+                }
+                let o_block = &mut o_chunk[q0 * d_v..(q0 + br) * d_v];
+                gemm::dgemm(br, seq_k, d_v, sc, vh, o_block);
+                q0 += br;
+            }
+        });
+    out
+}
+
 /// f32 mirror of [`sdpa_forward_f64`] (the common transformer inference dtype):
 /// same block-row flash-attention pattern, using the `sgemm_bt`/`sgemm`
 /// microkernels and f32 softmax.

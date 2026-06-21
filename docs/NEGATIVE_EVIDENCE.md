@@ -3417,3 +3417,21 @@ FLAT/competitive across SDPA + conv2d + relu => NO vs-PyTorch serving-degradatio
 SERVING AXIS CLOSED (positive: FT serving holds up; the SDPA win is robust to long-running serving).
 This + the gauntlet/non-gauntlet/composed/serving sweeps => the vs-PyTorch perf surface is exhaustively
 measured on every axis. Lone win = f64 SDPA (harvested, robust); all else vendor-walled; gmuml tamed.
+## 2026-06-21ap - ★ NEW WIN: masked f64 SDPA ~1.67x faster than PyTorch (flash masked kernel)
+
+The explicit additive-attn_mask SDPA path fell through to bmm+softmax+bmm (materializes [bh,seq,seq])
+just like PyTorch's f64 masked path — the same f64 structural gap as unmasked SDPA, previously left on
+the table (6 attn_mask.is_none() fast-path guards). NEW: ft_kernel_cpu::sdpa_forward_masked_f64 (flash
+kernel folding the additive mask into the softmax, bit-exact-to-tolerance vs bmm+softmax+bmm). Routed
+the no-grad f64 fast path in BOTH entry points (scaled_dot_product_attention + tensor_scaled_dot_product_
+attention [GQA + direct callers]) for contiguous [seq_q,seq_k] or [bh,seq_q,seq_k] masks; broadcast/grad/
+f32/causal fall through unchanged.
+- MEASURED (examples/sdpa_masked_headtohead.rs, [16,512,64] + [512,512] mask, no-grad, min):
+  FT 11.99ms vs PyTorch 19.997ms = **1.67x FASTER**; CORRECTNESS rel-diff **3.29e-14** vs torch (MATCH).
+- VERIFIED: 17 sdpa + 4 gqa tests; ft-api 2335 pass / 3 pre-existing peer reds; conformance 199/0 + all
+  sub-suites; ft-kernel-cpu 504/0.
+=> Masked/padding attention is ubiquitous in real transformers -> a relevant NEW win. The f64 SDPA win
+now spans unmasked (train ~2.1x + inference 1.13-1.34x), causal (1.24-2x), AND masked (1.67x) — all the
+same structural gap (PyTorch CPU has no fused f64 flash-attn; FT's flash avoids the score materialization).
+This corrects my prior "masked SDPA: both materialize -> no gap" assumption — FT could ADD flash-mask
+support to win, which PyTorch f64 cannot (its flash is f32-only).
