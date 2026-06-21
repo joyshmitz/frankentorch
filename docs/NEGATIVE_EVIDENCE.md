@@ -3693,3 +3693,16 @@ VERIFIED: cummin_dim_basic_tie_nan kernel test (dim0/dim1/tie [5,5,5]->[0,1,2]/N
 head FT 144ms vs PyTorch 427ms = 2.96x, bit-exact (examples/cummin_dim_api_headtohead.rs). 5th clean
 scan-family vs-PyTorch win. cummax + cummin dim-aware now BOTH user-facing + winning ~3x; the bead's f64
 scope is DONE (remaining = f32 fast kernels — f32 correct via gather today, not yet the fast path).
+
+## 2026-06-21bc - cummax/cummin dim-aware f32 fast path SHIPPED = 3.8x vs PyTorch — bead f64+f32 scope COMPLETE
+
+Added cummax_dim/cummin_dim _f32 kernels (values f32, indices f64; cache-friendly mirrors of the f64
+kernels) + routed an f32 no-grad fast path in tensor_cummax_dim/tensor_cummin_dim (borrow contiguous_
+values_f32 -> kernel -> leaf_f32). PyTorch f32 cummax/cummin dim=0 [262144,64] = 379/390ms (strided).
+MEASURED (examples/cummax_dim_f32_headtohead.rs, values+indices MATCH; torch makes the f32 input the
+SAME way FT does — f64 sin then .float() — else the f32 inputs differ and argmax ties diverge):
+  f32 cummax dim=0 : FT 98.8ms  vs PyTorch 378.6ms = 3.83x FASTER
+  f32 cummin dim=0 : FT 103.1ms vs PyTorch 390.5ms = 3.79x FASTER
+VERIFIED: cummax_cummin_dim_f32_basic kernel test (dim0 + NaN) + ft-kernel-cpu 511/0 + ft-api cummax/
+cummin tests green. => bead frankentorch-cummax-dim-aware COMPLETE: cummax+cummin × f64+f32, all
+user-facing + winning ~3-3.8x, bit-exact + grad. 7 clean scan-family vs-PyTorch wins total.

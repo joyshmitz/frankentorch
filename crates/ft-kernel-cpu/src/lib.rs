@@ -13019,6 +13019,190 @@ fn cummin_dim_lane_block_f64(
     }
 }
 
+/// f32 mirror of [`cummax_dim_tensor_contiguous_f64`] — values f32, indices f64. (BlackThrush)
+pub fn cummax_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<(Vec<f32>, Vec<f64>), KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let dim_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "cummax shape volume overflow")?;
+    let numel = checked_mul(
+        checked_mul(outer_size, dim_size, "cummax shape multiplication overflow")?,
+        inner_size,
+        "cummax shape multiplication overflow",
+    )?;
+    if numel == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let offset = meta.storage_offset();
+    let mut values = vec![0.0f32; numel];
+    let mut indices = vec![0.0f64; numel];
+    let data = &input[offset..];
+    let lane = dim_size * inner_size;
+    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+        values
+            .par_chunks_mut(lane)
+            .zip(indices.par_chunks_mut(lane))
+            .enumerate()
+            .for_each(|(outer, (val_chunk, idx_chunk))| {
+                let base = outer * lane;
+                cummax_dim_lane_block_f32(
+                    &data[base..base + lane],
+                    val_chunk,
+                    idx_chunk,
+                    dim_size,
+                    inner_size,
+                );
+            });
+    } else {
+        for outer in 0..outer_size {
+            let base = outer * lane;
+            cummax_dim_lane_block_f32(
+                &data[base..base + lane],
+                &mut values[base..base + lane],
+                &mut indices[base..base + lane],
+                dim_size,
+                inner_size,
+            );
+        }
+    }
+    Ok((values, indices))
+}
+
+#[inline]
+fn cummax_dim_lane_block_f32(
+    block: &[f32],
+    vals: &mut [f32],
+    idxs: &mut [f64],
+    dim_size: usize,
+    inner_size: usize,
+) {
+    let mut acc_max = vec![f32::NEG_INFINITY; inner_size];
+    let mut acc_idx = vec![0.0f64; inner_size];
+    let mut seen_nan = vec![false; inner_size];
+    for d in 0..dim_size {
+        let row = d * inner_size;
+        let src = &block[row..row + inner_size];
+        let vd = &mut vals[row..row + inner_size];
+        let id = &mut idxs[row..row + inner_size];
+        for inner in 0..inner_size {
+            let v = src[inner];
+            if !seen_nan[inner] {
+                if v.is_nan() {
+                    seen_nan[inner] = true;
+                    acc_max[inner] = v;
+                    acc_idx[inner] = d as f64;
+                } else if v >= acc_max[inner] {
+                    acc_max[inner] = v;
+                    acc_idx[inner] = d as f64;
+                }
+            }
+            vd[inner] = acc_max[inner];
+            id[inner] = acc_idx[inner];
+        }
+    }
+}
+
+/// f32 mirror of [`cummin_dim_tensor_contiguous_f64`] — values f32, indices f64. (BlackThrush)
+pub fn cummin_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<(Vec<f32>, Vec<f64>), KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let dim_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "cummin shape volume overflow")?;
+    let numel = checked_mul(
+        checked_mul(outer_size, dim_size, "cummin shape multiplication overflow")?,
+        inner_size,
+        "cummin shape multiplication overflow",
+    )?;
+    if numel == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let offset = meta.storage_offset();
+    let mut values = vec![0.0f32; numel];
+    let mut indices = vec![0.0f64; numel];
+    let data = &input[offset..];
+    let lane = dim_size * inner_size;
+    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+        values
+            .par_chunks_mut(lane)
+            .zip(indices.par_chunks_mut(lane))
+            .enumerate()
+            .for_each(|(outer, (val_chunk, idx_chunk))| {
+                let base = outer * lane;
+                cummin_dim_lane_block_f32(
+                    &data[base..base + lane],
+                    val_chunk,
+                    idx_chunk,
+                    dim_size,
+                    inner_size,
+                );
+            });
+    } else {
+        for outer in 0..outer_size {
+            let base = outer * lane;
+            cummin_dim_lane_block_f32(
+                &data[base..base + lane],
+                &mut values[base..base + lane],
+                &mut indices[base..base + lane],
+                dim_size,
+                inner_size,
+            );
+        }
+    }
+    Ok((values, indices))
+}
+
+#[inline]
+fn cummin_dim_lane_block_f32(
+    block: &[f32],
+    vals: &mut [f32],
+    idxs: &mut [f64],
+    dim_size: usize,
+    inner_size: usize,
+) {
+    let mut acc_min = vec![f32::INFINITY; inner_size];
+    let mut acc_idx = vec![0.0f64; inner_size];
+    let mut seen_nan = vec![false; inner_size];
+    for d in 0..dim_size {
+        let row = d * inner_size;
+        let src = &block[row..row + inner_size];
+        let vd = &mut vals[row..row + inner_size];
+        let id = &mut idxs[row..row + inner_size];
+        for inner in 0..inner_size {
+            let v = src[inner];
+            if !seen_nan[inner] {
+                if v.is_nan() {
+                    seen_nan[inner] = true;
+                    acc_min[inner] = v;
+                    acc_idx[inner] = d as f64;
+                } else if v <= acc_min[inner] {
+                    acc_min[inner] = v;
+                    acc_idx[inner] = d as f64;
+                }
+            }
+            vd[inner] = acc_min[inner];
+            id[inner] = acc_idx[inner];
+        }
+    }
+}
+
 /// Backward pass for cumsum: reverse cumulative sum.
 ///
 /// If forward is cumsum along dim, the gradient is a reverse cumsum along the same dim.
@@ -33597,6 +33781,25 @@ mod tests {
         let (v, i) = super::cummax_dim_tensor_contiguous_f64(&input, &meta, 0).unwrap();
         assert_eq!(v, vec![1.0, 5.0, 2.0, 4.0, 5.0, 6.0]);
         assert_eq!(i, vec![0.0, 0.0, 0.0, 1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn cummax_cummin_dim_f32_basic() {
+        // f32 mirrors: same as the f64 dim0 cases, values as f32, indices f64.
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F32, Device::Cpu);
+        let input: Vec<f32> = vec![1.0, 5.0, 2.0, 4.0, 3.0, 6.0];
+        let (vmax, imax) = super::cummax_dim_tensor_contiguous_f32(&input, &meta, 0).unwrap();
+        assert_eq!(vmax, vec![1.0f32, 5.0, 2.0, 4.0, 5.0, 6.0]);
+        assert_eq!(imax, vec![0.0f64, 0.0, 0.0, 1.0, 0.0, 1.0]);
+        let (vmin, imin) = super::cummin_dim_tensor_contiguous_f32(&input, &meta, 0).unwrap();
+        assert_eq!(vmin, vec![1.0f32, 5.0, 2.0, 1.0, 3.0, 2.0]);
+        assert_eq!(imin, vec![0.0f64, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        // NaN-freeze (f32)
+        let m3 = TensorMeta::from_shape(vec![3, 1], DType::F32, Device::Cpu);
+        let (vn, in_) = super::cummax_dim_tensor_contiguous_f32(&[1.0, f32::NAN, 2.0], &m3, 0).unwrap();
+        assert_eq!(vn[0], 1.0f32);
+        assert!(vn[1].is_nan() && vn[2].is_nan());
+        assert_eq!(in_, vec![0.0f64, 1.0, 1.0]);
     }
 
     #[test]
