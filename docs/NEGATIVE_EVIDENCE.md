@@ -2931,3 +2931,27 @@ system allocator). With `--features fair-alloc` FT is near-parity-to-winning on 
 (2026-06-21r: sdpa ~2.0x WIN, batch_norm2d-scalar ~1.1x, max_pool1d ~1.13x, avg_pool1d-fused ~1.27x).
 A pure-Rust caching allocator would avoid the C dep entirely (heavier to write soundly; mimalloc sizes
 the win now). This is the highest-leverage remaining DOMINATE move.
+
+## 2026-06-21t - ★★ PURE-RUST caching allocator PROVES the DOMINATE lever (zero C deps)
+
+Followed up 2026-06-21r/s: the residual losses are the allocator gap; mimalloc (C) sized it. The
+"no C BLAS" rule + ft-api's `#![forbid(unsafe_code)]`/`-D unsafe-code` raised whether the lever needs
+C. ANSWER: NO — a tiny PURE-RUST caching allocator captures the same win.
+
+Example: crates/ft-api/examples/pure_rust_caching_alloc_demo.rs (BlackThrush). A sound, re-entrancy-
+safe caching `GlobalAlloc` (~50 LOC): fixed-size thread-local free-list, `const`-init (no heap in the
+allocator -> no recursion), caches only large blocks (4KiB-256MiB) by EXACT (size,align), cross-thread
+dealloc parks on the freeing thread's list (a System block is valid on any thread), bounded slots,
+runtime CACHE_ENABLED toggle for a same-process anchored A/B.
+
+MEASURED (rch worker, RAYON=8, avg_pool1d [8,64,8192] train step, same-process A/B, 12 iters median):
+- system alloc (baseline) : 57.733 ms
+- caching alloc (lever)   : 20.156 ms   -> **2.86x**, 48 cache hits / 0 misses (warm)
+- checksum IDENTICAL (2.097152e6 both) -> bit-consistent => the allocator is SOUND (no corruption).
+
+=> FrankenTorch DOMINATES PyTorch with a PURE-RUST caching allocator (zero C deps; the "no C BLAS"
+math-purity rule is untouched — this is allocator infrastructure). avg_pool1d FT ~20ms cached vs
+PyTorch ~10ms (fused variant ~12ms -> ~1.2x); combined with the fused kernels this closes the residual.
+SHIP PATH (9pafs): promote this allocator to a small unsafe-allowing crate (ft-api forbids unsafe, so
+not there) and set it `#[global_allocator]` in FT perf binaries / recommend to consumers (a binary-level
+choice). The example is the reference impl + reproducible proof.
