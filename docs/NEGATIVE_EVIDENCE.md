@@ -4194,3 +4194,20 @@ was never the bottleneck). 28th win (dominates k>=16; closes the 20-53x gap to w
 the reconstruction ops (hermitian-pinv / batched-linalg-grad compose matmul -- now fast; re-probe next).
 LESSON: localize with tensor_bmm-vs-tensor_matmul (op-vs-composition) -- the culprit was the no-op
 broadcast/reshape round-trip in the API composition, not the kernel.
+
+## 2026-06-21ci - matmul investigation closed: reshape/view MATERIALIZE (~12-20ms) = architectural cap; ch 3-D fast path was the clean win
+
+Deeper diagnosis after the ch matmul fast path: tensor_broadcast_to + tensor_reshape + tensor_view ALL
+materialize a full copy (~12-20ms for a 25MB [100000,4,4], ~1.2 GB/s -- 10x below bandwidth), even for
+no-op / contiguous-collapse shapes. FT has NO zero-copy views. This caps matmul-COMPOSITION perf. 4-D
+batched matmul [10000,8,16,16] = FT 1074ms vs torch 37.6ms (28x); rewriting via tensor_view collapse +
+bmm + view = 322ms (still 8.6x slower) -- the materializing views (12ms each) cap it. Reaching parity
+needs a zero-copy view system (architectural, multi-session, ft-autograd cross-lane). The ch 3-D fast path
+WON precisely because it avoids reshape/view ENTIRELY for [B,m,k]@[B,k,n] (calls tensor_bmm directly).
+hermitian-pinv re-probe (WITH the ch fast path): 3.2-3.67x faster (was 1.3x -- the matmul fix helped) but
+(a) capped by the through-tape elementwise ops (reciprocal/unsqueeze/mul/transpose ~5-12ms each, each also
+materializing) + eigh, (b) my hand-rolled V*diag(1/lambda)*V^T reconstruction has a 3.8% A@pinv-I error
+(bug). A clean hermitian-pinv win needs a FUSED no-grad kernel (eigh + per-plane reconstruction inline,
+parallel over batch, no tape/materialization) -> ~10x est (eigh-dominated), correctness controlled -- the
+concrete NEXT lead. 28 vs-PyTorch wins. KEY BOUND: matmul-composition ops are reshape/view-materialization-
+capped; only ops that avoid reshape (direct kernel calls) or are fused win cleanly.
