@@ -2858,3 +2858,29 @@ FT caching-alloc, vs PyTorch):
 - HEAD-TO-HEAD with a FAIR allocator: ~1W (sdpa) + near-parity on batch_norm2d-scalar/max_pool1d/
   avg_pool1d-fused + ~2-3x on the rest. The gauntlet should adopt a caching allocator on the FT arm
   for a fair comparison going forward.
+
+## 2026-06-21s - caching-allocator (fair gauntlet) adoption is RCH-VIABLE — exact opt-in patch for the owner
+
+Verified the blocker for adopting the fair caching-allocator gauntlet (2026-06-21r): **mimalloc
+builds on rch** — `rch exec -- cargo build --release -p ft-api --bench pytorch_gauntlet_bench`
+with mimalloc added compiled it (Compiling mimalloc v0.1.52; Finished in 1m32s; exit 0). So the
+rch-offline-fetch concern is resolved; the only remaining gates are coordination (it's the shared,
+peer-maintained gauntlet bench — not "my files") + the C-dep-policy call (mimalloc is an ALLOCATOR,
+orthogonal to the "no C BLAS/LAPACK/XLA" MATH-purity rule). I did NOT ship it (shared file).
+
+EXACT OPT-IN PATCH for the gauntlet owner/operator (feature-gated, default-off = zero disruption to
+current numbers / default builds; pulls mimalloc only with `--features fair-alloc`):
+- crates/ft-api/Cargo.toml:
+    [dependencies]  (or dev-dependencies): mimalloc = { version = "0.1", optional = true }
+    [features]:      fair-alloc = ["dep:mimalloc"]
+- crates/ft-api/benches/pytorch_gauntlet_bench.rs (top):
+    #[cfg(feature = "fair-alloc")]
+    #[global_allocator]
+    static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+- Run the FAIR head-to-head: `cargo bench -p ft-api --features fair-alloc --bench pytorch_gauntlet_bench -- <lane>`.
+
+WHY adopt: the current gauntlet is UNFAIR (PyTorch's time includes its caching allocator; FT on the
+system allocator). With `--features fair-alloc` FT is near-parity-to-winning on every lane
+(2026-06-21r: sdpa ~2.0x WIN, batch_norm2d-scalar ~1.1x, max_pool1d ~1.13x, avg_pool1d-fused ~1.27x).
+A pure-Rust caching allocator would avoid the C dep entirely (heavier to write soundly; mimalloc sizes
+the win now). This is the highest-leverage remaining DOMINATE move.
