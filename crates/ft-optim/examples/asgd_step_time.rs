@@ -4,7 +4,7 @@
 //!   cargo run -q --release -p ft-optim --example asgd_step_time
 use ft_api::FrankenTorchSession;
 use ft_core::ExecutionMode;
-use ft_optim::{Optimizer, ASGD};
+use ft_optim::{ASGD, Optimizer};
 use std::time::Instant;
 
 fn main() {

@@ -23,7 +23,11 @@ fn flip_serial(v: &[f64], shape: &[usize], dims: &[usize]) -> Vec<f64> {
         for d in 0..shape.len() {
             let c = rem / st[d];
             rem %= st[d];
-            let c2 = if dims.contains(&d) { shape[d] - 1 - c } else { c };
+            let c2 = if dims.contains(&d) {
+                shape[d] - 1 - c
+            } else {
+                c
+            };
             dst += c2 * st[d];
         }
         out[dst] = *val;
@@ -41,7 +45,9 @@ fn main() {
     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
     let new = pn.install(|| {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let v = s.tensor_variable(data.clone(), shape.to_vec(), false).unwrap();
+        let v = s
+            .tensor_variable(data.clone(), shape.to_vec(), false)
+            .unwrap();
         let f = s.tensor_flip(v, &[0, 1]).unwrap();
         let got = s.tensor_values(f).unwrap();
         for (g, w) in got.iter().zip(want.iter()) {
@@ -49,7 +55,9 @@ fn main() {
         }
         let mut best = f64::INFINITY;
         for _ in 0..15 {
-            let v = s.tensor_variable(data.clone(), shape.to_vec(), false).unwrap();
+            let v = s
+                .tensor_variable(data.clone(), shape.to_vec(), false)
+                .unwrap();
             let t = Instant::now();
             std::hint::black_box(s.tensor_flip(v, &[0, 1]).unwrap());
             best = best.min(t.elapsed().as_secs_f64() * 1e3);
@@ -62,5 +70,8 @@ fn main() {
         std::hint::black_box(flip_serial(&data, &shape, &[0, 1]));
         old = old.min(t.elapsed().as_secs_f64() * 1e3);
     }
-    println!("flip [2048,2048] (bit-exact OK): OLD serial {old:.2}ms  NEW({nthreads}t) {new:.2}ms  =>  {:.2}x", old / new);
+    println!(
+        "flip [2048,2048] (bit-exact OK): OLD serial {old:.2}ms  NEW({nthreads}t) {new:.2}ms  =>  {:.2}x",
+        old / new
+    );
 }

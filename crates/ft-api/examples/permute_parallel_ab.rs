@@ -17,7 +17,9 @@ fn time_op(pool: &ThreadPool, av: &[f64], shape: &[usize], transpose: bool) -> f
     let mut best = f64::INFINITY;
     for _ in 0..25 {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable(av.to_vec(), shape.to_vec(), false).unwrap();
+        let x = s
+            .tensor_variable(av.to_vec(), shape.to_vec(), false)
+            .unwrap();
         let t = Instant::now();
         pool.install(|| {
             if transpose {
@@ -32,14 +34,19 @@ fn time_op(pool: &ThreadPool, av: &[f64], shape: &[usize], transpose: bool) -> f
 }
 
 fn main() {
-    let pool1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let pool1 = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
     let pooln = rayon::ThreadPoolBuilder::new().build().unwrap();
     let nthreads = pooln.current_num_threads();
     let mut out = String::new();
 
     // (1) Attention head permute [B, S, H, D] -> [B, H, S, D] (perm [0,2,1,3]).
     let (b, sq, h, d) = (32usize, 512usize, 16usize, 64usize);
-    let av: Vec<f64> = (0..b * sq * h * d).map(|i| (i % 1009) as f64 * 0.001).collect();
+    let av: Vec<f64> = (0..b * sq * h * d)
+        .map(|i| (i % 1009) as f64 * 0.001)
+        .collect();
     let s1 = time_op(&pool1, &av, &[b, sq, h, d], false);
     let sn = time_op(&pooln, &av, &[b, sq, h, d], false);
     let line1 = format!(
@@ -65,12 +72,16 @@ fn main() {
 
     // (3) Constant pad of a CNN feature map [N,C,H,W] by 1 on H,W (hot in conv).
     let (pn, pc, ph, pw) = (16usize, 64usize, 64usize, 64usize);
-    let pv: Vec<f64> = (0..pn * pc * ph * pw).map(|i| (i % 1009) as f64 * 0.001).collect();
+    let pv: Vec<f64> = (0..pn * pc * ph * pw)
+        .map(|i| (i % 1009) as f64 * 0.001)
+        .collect();
     let pad_op = |pool: &ThreadPool| -> f64 {
         let mut best = f64::INFINITY;
         for _ in 0..25 {
             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-            let x = s.tensor_variable(pv.clone(), vec![pn, pc, ph, pw], false).unwrap();
+            let x = s
+                .tensor_variable(pv.clone(), vec![pn, pc, ph, pw], false)
+                .unwrap();
             let t = Instant::now();
             pool.install(|| {
                 s.tensor_pad(x, &[1, 1, 1, 1], 0.0).unwrap();
@@ -96,7 +107,9 @@ fn main() {
         let mut best = f64::INFINITY;
         for _ in 0..25 {
             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-            let x = s.tensor_variable(fv.clone(), vec![fn_, fn_], false).unwrap();
+            let x = s
+                .tensor_variable(fv.clone(), vec![fn_, fn_], false)
+                .unwrap();
             let t = Instant::now();
             pool.install(|| {
                 s.tensor_flip(x, &[0]).unwrap();
@@ -118,12 +131,16 @@ fn main() {
     // (5) expand/broadcast materialize: [N,1,D] -> [N,M,D] (hot: bias/mean/var
     // broadcast in norm op-graphs).
     let (en, em, ed) = (256usize, 256usize, 256usize);
-    let ev: Vec<f64> = (0..en * 1 * ed).map(|i| (i % 1009) as f64 * 0.001).collect();
+    let ev: Vec<f64> = (0..en * 1 * ed)
+        .map(|i| (i % 1009) as f64 * 0.001)
+        .collect();
     let expand_op = |pool: &ThreadPool| -> f64 {
         let mut best = f64::INFINITY;
         for _ in 0..25 {
             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-            let x = s.tensor_variable(ev.clone(), vec![en, 1, ed], false).unwrap();
+            let x = s
+                .tensor_variable(ev.clone(), vec![en, 1, ed], false)
+                .unwrap();
             let t = Instant::now();
             pool.install(|| {
                 s.tensor_expand(x, vec![en, em, ed]).unwrap();
@@ -145,12 +162,16 @@ fn main() {
     // (6) Non-rotation permute [3,1,2,0] (hits the generic gather fallback, not
     // the block-rotation fast path).
     let (g0, g1, g2, g3) = (64usize, 16usize, 16usize, 64usize);
-    let gv: Vec<f64> = (0..g0 * g1 * g2 * g3).map(|i| (i % 1009) as f64 * 0.001).collect();
+    let gv: Vec<f64> = (0..g0 * g1 * g2 * g3)
+        .map(|i| (i % 1009) as f64 * 0.001)
+        .collect();
     let gen_op = |pool: &ThreadPool| -> f64 {
         let mut best = f64::INFINITY;
         for _ in 0..25 {
             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-            let x = s.tensor_variable(gv.clone(), vec![g0, g1, g2, g3], false).unwrap();
+            let x = s
+                .tensor_variable(gv.clone(), vec![g0, g1, g2, g3], false)
+                .unwrap();
             let t = Instant::now();
             pool.install(|| {
                 s.tensor_permute(x, vec![3, 1, 2, 0]).unwrap();

@@ -8,10 +8,18 @@ fn try_binop(name: &str, lshape: Vec<usize>, rshape: Vec<usize>) {
     let ln: usize = lshape.iter().product();
     let rn: usize = rshape.iter().product();
     let a = s
-        .tensor_variable((1..=ln).map(|i| i as f64 * 0.5).collect(), lshape.clone(), true)
+        .tensor_variable(
+            (1..=ln).map(|i| i as f64 * 0.5).collect(),
+            lshape.clone(),
+            true,
+        )
         .unwrap();
     let b = s
-        .tensor_variable((1..=rn).map(|i| i as f64 * 0.3 + 0.1).collect(), rshape.clone(), true)
+        .tensor_variable(
+            (1..=rn).map(|i| i as f64 * 0.3 + 0.1).collect(),
+            rshape.clone(),
+            true,
+        )
         .unwrap();
     let out = match name {
         "add" => s.tensor_add(a, b),
@@ -32,7 +40,9 @@ fn try_binop(name: &str, lshape: Vec<usize>, rshape: Vec<usize>) {
                         "{name} {lshape:?} op {rshape:?} -> out {oshape:?}; grad_a_len={ga:?} (want {ln}); grad_b_len={gb:?} (want {rn})"
                     );
                 }
-                Err(e) => println!("{name} {lshape:?} op {rshape:?} -> out {oshape:?}; BACKWARD_ERR {e:?}"),
+                Err(e) => println!(
+                    "{name} {lshape:?} op {rshape:?} -> out {oshape:?}; BACKWARD_ERR {e:?}"
+                ),
             }
         }
         Err(e) => println!("{name} {lshape:?} op {rshape:?} -> FWD_ERR {e:?}"),

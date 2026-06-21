@@ -14,8 +14,12 @@ fn main() {
     let d32: Vec<f32> = d64.iter().map(|&x| x as f32).collect();
 
     let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-    let v64 = s.tensor_variable(d64.clone(), vec![rows, cols], false).unwrap();
-    let v32 = s.tensor_variable_f32(d32.clone(), vec![rows, cols], false).unwrap();
+    let v64 = s
+        .tensor_variable(d64.clone(), vec![rows, cols], false)
+        .unwrap();
+    let v32 = s
+        .tensor_variable_f32(d32.clone(), vec![rows, cols], false)
+        .unwrap();
 
     macro_rules! bench {
         ($name:expr, $call:expr) => {{
@@ -36,5 +40,9 @@ fn main() {
     let cs32 = bench!("cumsum f32", s.tensor_cumsum(v32, 1).unwrap());
     let cp64 = bench!("cumprod f64", s.tensor_cumprod(v64, 1).unwrap());
     let cp32 = bench!("cumprod f32", s.tensor_cumprod(v32, 1).unwrap());
-    println!("cumsum  f32/f64 = {:.2}x   cumprod f32/f64 = {:.2}x", cs32 / cs64, cp32 / cp64);
+    println!(
+        "cumsum  f32/f64 = {:.2}x   cumprod f32/f64 = {:.2}x",
+        cs32 / cs64,
+        cp32 / cp64
+    );
 }

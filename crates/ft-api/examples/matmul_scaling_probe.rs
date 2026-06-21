@@ -27,7 +27,10 @@ fn time_mm(pool: &ThreadPool, av: &[f64], bv: &[f64], m: usize, k: usize, n: usi
 }
 
 fn main() {
-    let pool1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let pool1 = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
     let pooln = rayon::ThreadPoolBuilder::new().build().unwrap();
     let nt = pooln.current_num_threads();
     let mut out = String::new();

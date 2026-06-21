@@ -7,7 +7,10 @@ use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::cumsum_backward_tensor_contiguous_f64;
 
 fn run_best(threads: usize, g: &[f64], meta: &TensorMeta) -> (f64, Vec<f64>) {
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .unwrap();
     pool.install(|| {
         let out = cumsum_backward_tensor_contiguous_f64(g, meta, 1).unwrap();
         let mut best = f64::INFINITY;

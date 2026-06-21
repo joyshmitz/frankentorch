@@ -23,7 +23,10 @@ fn old_ndtr(x: &[f64]) -> Vec<f64> {
 }
 fn old_log_ndtr(x: &[f64]) -> Vec<f64> {
     let s = sqrt2_inv();
-    let v: Vec<f64> = x.iter().map(|&xi| (0.5 * libm::erfc(-xi * s)).ln()).collect();
+    let v: Vec<f64> = x
+        .iter()
+        .map(|&xi| (0.5 * libm::erfc(-xi * s)).ln())
+        .collect();
     let _saved = std::hint::black_box(x.to_vec());
     v
 }

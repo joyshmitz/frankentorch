@@ -49,7 +49,10 @@ fn main() {
         .zip(parall.iter())
         .all(|(a, b)| a.to_bits() == b.to_bits());
     eprintln!("bit-exact (serial == parallel, by bits): {bit_exact}");
-    assert!(bit_exact, "parallel norm_dim general-p diverged from serial");
+    assert!(
+        bit_exact,
+        "parallel norm_dim general-p diverged from serial"
+    );
 
     let pool1 = rayon::ThreadPoolBuilder::new()
         .num_threads(1)

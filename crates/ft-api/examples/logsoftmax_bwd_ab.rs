@@ -30,19 +30,21 @@ fn serial(incoming: &[f64], output: &[f64], outer: usize, reduce: usize, inner: 
 fn par(incoming: &[f64], output: &[f64], outer: usize, reduce: usize, inner: usize) -> Vec<f64> {
     let stride = reduce * inner;
     let mut out = vec![0.0; outer * reduce * inner];
-    out.par_chunks_mut(stride).enumerate().for_each(|(o, block)| {
-        let base = o * stride;
-        for i in 0..inner {
-            let mut gs = 0.0;
-            for r in 0..reduce {
-                gs += incoming[base + r * inner + i];
+    out.par_chunks_mut(stride)
+        .enumerate()
+        .for_each(|(o, block)| {
+            let base = o * stride;
+            for i in 0..inner {
+                let mut gs = 0.0;
+                for r in 0..reduce {
+                    gs += incoming[base + r * inner + i];
+                }
+                for r in 0..reduce {
+                    let l = r * inner + i;
+                    block[l] = incoming[base + l] - output[base + l].exp() * gs;
+                }
             }
-            for r in 0..reduce {
-                let l = r * inner + i;
-                block[l] = incoming[base + l] - output[base + l].exp() * gs;
-            }
-        }
-    });
+        });
     out
 }
 
@@ -68,7 +70,10 @@ fn bench(label: &str, outer: usize, reduce: usize, inner: usize) {
         std::hint::black_box(par(&incoming, &output, outer, reduce, inner));
         new = new.min(t.elapsed().as_secs_f64() * 1e3);
     }
-    println!("{label} [{outer}x{reduce}x{inner}] ({nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x", old / new);
+    println!(
+        "{label} [{outer}x{reduce}x{inner}] ({nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x",
+        old / new
+    );
 }
 
 fn main() {

@@ -20,7 +20,10 @@ fn main() {
     let n = 4_000_000usize;
     let x: Vec<f64> = (0..n).map(|i| ((i % 257) as f64) * 0.02 - 2.5).collect();
     let want = old_serial_with_save(&x);
-    let want_grad: Vec<f64> = x.iter().map(|&xi| xi.exp2() * std::f64::consts::LN_2).collect();
+    let want_grad: Vec<f64> = x
+        .iter()
+        .map(|&xi| xi.exp2() * std::f64::consts::LN_2)
+        .collect();
 
     let mut old = f64::INFINITY;
     for _ in 0..15 {

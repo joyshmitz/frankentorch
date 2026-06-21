@@ -40,7 +40,14 @@ fn blocked(src: &[f64], r: usize, c: usize) -> Vec<f64> {
     dst
 }
 
-fn bench(name: &str, f: impl Fn(&[f64], usize, usize) -> Vec<f64>, src: &[f64], r: usize, c: usize, reps: usize) -> f64 {
+fn bench(
+    name: &str,
+    f: impl Fn(&[f64], usize, usize) -> Vec<f64>,
+    src: &[f64],
+    r: usize,
+    c: usize,
+    reps: usize,
+) -> f64 {
     f(src, r, c);
     let mut best = f64::INFINITY;
     for _ in 0..reps {
@@ -101,7 +108,10 @@ fn main() {
         let src: Vec<f64> = (0..n).map(|i| (i % 9973) as f64 * 0.001).collect();
         let a = naive_batched(&src, batch, r, c);
         let b = blocked_batched(&src, batch, r, c);
-        let bx = a.iter().zip(b.iter()).all(|(x, y)| x.to_bits() == y.to_bits());
+        let bx = a
+            .iter()
+            .zip(b.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits());
         eprintln!("[batched {batch}x{r}x{c}] bit-exact: {bx}");
         assert!(bx, "batched blocked diverged");
         let t = Instant::now();
@@ -110,14 +120,20 @@ fn main() {
         let t = Instant::now();
         std::hint::black_box(blocked_batched(&src, batch, r, c));
         let new = t.elapsed().as_secs_f64() * 1e3;
-        eprintln!("  naive {old:.2} ms / blocked {new:.2} ms / speedup {:.2}x\n", old / new);
+        eprintln!(
+            "  naive {old:.2} ms / blocked {new:.2} ms / speedup {:.2}x\n",
+            old / new
+        );
     }
     for &(r, c) in &[(4096usize, 4096usize), (8192, 1024), (2048, 2048)] {
         let n = r * c;
         let src: Vec<f64> = (0..n).map(|i| (i % 9973) as f64 * 0.001).collect();
         let a = naive(&src, r, c);
         let b = blocked(&src, r, c);
-        let bit_exact = a.iter().zip(b.iter()).all(|(x, y)| x.to_bits() == y.to_bits());
+        let bit_exact = a
+            .iter()
+            .zip(b.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits());
         eprintln!("[{r}x{c}] bit-exact (naive == blocked): {bit_exact}");
         assert!(bit_exact, "blocked transpose diverged from naive");
         let old = bench("naive", naive, &src, r, c, 30);

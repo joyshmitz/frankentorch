@@ -1608,10 +1608,7 @@ mod tests {
         let batch = loader.next_batch(&mut session).unwrap().unwrap();
         let input = batch.input().unwrap();
         assert_eq!(session.tensor_shape(input).unwrap(), vec![3]);
-        assert_eq!(
-            session.tensor_values(input).unwrap(),
-            vec![1.5, -2.0, 4.25]
-        );
+        assert_eq!(session.tensor_values(input).unwrap(), vec![1.5, -2.0, 4.25]);
 
         let mut shuffled = DataLoader::with_indices(&ds, vec![2, 0], DataLoaderConfig::new(2));
         let batch = shuffled.next_batch(&mut session).unwrap().unwrap();
@@ -2065,7 +2062,10 @@ mod tests {
                     let ctx = format!("n={n} bs={batch_size} drop={drop_last}");
 
                     assert_eq!(batches.len(), bs.len(), "len() vs batches() {ctx}");
-                    assert!(batches.iter().all(|b| !b.is_empty()), "no empty batch {ctx}");
+                    assert!(
+                        batches.iter().all(|b| !b.is_empty()),
+                        "no empty batch {ctx}"
+                    );
 
                     // Concatenation is an order-preserving prefix of the input.
                     let flat: Vec<usize> = batches.iter().flatten().copied().collect();
@@ -2124,7 +2124,10 @@ mod tests {
         let batch = loader.next_batch(&mut session).unwrap().unwrap();
         let target = batch.target().unwrap();
 
-        assert_eq!(session.tensor_values(target).unwrap(), vec![2.0, 0.0, 2.0, 1.0]);
+        assert_eq!(
+            session.tensor_values(target).unwrap(),
+            vec![2.0, 0.0, 2.0, 1.0]
+        );
         assert!(loader.next_batch(&mut session).unwrap().is_none());
     }
 

@@ -16,15 +16,22 @@ fn main() {
     let y = s.functional_linear(x, w, Some(b)).unwrap();
     let sq = s.tensor_mul(y, y).unwrap();
     let loss = s.tensor_sum(sq).unwrap();
-    let opts = BackwardOptions::for_mode(s.mode()).with_create_graph(true).with_retain_graph(true);
+    let opts = BackwardOptions::for_mode(s.mode())
+        .with_create_graph(true)
+        .with_retain_graph(true);
     let r1 = s.tensor_backward_with_options(loss, opts).unwrap();
     let g = r1.gradient_node(x).unwrap();
     let g2 = s.tensor_mul(g, g).unwrap();
     let pen = s.tensor_sum(g2).unwrap();
     let pv = s.tensor_values(pen).unwrap()[0];
-    let gr = s.tensor_autograd_grad(&[pen], &[w, b], None, false, false).unwrap();
+    let gr = s
+        .tensor_autograd_grad(&[pen], &[w, b], None, false, false)
+        .unwrap();
     let gw = gr[0].as_ref().unwrap();
     let gb = gr[1].as_ref().unwrap();
     let gw_sum: f64 = gw.iter().sum();
-    println!("pen={pv:.6} gw_sum={gw_sum:.6} gw[0,0]={:.6} gw[1,3]={:.6} gb=[{:.4}, {:.4}]", gw[0], gw[7], gb[0], gb[1]);
+    println!(
+        "pen={pv:.6} gw_sum={gw_sum:.6} gw[0,0]={:.6} gw[1,3]={:.6} gb=[{:.4}, {:.4}]",
+        gw[0], gw[7], gb[0], gb[1]
+    );
 }

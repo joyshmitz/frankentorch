@@ -7,7 +7,18 @@ use ft_core::ExecutionMode;
 use std::time::Instant;
 
 #[allow(clippy::too_many_arguments)]
-fn serial(inp: &[f64], n: usize, c: usize, h: usize, w: usize, kh: usize, kw: usize, sh: usize, sw: usize, p: f64) -> Vec<f64> {
+fn serial(
+    inp: &[f64],
+    n: usize,
+    c: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    sh: usize,
+    sw: usize,
+    p: f64,
+) -> Vec<f64> {
     let h_out = (h - kh) / sh + 1;
     let w_out = (w - kw) / sw + 1;
     let mut out = vec![0.0; n * c * h_out * w_out];
@@ -21,7 +32,8 @@ fn serial(inp: &[f64], n: usize, c: usize, h: usize, w: usize, kh: usize, kw: us
                             s += inp[b * c * h * w + ch * h * w + ih * w + iw].abs().powf(p);
                         }
                     }
-                    out[b * c * h_out * w_out + ch * h_out * w_out + oh * w_out + ow] = s.powf(1.0 / p);
+                    out[b * c * h_out * w_out + ch * h_out * w_out + oh * w_out + ow] =
+                        s.powf(1.0 / p);
                 }
             }
         }
@@ -33,14 +45,20 @@ fn main() {
     let nthreads = rayon::current_num_threads();
     let (n, c, h, w) = (16usize, 64, 64, 64);
     let (kh, kw, sh, sw, p) = (2usize, 2, 2, 2, 3.0);
-    let data: Vec<f64> = (0..n * c * h * w).map(|i| ((i % 197) as f64) * 0.01 - 1.0).collect();
+    let data: Vec<f64> = (0..n * c * h * w)
+        .map(|i| ((i % 197) as f64) * 0.01 - 1.0)
+        .collect();
     let want = serial(&data, n, c, h, w, kh, kw, sh, sw, p);
 
     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
     let new = pn.install(|| {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let v = s.tensor_variable(data.clone(), vec![n, c, h, w], false).unwrap();
-        let o = s.functional_lp_pool2d(v, p, (kh, kw), Some((sh, sw)), false).unwrap();
+        let v = s
+            .tensor_variable(data.clone(), vec![n, c, h, w], false)
+            .unwrap();
+        let o = s
+            .functional_lp_pool2d(v, p, (kh, kw), Some((sh, sw)), false)
+            .unwrap();
         let got = s.tensor_values(o).unwrap();
         assert_eq!(got.len(), want.len());
         for (g, wv) in got.iter().zip(want.iter()) {
@@ -48,9 +66,14 @@ fn main() {
         }
         let mut best = f64::INFINITY;
         for _ in 0..15 {
-            let v = s.tensor_variable(data.clone(), vec![n, c, h, w], false).unwrap();
+            let v = s
+                .tensor_variable(data.clone(), vec![n, c, h, w], false)
+                .unwrap();
             let t = Instant::now();
-            std::hint::black_box(s.functional_lp_pool2d(v, p, (kh, kw), Some((sh, sw)), false).unwrap());
+            std::hint::black_box(
+                s.functional_lp_pool2d(v, p, (kh, kw), Some((sh, sw)), false)
+                    .unwrap(),
+            );
             best = best.min(t.elapsed().as_secs_f64() * 1e3);
         }
         best
@@ -61,5 +84,8 @@ fn main() {
         std::hint::black_box(serial(&data, n, c, h, w, kh, kw, sh, sw, p));
         old = old.min(t.elapsed().as_secs_f64() * 1e3);
     }
-    println!("lp_pool2d [{n},{c},{h},{w}] k{kh} p{p} (bit-exact OK): OLD serial {old:.2}ms  NEW({nthreads}t) {new:.2}ms  =>  {:.2}x", old / new);
+    println!(
+        "lp_pool2d [{n},{c},{h},{w}] k{kh} p{p} (bit-exact OK): OLD serial {old:.2}ms  NEW({nthreads}t) {new:.2}ms  =>  {:.2}x",
+        old / new
+    );
 }

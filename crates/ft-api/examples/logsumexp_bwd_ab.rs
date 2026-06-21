@@ -19,22 +19,42 @@ fn lane(outer: usize, out: &mut [f64], x: &[f64], y: &[f64], gy: &[f64], dim: us
     }
 }
 
-fn run_best(threads: usize, x: &[f64], y: &[f64], gy: &[f64], outer: usize, dim: usize, inner: usize) -> (f64, Vec<f64>) {
+fn run_best(
+    threads: usize,
+    x: &[f64],
+    y: &[f64],
+    gy: &[f64],
+    outer: usize,
+    dim: usize,
+    inner: usize,
+) -> (f64, Vec<f64>) {
     let ln = dim * inner;
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .unwrap();
     pool.install(|| {
         let run = || {
             let mut g = vec![0.0; x.len()];
             if threads > 1 {
-                g.par_chunks_mut(ln).enumerate().for_each(|(o, c)| lane(o, c, x, y, gy, dim, inner));
+                g.par_chunks_mut(ln)
+                    .enumerate()
+                    .for_each(|(o, c)| lane(o, c, x, y, gy, dim, inner));
             } else {
-                for o in 0..outer { let b = o * ln; lane(o, &mut g[b..b + ln], x, y, gy, dim, inner); }
+                for o in 0..outer {
+                    let b = o * ln;
+                    lane(o, &mut g[b..b + ln], x, y, gy, dim, inner);
+                }
             }
             g
         };
         let out = run();
         let mut best = f64::INFINITY;
-        for _ in 0..15 { let t = Instant::now(); std::hint::black_box(run()); best = best.min(t.elapsed().as_secs_f64() * 1e3); }
+        for _ in 0..15 {
+            let t = Instant::now();
+            std::hint::black_box(run());
+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+        }
         (best, out)
     })
 }
@@ -47,9 +67,13 @@ fn main() {
     let mut y = vec![0.0; rows];
     for o in 0..rows {
         let mut m = f64::NEG_INFINITY;
-        for d in 0..cols { m = m.max(x[o * cols + d]); }
+        for d in 0..cols {
+            m = m.max(x[o * cols + d]);
+        }
         let mut s = 0.0;
-        for d in 0..cols { s += (x[o * cols + d] - m).exp(); }
+        for d in 0..cols {
+            s += (x[o * cols + d] - m).exp();
+        }
         y[o] = m + s.ln();
     }
     let gy: Vec<f64> = (0..rows).map(|i| 1.0 + ((i % 13) as f64) * 1e-3).collect();
@@ -60,5 +84,8 @@ fn main() {
     for (a, b) in gs.iter().zip(gp.iter()) {
         assert_eq!(a.to_bits(), b.to_bits(), "parallel != serial bit-exact");
     }
-    println!("logsumexp_backward [{rows},{cols}] dim=1 (bit-exact OK): serial(1t) {ser:.2}ms  parallel({nthreads}t) {par:.2}ms  =>  {:.2}x", ser / par);
+    println!(
+        "logsumexp_backward [{rows},{cols}] dim=1 (bit-exact OK): serial(1t) {ser:.2}ms  parallel({nthreads}t) {par:.2}ms  =>  {:.2}x",
+        ser / par
+    );
 }

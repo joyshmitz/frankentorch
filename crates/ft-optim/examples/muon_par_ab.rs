@@ -16,7 +16,11 @@ fn time_step(pool: &ThreadPool, rows: usize, cols: usize) -> f64 {
     for _ in 0..6 {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = s
-            .tensor_variable((0..n).map(|i| (i % 97) as f64 * 0.01).collect(), vec![rows, cols], true)
+            .tensor_variable(
+                (0..n).map(|i| (i % 97) as f64 * 0.01).collect(),
+                vec![rows, cols],
+                true,
+            )
             .unwrap();
         let sq = s.tensor_mul(x, x).unwrap();
         let loss = s.tensor_sum(sq).unwrap();
@@ -32,7 +36,10 @@ fn time_step(pool: &ThreadPool, rows: usize, cols: usize) -> f64 {
 }
 
 fn main() {
-    let pool1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let pool1 = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
     let pooln = rayon::ThreadPoolBuilder::new().build().unwrap();
     let nt = pooln.current_num_threads();
     let (rows, cols) = (512usize, 512usize);

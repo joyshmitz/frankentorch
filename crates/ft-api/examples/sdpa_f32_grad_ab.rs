@@ -18,18 +18,32 @@ fn main() {
 
     let new_step = || {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let q = s.tensor_variable_f32(qv.clone(), vec![bh, seq, d], true).unwrap();
-        let k = s.tensor_variable_f32(kv.clone(), vec![bh, seq, d], true).unwrap();
-        let v = s.tensor_variable_f32(vv.clone(), vec![bh, seq, d], true).unwrap();
-        let o = s.scaled_dot_product_attention(q, k, v, None, 0.0, false).unwrap();
+        let q = s
+            .tensor_variable_f32(qv.clone(), vec![bh, seq, d], true)
+            .unwrap();
+        let k = s
+            .tensor_variable_f32(kv.clone(), vec![bh, seq, d], true)
+            .unwrap();
+        let v = s
+            .tensor_variable_f32(vv.clone(), vec![bh, seq, d], true)
+            .unwrap();
+        let o = s
+            .scaled_dot_product_attention(q, k, v, None, 0.0, false)
+            .unwrap();
         let l = s.tensor_sum(o).unwrap();
         s.tensor_backward(l).unwrap();
     };
     let old_step = || {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let q = s.tensor_variable_f32(qv.clone(), vec![bh, seq, d], true).unwrap();
-        let k = s.tensor_variable_f32(kv.clone(), vec![bh, seq, d], true).unwrap();
-        let v = s.tensor_variable_f32(vv.clone(), vec![bh, seq, d], true).unwrap();
+        let q = s
+            .tensor_variable_f32(qv.clone(), vec![bh, seq, d], true)
+            .unwrap();
+        let k = s
+            .tensor_variable_f32(kv.clone(), vec![bh, seq, d], true)
+            .unwrap();
+        let v = s
+            .tensor_variable_f32(vv.clone(), vec![bh, seq, d], true)
+            .unwrap();
         let kt = s.tensor_transpose(k, 1, 2).unwrap();
         let aw = s.tensor_bmm(q, kt).unwrap();
         let sc = s.full(vec![bh, seq, seq], scale, false).unwrap();
@@ -55,5 +69,8 @@ fn main() {
         new_step();
         bn = bn.min(t.elapsed().as_secs_f64() * 1e3);
     }
-    eprintln!("sdpa f32 fwd+bwd [{bh},{seq},{d}]: composed(bmm+softmax+bmm) {bo:.2} ms / fused {bn:.2} ms / speedup {:.2}x", bo / bn);
+    eprintln!(
+        "sdpa f32 fwd+bwd [{bh},{seq},{d}]: composed(bmm+softmax+bmm) {bo:.2} ms / fused {bn:.2} ms / speedup {:.2}x",
+        bo / bn
+    );
 }

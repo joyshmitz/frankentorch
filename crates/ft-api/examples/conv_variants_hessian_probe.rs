@@ -13,7 +13,11 @@ fn run(
     xs: Vec<usize>,
     wv: Vec<f64>,
     ws: Vec<usize>,
-    f: impl Fn(&mut FrankenTorchSession, TensorNodeId, TensorNodeId) -> Result<TensorNodeId, AutogradError>,
+    f: impl Fn(
+        &mut FrankenTorchSession,
+        TensorNodeId,
+        TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError>,
     show: usize,
 ) {
     let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
@@ -28,8 +32,9 @@ fn run(
     })();
     match built {
         Ok(h) => {
-            let d: Vec<f64> =
-                (0..show.min(n)).map(|i| (h[i * n + i] * 1e5).round() / 1e5).collect();
+            let d: Vec<f64> = (0..show.min(n))
+                .map(|i| (h[i * n + i] * 1e5).round() / 1e5)
+                .collect();
             println!("{name}: {d:?}");
         }
         Err(e) => println!("{name}: ERR {e:?}"),

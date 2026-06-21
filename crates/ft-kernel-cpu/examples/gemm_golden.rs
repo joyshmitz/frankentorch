@@ -5,8 +5,8 @@ fn main() {
         (512usize, 512usize, 512usize),
         (300usize, 257usize, 259usize),
     ] {
-        let a: Vec<f64> = (0..m * k).map(|i| ((i as f64 * 0.001).sin())).collect();
-        let b: Vec<f64> = (0..k * n).map(|i| ((i as f64 * 0.0017).cos())).collect();
+        let a: Vec<f64> = (0..m * k).map(|i| (i as f64 * 0.001).sin()).collect();
+        let b: Vec<f64> = (0..k * n).map(|i| (i as f64 * 0.0017).cos()).collect();
         let am = TensorMeta::from_shape(vec![m, k], DType::F64, Device::Cpu);
         let bm = TensorMeta::from_shape(vec![k, n], DType::F64, Device::Cpu);
         let out = ft_kernel_cpu::matmul_tensor_contiguous_f64(&a, &b, &am, &bm).unwrap();

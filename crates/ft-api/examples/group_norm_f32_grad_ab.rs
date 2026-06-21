@@ -17,22 +17,30 @@ fn main() {
     let cpg = c / groups;
     let gnum = cpg * sp;
     let eps = 1e-5;
-    let xv: Vec<f32> = (0..n * c * sp).map(|i| ((i % 877) as f32 - 400.0) * 0.002).collect();
+    let xv: Vec<f32> = (0..n * c * sp)
+        .map(|i| ((i % 877) as f32 - 400.0) * 0.002)
+        .collect();
     let wv: Vec<f32> = (0..c).map(|j| 1.0 + (j % 13) as f32 * 0.01).collect();
     let bvv: Vec<f32> = (0..c).map(|j| (j % 7) as f32 * 0.01 - 0.03).collect();
 
     let new_step = || {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable_f32(xv.clone(), vec![n, c, h, w], true).unwrap();
+        let x = s
+            .tensor_variable_f32(xv.clone(), vec![n, c, h, w], true)
+            .unwrap();
         let wt = s.tensor_variable_f32(wv.clone(), vec![c], true).unwrap();
         let bt = s.tensor_variable_f32(bvv.clone(), vec![c], true).unwrap();
-        let o = s.functional_group_norm(x, groups, Some(wt), Some(bt), eps).unwrap();
+        let o = s
+            .functional_group_norm(x, groups, Some(wt), Some(bt), eps)
+            .unwrap();
         let l = s.tensor_sum(o).unwrap();
         s.tensor_backward(l).unwrap();
     };
     let scalar_step = || {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable_f32(xv.clone(), vec![n, c, h, w], true).unwrap();
+        let x = s
+            .tensor_variable_f32(xv.clone(), vec![n, c, h, w], true)
+            .unwrap();
         let wt = s.tensor_variable_f32(wv.clone(), vec![c], true).unwrap();
         let bt = s.tensor_variable_f32(bvv.clone(), vec![c], true).unwrap();
         let l = s
@@ -43,7 +51,9 @@ fn main() {
     // OLD: manual composed GroupNorm op-graph.
     let old_step = || {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable_f32(xv.clone(), vec![n, c, h, w], true).unwrap();
+        let x = s
+            .tensor_variable_f32(xv.clone(), vec![n, c, h, w], true)
+            .unwrap();
         let wt = s.tensor_variable_f32(wv.clone(), vec![c], true).unwrap();
         let bt = s.tensor_variable_f32(bvv.clone(), vec![c], true).unwrap();
         let r = s.tensor_reshape(x, vec![n, groups, gnum]).unwrap();

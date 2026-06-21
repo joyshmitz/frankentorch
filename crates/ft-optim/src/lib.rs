@@ -1192,10 +1192,8 @@ impl Optimizer for RMSprop {
                                 .zip(sq.par_iter_mut())
                                 .for_each(|((p, g), s)| body(p, *g, s));
                         } else {
-                            for ((p, g), s) in param_values
-                                .iter_mut()
-                                .zip(grad.iter())
-                                .zip(sq.iter_mut())
+                            for ((p, g), s) in
+                                param_values.iter_mut().zip(grad.iter()).zip(sq.iter_mut())
                             {
                                 body(p, *g, s);
                             }
@@ -1468,10 +1466,8 @@ impl Optimizer for Adagrad {
                             .zip(ss.par_iter_mut())
                             .for_each(|((p, g), s)| body(p, *g, s));
                     } else {
-                        for ((p, g), s) in param_values
-                            .iter_mut()
-                            .zip(grad.iter())
-                            .zip(ss.iter_mut())
+                        for ((p, g), s) in
+                            param_values.iter_mut().zip(grad.iter()).zip(ss.iter_mut())
                         {
                             body(p, *g, s);
                         }
@@ -3872,7 +3868,13 @@ impl OneCycleLR {
         let base_m = self.base_momentum;
         if self.three_phase {
             vec![
-                (self.pct_start * total - 1.0, initial_lr, max_lr, max_m, base_m),
+                (
+                    self.pct_start * total - 1.0,
+                    initial_lr,
+                    max_lr,
+                    max_m,
+                    base_m,
+                ),
                 (
                     2.0 * self.pct_start * total - 2.0,
                     max_lr,
@@ -3884,7 +3886,13 @@ impl OneCycleLR {
             ]
         } else {
             vec![
-                (self.pct_start * total - 1.0, initial_lr, max_lr, max_m, base_m),
+                (
+                    self.pct_start * total - 1.0,
+                    initial_lr,
+                    max_lr,
+                    max_m,
+                    base_m,
+                ),
                 (total - 1.0, max_lr, min_lr, base_m, max_m),
             ]
         }
@@ -4566,9 +4574,17 @@ impl Optimizer for Adamax {
             let bias_correction1 = adam_bias_correction(self.beta1, t);
 
             let m = self.m[i].get_or_insert_with(|| vec![0.0; grad_len]);
-            ensure_state_len(grad_len, m.len(), "adamax first-moment state length mismatch")?;
+            ensure_state_len(
+                grad_len,
+                m.len(),
+                "adamax first-moment state length mismatch",
+            )?;
             let u_state = self.u[i].get_or_insert_with(|| vec![0.0; grad_len]);
-            ensure_state_len(grad_len, u_state.len(), "adamax infinity-norm state length mismatch")?;
+            ensure_state_len(
+                grad_len,
+                u_state.len(),
+                "adamax infinity-norm state length mismatch",
+            )?;
 
             let (beta1, beta2, lr, eps) = (self.beta1, self.beta2, self.lr, self.eps);
             let weight_decay = self.weight_decay;
@@ -4727,9 +4743,17 @@ impl Optimizer for Adadelta {
             ensure_grad_len_matches_param(param, param_len, grad_len)?;
 
             let sq_avg = self.square_avg[i].get_or_insert_with(|| vec![0.0; grad_len]);
-            ensure_state_len(grad_len, sq_avg.len(), "adadelta square_avg state length mismatch")?;
+            ensure_state_len(
+                grad_len,
+                sq_avg.len(),
+                "adadelta square_avg state length mismatch",
+            )?;
             let acc_d = self.acc_delta[i].get_or_insert_with(|| vec![0.0; grad_len]);
-            ensure_state_len(grad_len, acc_d.len(), "adadelta acc_delta state length mismatch")?;
+            ensure_state_len(
+                grad_len,
+                acc_d.len(),
+                "adadelta acc_delta state length mismatch",
+            )?;
 
             let (rho, lr, eps) = (self.rho, self.lr, self.eps);
             let weight_decay = self.weight_decay;
@@ -4939,9 +4963,17 @@ impl Optimizer for NAdam {
             let bias_correction2 = adam_bias_correction(self.beta2, t);
 
             let m = self.m[i].get_or_insert_with(|| vec![0.0; grad_len]);
-            ensure_state_len(grad_len, m.len(), "nadam first-moment state length mismatch")?;
+            ensure_state_len(
+                grad_len,
+                m.len(),
+                "nadam first-moment state length mismatch",
+            )?;
             let v_state = self.v[i].get_or_insert_with(|| vec![0.0; grad_len]);
-            ensure_state_len(grad_len, v_state.len(), "nadam second-moment state length mismatch")?;
+            ensure_state_len(
+                grad_len,
+                v_state.len(),
+                "nadam second-moment state length mismatch",
+            )?;
 
             let (beta1, beta2, lr, eps) = (self.beta1, self.beta2, self.lr, self.eps);
             let weight_decay = self.weight_decay;
@@ -5167,10 +5199,8 @@ impl Optimizer for ASGD {
                             .zip(ax.par_iter_mut())
                             .for_each(|((p, g), a)| body(p, *g, a));
                     } else {
-                        for ((p, g), a) in param_values
-                            .iter_mut()
-                            .zip(grad.iter())
-                            .zip(ax.iter_mut())
+                        for ((p, g), a) in
+                            param_values.iter_mut().zip(grad.iter()).zip(ax.iter_mut())
                         {
                             body(p, *g, a);
                         }
@@ -5324,9 +5354,17 @@ impl Optimizer for Rprop {
             ensure_grad_len_matches_param(param, param_len, grad_len)?;
 
             let steps = self.step_sizes[i].get_or_insert_with(|| vec![self.lr; grad_len]);
-            ensure_state_len(grad_len, steps.len(), "rprop step_sizes state length mismatch")?;
+            ensure_state_len(
+                grad_len,
+                steps.len(),
+                "rprop step_sizes state length mismatch",
+            )?;
             let prev = self.prev_grad[i].get_or_insert_with(|| vec![0.0; grad_len]);
-            ensure_state_len(grad_len, prev.len(), "rprop prev_grad state length mismatch")?;
+            ensure_state_len(
+                grad_len,
+                prev.len(),
+                "rprop prev_grad state length mismatch",
+            )?;
 
             let (eta_plus, eta_minus, step_max, step_min) =
                 (self.eta_plus, self.eta_minus, self.step_max, self.step_min);
@@ -6209,7 +6247,10 @@ mod tests {
         for (epoch, w) in want.iter().enumerate() {
             sch.step(&mut opt, None);
             let lr = opt.get_lr();
-            assert!((lr - w).abs() < 1e-12, "PolynomialLR epoch {epoch} lr={lr} != {w}");
+            assert!(
+                (lr - w).abs() < 1e-12,
+                "PolynomialLR epoch {epoch} lr={lr} != {w}"
+            );
         }
     }
 
@@ -6228,7 +6269,10 @@ mod tests {
         for (epoch, w) in want.iter().enumerate() {
             sch.step(&mut opt, None);
             let lr = opt.get_lr();
-            assert!((lr - w).abs() < 1e-12, "ConstantLR epoch {epoch} lr={lr} != {w}");
+            assert!(
+                (lr - w).abs() < 1e-12,
+                "ConstantLR epoch {epoch} lr={lr} != {w}"
+            );
         }
     }
 
@@ -6242,9 +6286,14 @@ mod tests {
         let opt = SGD::new(vec![x], 1.0);
         let want = [1.0, 1.0, 0.5, 0.5, 0.25, 0.25];
         for (e, w) in want.iter().enumerate() {
-            let sch = MultiStepLR::new(&opt, vec![2, 4]).gamma(0.5).last_epoch(e as i64);
+            let sch = MultiStepLR::new(&opt, vec![2, 4])
+                .gamma(0.5)
+                .last_epoch(e as i64);
             let lr = sch.get_lr()[0];
-            assert!((lr - w).abs() < 1e-12, "MultiStepLR epoch {e} lr={lr} != {w}");
+            assert!(
+                (lr - w).abs() < 1e-12,
+                "MultiStepLR epoch {e} lr={lr} != {w}"
+            );
         }
     }
 
@@ -6258,9 +6307,14 @@ mod tests {
         let opt = SGD::new(vec![x], 1.0);
         let want = [1.0, 0.853_553_390_6, 0.5, 0.146_446_609_4, 0.0];
         for (e, w) in want.iter().enumerate() {
-            let sch = CosineAnnealingLR::new(&opt, 4).eta_min(0.0).last_epoch(e as i64);
+            let sch = CosineAnnealingLR::new(&opt, 4)
+                .eta_min(0.0)
+                .last_epoch(e as i64);
             let lr = sch.get_lr()[0];
-            assert!((lr - w).abs() < 1e-9, "CosineAnnealingLR epoch {e} lr={lr} != {w}");
+            assert!(
+                (lr - w).abs() < 1e-9,
+                "CosineAnnealingLR epoch {e} lr={lr} != {w}"
+            );
         }
     }
 
@@ -6276,7 +6330,10 @@ mod tests {
         for (e, w) in want.iter().enumerate() {
             let sch = ExponentialLR::new(&opt, 0.9).last_epoch(e as i64);
             let lr = sch.get_lr()[0];
-            assert!((lr - w).abs() < 1e-12, "ExponentialLR epoch {e} lr={lr} != {w}");
+            assert!(
+                (lr - w).abs() < 1e-12,
+                "ExponentialLR epoch {e} lr={lr} != {w}"
+            );
         }
     }
 
@@ -6369,7 +6426,11 @@ mod tests {
             opt.step(&mut s, &report).unwrap();
         }
         let after = s.tensor_values(x).unwrap();
-        assert!((after[0] - 1.800_166_486_116).abs() < 1e-9, "adam 2-step {} != 1.8001664861", after[0]);
+        assert!(
+            (after[0] - 1.800_166_486_116).abs() < 1e-9,
+            "adam 2-step {} != 1.8001664861",
+            after[0]
+        );
     }
 
     #[test]
@@ -6389,7 +6450,11 @@ mod tests {
             opt.step(&mut s, &report).unwrap();
         }
         let after = s.tensor_values(x).unwrap();
-        assert!((after[0] - 0.92).abs() < 1e-12, "sgd-mom 2-step {} != 0.92", after[0]);
+        assert!(
+            (after[0] - 0.92).abs() < 1e-12,
+            "sgd-mom 2-step {} != 0.92",
+            after[0]
+        );
     }
 
     #[test]
@@ -6446,7 +6511,10 @@ mod tests {
             opt.step(&mut s, &report).unwrap();
             let after = s.tensor_values(x).unwrap();
             for (k, (a, b)) in after.iter().zip(&init).enumerate() {
-                assert!((a - b).abs() < 1e-12, "{name} changed param[{k}]: {a} vs {b}");
+                assert!(
+                    (a - b).abs() < 1e-12,
+                    "{name} changed param[{k}]: {a} vs {b}"
+                );
             }
         };
         run(&|p, lr| Box::new(SGD::new(p, lr)), "SGD");
@@ -6603,7 +6671,9 @@ mod tests {
             for (st, (g, w)) in got.iter().zip(want.iter()).enumerate() {
                 for j in 0..2 {
                     if (g[j] - w[j]).abs() >= 1e-6 {
-                        fails.borrow_mut().push(format!("{name} step{st}[{j}]={} want {}", g[j], w[j]));
+                        fails
+                            .borrow_mut()
+                            .push(format!("{name} step{st}[{j}]={} want {}", g[j], w[j]));
                     }
                 }
             }
@@ -6619,157 +6689,258 @@ mod tests {
             }};
         }
 
-        trial!("adam", |x| Adam::new(vec![x], 0.1), [
-            [0.9000000005, 1.9000000002],
-            [0.8004122287, 1.8001664861],
-            [0.7015862729, 1.700623392],
-        ]);
-        trial!("adamw", |x| AdamW::new(vec![x], 0.1), [
-            [0.8990000005, 1.8980000002],
-            [0.7985190272, 1.7962725886],
-            [0.6989111832, 1.6949445144],
-        ]);
-        trial!("rmsprop", |x| RMSprop::new(vec![x], 0.1), [
-            [0.00000005, 1.000000025],
-            [-0.0000000003, 0.5509867711],
-            [0.0, 0.3096873876],
-        ]);
-        trial!("rmsprop_centered", |x| RMSprop::new(vec![x], 0.1).centered(true), [
-            [-0.0050377648, 0.99496221],
-            [0.0000503052, 0.5437053136],
-            [-0.0000007558, 0.3023406027],
-        ]);
-        trial!("sgd_nesterov", |x| SGD::new(vec![x], 0.1).momentum(0.9).nesterov(true), [
-            [0.62, 1.24],
-            [0.2224, 0.4448],
-            [-0.108352, -0.216704],
-        ]);
-        trial!("adagrad", |x| Adagrad::new(vec![x], 0.1), [
-            [0.9, 1.9],
-            [0.8331035268, 1.8311250538],
-            [0.7804561814, 1.775821515],
-        ]);
-        trial!("radam", |x| RAdam::new(vec![x], 0.1), [
-            [0.8, 1.6],
-            [0.6210526316, 1.2421052632],
-            [0.4623033599, 0.9246067198],
-        ]);
-        trial!("adamax", |x| Adamax::new(vec![x], 0.1), [
-            [0.9000000005, 1.9000000002],
-            [0.8051683272, 1.8025341135],
-            [0.7154994734, 1.7076482356],
-        ]);
+        trial!(
+            "adam",
+            |x| Adam::new(vec![x], 0.1),
+            [
+                [0.9000000005, 1.9000000002],
+                [0.8004122287, 1.8001664861],
+                [0.7015862729, 1.700623392],
+            ]
+        );
+        trial!(
+            "adamw",
+            |x| AdamW::new(vec![x], 0.1),
+            [
+                [0.8990000005, 1.8980000002],
+                [0.7985190272, 1.7962725886],
+                [0.6989111832, 1.6949445144],
+            ]
+        );
+        trial!(
+            "rmsprop",
+            |x| RMSprop::new(vec![x], 0.1),
+            [
+                [0.00000005, 1.000000025],
+                [-0.0000000003, 0.5509867711],
+                [0.0, 0.3096873876],
+            ]
+        );
+        trial!(
+            "rmsprop_centered",
+            |x| RMSprop::new(vec![x], 0.1).centered(true),
+            [
+                [-0.0050377648, 0.99496221],
+                [0.0000503052, 0.5437053136],
+                [-0.0000007558, 0.3023406027],
+            ]
+        );
+        trial!(
+            "sgd_nesterov",
+            |x| SGD::new(vec![x], 0.1).momentum(0.9).nesterov(true),
+            [[0.62, 1.24], [0.2224, 0.4448], [-0.108352, -0.216704],]
+        );
+        trial!(
+            "adagrad",
+            |x| Adagrad::new(vec![x], 0.1),
+            [
+                [0.9, 1.9],
+                [0.8331035268, 1.8311250538],
+                [0.7804561814, 1.775821515],
+            ]
+        );
+        trial!(
+            "radam",
+            |x| RAdam::new(vec![x], 0.1),
+            [
+                [0.8, 1.6],
+                [0.6210526316, 1.2421052632],
+                [0.4623033599, 0.9246067198],
+            ]
+        );
+        trial!(
+            "adamax",
+            |x| Adamax::new(vec![x], 0.1),
+            [
+                [0.9000000005, 1.9000000002],
+                [0.8051683272, 1.8025341135],
+                [0.7154994734, 1.7076482356],
+            ]
+        );
         // Adadelta default lr is 1.0 (rho=0.9, eps=1e-6).
-        trial!("adadelta", |x| Adadelta::new(vec![x], 1.0), [
-            [0.9968377263, 1.9968377233],
-            [0.9935981741, 1.9935957289],
-            [0.9903090457, 1.9903007524],
-        ]);
-        trial!("nadam", |x| NAdam::new(vec![x], 0.1), [
-            [0.8943548214, 1.8943548211],
-            [0.8199730691, 1.8178975293],
-            [0.7527292651, 1.7475085],
-        ]);
-        trial!("asgd", |x| ASGD::new(vec![x], 0.1), [
-            [0.799989997, 1.599979994],
-            [0.6399851994, 1.2799703988],
-            [0.5119836842, 1.0239673685],
-        ]);
-        trial!("rprop", |x| Rprop::new(vec![x], 0.1), [
-            [0.9, 1.9],
-            [0.78, 1.78],
-            [0.636, 1.636],
-        ]);
+        trial!(
+            "adadelta",
+            |x| Adadelta::new(vec![x], 1.0),
+            [
+                [0.9968377263, 1.9968377233],
+                [0.9935981741, 1.9935957289],
+                [0.9903090457, 1.9903007524],
+            ]
+        );
+        trial!(
+            "nadam",
+            |x| NAdam::new(vec![x], 0.1),
+            [
+                [0.8943548214, 1.8943548211],
+                [0.8199730691, 1.8178975293],
+                [0.7527292651, 1.7475085],
+            ]
+        );
+        trial!(
+            "asgd",
+            |x| ASGD::new(vec![x], 0.1),
+            [
+                [0.799989997, 1.599979994],
+                [0.6399851994, 1.2799703988],
+                [0.5119836842, 1.0239673685],
+            ]
+        );
+        trial!(
+            "rprop",
+            |x| Rprop::new(vec![x], 0.1),
+            [[0.9, 1.9], [0.78, 1.78], [0.636, 1.636],]
+        );
 
         // maximize=True ascends the objective (gradient negated). Goldens from
         // torch 2.12 (loss=sum(x^2), grad=2x, x0=[1,2]).
-        trial!("sgd_maximize", |x| SGD::new(vec![x], 0.1).maximize(true), [
-            [1.2, 2.4],
-            [1.44, 2.88],
-            [1.728, 3.456],
-        ]);
-        trial!("sgd_maximize_wd", |x| SGD::new(vec![x], 0.1).weight_decay(0.1).maximize(true), [
-            [1.19, 2.38],
-            [1.4161, 2.8322],
-            [1.685159, 3.370318],
-        ]);
-        trial!("adam_maximize", |x| Adam::new(vec![x], 0.1).maximize(true), [
-            [1.0999999995, 2.09999999975],
-            [1.200134775759, 2.200097379532],
-            [1.300490053753, 2.300352395302],
-        ]);
-        trial!("adamw_maximize", |x| AdamW::new(vec![x], 0.1).maximize(true), [
-            [1.0989999995, 2.09799999975],
-            [1.19803556141, 2.195998048517],
-            [1.297192014321, 2.294053534985],
-        ]);
-        trial!("rmsprop_maximize", |x| RMSprop::new(vec![x], 0.1).maximize(true), [
-            [1.99999995, 2.999999975],
-            [2.895322887591, 3.833333294637],
-            [3.688547305051, 4.563991295037],
-        ]);
-        trial!("adagrad_maximize", |x| Adagrad::new(vec![x], 0.1).maximize(true), [
-            [1.099999999995, 2.099999999997],
-            [1.173994007332, 2.1724137931],
-            [1.235970045636, 2.232368103843],
-        ]);
-        trial!("radam_maximize", |x| RAdam::new(vec![x], 0.1).maximize(true), [
-            [1.2, 2.4],
-            [1.421052631579, 2.842105263158],
-            [1.665410759371, 3.330821518742],
-        ]);
-        trial!("nadam_maximize", |x| NAdam::new(vec![x], 0.1).maximize(true), [
-            [1.105645178605, 2.105645178869],
-            [1.187393263063, 2.18577315422],
-            [1.265440564321, 2.261539028167],
-        ]);
-        trial!("adamax_maximize", |x| Adamax::new(vec![x], 0.1).maximize(true), [
-            [1.0999999995, 2.09999999975],
-            [1.195693778989, 2.197744360425],
-            [1.288144042869, 2.293578014413],
-        ]);
-        trial!("adadelta_maximize", |x| Adadelta::new(vec![x], 1.0).maximize(true), [
-            [1.003162273707, 2.003162276672],
-            [1.006411545748, 2.006409130971],
-            [1.009723954281, 2.009715747525],
-        ]);
-        trial!("asgd_maximize", |x| ASGD::new(vec![x], 0.1).maximize(true), [
-            [1.19999000298, 2.39998000596],
-            [1.439974201337, 2.879948402673],
-            [1.727950311998, 3.455900623996],
-        ]);
-        trial!("rprop_maximize", |x| Rprop::new(vec![x], 0.1).maximize(true), [
-            [1.1, 2.1],
-            [1.22, 2.22],
-            [1.364, 2.364],
-        ]);
+        trial!(
+            "sgd_maximize",
+            |x| SGD::new(vec![x], 0.1).maximize(true),
+            [[1.2, 2.4], [1.44, 2.88], [1.728, 3.456],]
+        );
+        trial!(
+            "sgd_maximize_wd",
+            |x| SGD::new(vec![x], 0.1).weight_decay(0.1).maximize(true),
+            [[1.19, 2.38], [1.4161, 2.8322], [1.685159, 3.370318],]
+        );
+        trial!(
+            "adam_maximize",
+            |x| Adam::new(vec![x], 0.1).maximize(true),
+            [
+                [1.0999999995, 2.09999999975],
+                [1.200134775759, 2.200097379532],
+                [1.300490053753, 2.300352395302],
+            ]
+        );
+        trial!(
+            "adamw_maximize",
+            |x| AdamW::new(vec![x], 0.1).maximize(true),
+            [
+                [1.0989999995, 2.09799999975],
+                [1.19803556141, 2.195998048517],
+                [1.297192014321, 2.294053534985],
+            ]
+        );
+        trial!(
+            "rmsprop_maximize",
+            |x| RMSprop::new(vec![x], 0.1).maximize(true),
+            [
+                [1.99999995, 2.999999975],
+                [2.895322887591, 3.833333294637],
+                [3.688547305051, 4.563991295037],
+            ]
+        );
+        trial!(
+            "adagrad_maximize",
+            |x| Adagrad::new(vec![x], 0.1).maximize(true),
+            [
+                [1.099999999995, 2.099999999997],
+                [1.173994007332, 2.1724137931],
+                [1.235970045636, 2.232368103843],
+            ]
+        );
+        trial!(
+            "radam_maximize",
+            |x| RAdam::new(vec![x], 0.1).maximize(true),
+            [
+                [1.2, 2.4],
+                [1.421052631579, 2.842105263158],
+                [1.665410759371, 3.330821518742],
+            ]
+        );
+        trial!(
+            "nadam_maximize",
+            |x| NAdam::new(vec![x], 0.1).maximize(true),
+            [
+                [1.105645178605, 2.105645178869],
+                [1.187393263063, 2.18577315422],
+                [1.265440564321, 2.261539028167],
+            ]
+        );
+        trial!(
+            "adamax_maximize",
+            |x| Adamax::new(vec![x], 0.1).maximize(true),
+            [
+                [1.0999999995, 2.09999999975],
+                [1.195693778989, 2.197744360425],
+                [1.288144042869, 2.293578014413],
+            ]
+        );
+        trial!(
+            "adadelta_maximize",
+            |x| Adadelta::new(vec![x], 1.0).maximize(true),
+            [
+                [1.003162273707, 2.003162276672],
+                [1.006411545748, 2.006409130971],
+                [1.009723954281, 2.009715747525],
+            ]
+        );
+        trial!(
+            "asgd_maximize",
+            |x| ASGD::new(vec![x], 0.1).maximize(true),
+            [
+                [1.19999000298, 2.39998000596],
+                [1.439974201337, 2.879948402673],
+                [1.727950311998, 3.455900623996],
+            ]
+        );
+        trial!(
+            "rprop_maximize",
+            |x| Rprop::new(vec![x], 0.1).maximize(true),
+            [[1.1, 2.1], [1.22, 2.22], [1.364, 2.364],]
+        );
 
         // decoupled_weight_decay= (torch 2.1+). With wd=0.1: dwd=False is L2
         // (grad += wd*param), dwd=True scales the param (param *= 1 - lr*wd).
         // Goldens from torch 2.12 (loss=sum(x^2), grad=2x, x0=[1,2], lr=0.1).
-        trial!("nadam_wd_l2", |x| NAdam::new(vec![x], 0.1).weight_decay(0.1), [
-            [0.89435482137, 1.894354821118],
-            [0.819973069097, 1.817897529255],
-            [0.752729265083, 1.747508499949],
-        ]);
-        trial!("nadam_wd_decoupled", |x| NAdam::new(vec![x], 0.1).weight_decay(0.1).decoupled_weight_decay(true), [
-            [0.884354821395, 1.874354821131],
-            [0.801542038243, 1.779533894298],
-            [0.727008098102, 1.69201969524],
-        ]);
-        trial!("radam_wd_l2", |x| RAdam::new(vec![x], 0.1).weight_decay(0.1), [
-            [0.79, 1.58],
-            [0.603210526316, 1.206421052632],
-            [0.438603806564, 0.877207613129],
-        ]);
-        trial!("radam_wd_decoupled", |x| RAdam::new(vec![x], 0.1).weight_decay(0.1).decoupled_weight_decay(true), [
-            [0.79, 1.58],
-            [0.604205263158, 1.208410526316],
-            [0.441321493688, 0.882642987376],
-        ]);
+        trial!(
+            "nadam_wd_l2",
+            |x| NAdam::new(vec![x], 0.1).weight_decay(0.1),
+            [
+                [0.89435482137, 1.894354821118],
+                [0.819973069097, 1.817897529255],
+                [0.752729265083, 1.747508499949],
+            ]
+        );
+        trial!(
+            "nadam_wd_decoupled",
+            |x| NAdam::new(vec![x], 0.1)
+                .weight_decay(0.1)
+                .decoupled_weight_decay(true),
+            [
+                [0.884354821395, 1.874354821131],
+                [0.801542038243, 1.779533894298],
+                [0.727008098102, 1.69201969524],
+            ]
+        );
+        trial!(
+            "radam_wd_l2",
+            |x| RAdam::new(vec![x], 0.1).weight_decay(0.1),
+            [
+                [0.79, 1.58],
+                [0.603210526316, 1.206421052632],
+                [0.438603806564, 0.877207613129],
+            ]
+        );
+        trial!(
+            "radam_wd_decoupled",
+            |x| RAdam::new(vec![x], 0.1)
+                .weight_decay(0.1)
+                .decoupled_weight_decay(true),
+            [
+                [0.79, 1.58],
+                [0.604205263158, 1.208410526316],
+                [0.441321493688, 0.882642987376],
+            ]
+        );
 
         let f = fails.borrow();
-        assert!(f.is_empty(), "optimizer divergences ({}): {:?}", f.len(), *f);
+        assert!(
+            f.is_empty(),
+            "optimizer divergences ({}): {:?}",
+            f.len(),
+            *f
+        );
     }
 
     #[test]
@@ -6814,7 +6985,10 @@ mod tests {
             );
         }
         // amsgrad must actually diverge from plain Adam here.
-        assert!((adam[2] - ams[2]).abs() > 1e-6, "amsgrad did not change the trajectory");
+        assert!(
+            (adam[2] - ams[2]).abs() > 1e-6,
+            "amsgrad did not change the trajectory"
+        );
 
         // Same discriminator for AdamW (decoupled weight decay).
         let run_w = |amsgrad: bool| -> Vec<f64> {
@@ -7459,16 +7633,25 @@ mod tests {
         // bit-for-bit identical to the serial Adam update. frankentorch-optpar.
         let n = super::OPTIM_PARALLEL_THRESHOLD + 7;
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let initial: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.001).sin() * 2.0 - 0.3).collect();
+        let initial: Vec<f64> = (0..n)
+            .map(|i| ((i as f64) * 0.001).sin() * 2.0 - 0.3)
+            .collect();
         let x = session
             .tensor_variable(initial.clone(), vec![n], true)
             .expect("variable should succeed");
         let (lr, b1, b2, eps, wd) = (0.125, 0.8, 0.9, 1e-6, 0.01);
-        let mut optimizer = Adam::new(vec![x], lr).betas(b1, b2).eps(eps).weight_decay(wd);
+        let mut optimizer = Adam::new(vec![x], lr)
+            .betas(b1, b2)
+            .eps(eps)
+            .weight_decay(wd);
 
         let loss_sum = session.tensor_sum(x).expect("sum should succeed");
-        let report = session.tensor_backward(loss_sum).expect("backward should succeed");
-        optimizer.step(&mut session, &report).expect("step should succeed");
+        let report = session
+            .tensor_backward(loss_sum)
+            .expect("backward should succeed");
+        optimizer
+            .step(&mut session, &report)
+            .expect("step should succeed");
 
         // Manual serial reference (grad = 1 everywhere from sum()).
         let bc1 = 1.0 - b1.powf(1.0);
@@ -8152,16 +8335,25 @@ mod tests {
         // frankentorch-optpar.
         let n = super::OPTIM_PARALLEL_THRESHOLD + 5;
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let initial: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.0007).cos() * 1.5 + 0.2).collect();
+        let initial: Vec<f64> = (0..n)
+            .map(|i| ((i as f64) * 0.0007).cos() * 1.5 + 0.2)
+            .collect();
         let x = session
             .tensor_variable(initial.clone(), vec![n], true)
             .expect("variable should succeed");
         let (lr, b1, b2, eps, wd) = (0.1, 0.9, 0.999, 1e-8, 0.05);
-        let mut optimizer = AdamW::new(vec![x], lr).betas(b1, b2).eps(eps).weight_decay(wd);
+        let mut optimizer = AdamW::new(vec![x], lr)
+            .betas(b1, b2)
+            .eps(eps)
+            .weight_decay(wd);
 
         let loss_sum = session.tensor_sum(x).expect("sum should succeed");
-        let report = session.tensor_backward(loss_sum).expect("backward should succeed");
-        optimizer.step(&mut session, &report).expect("step should succeed");
+        let report = session
+            .tensor_backward(loss_sum)
+            .expect("backward should succeed");
+        optimizer
+            .step(&mut session, &report)
+            .expect("step should succeed");
 
         // Manual serial reference (grad = 1 from sum(); decoupled weight decay).
         let bc1 = 1.0 - b1.powf(1.0);
@@ -9625,10 +9817,7 @@ mod tests {
         scheduler.load_state_dict(SchedulerState {
             last_epoch: -1,
             last_lrs: vec![1.0],
-            extra: vec![
-                ("initial_lr".to_owned(), 1.0),
-                ("gamma".to_owned(), -0.5),
-            ],
+            extra: vec![("initial_lr".to_owned(), 1.0), ("gamma".to_owned(), -0.5)],
         });
         scheduler.step(&mut opt, Some(1));
         assert_eq!(opt.get_lr(), 0.0);
@@ -9672,11 +9861,7 @@ mod tests {
                 ],
             });
             scheduler.step(&mut opt, Some(1));
-            assert_eq!(
-                opt.get_lr(),
-                0.0,
-                "MultiStepLR initial_lr {initial_lr:?}"
-            );
+            assert_eq!(opt.get_lr(), 0.0, "MultiStepLR initial_lr {initial_lr:?}");
             assert!(opt.get_lr().is_finite());
 
             let x = session
@@ -9740,11 +9925,7 @@ mod tests {
                 ],
             });
             scheduler.step(&mut opt, Some(1));
-            assert_eq!(
-                opt.get_lr(),
-                0.0,
-                "ExponentialLR initial_lr {initial_lr:?}"
-            );
+            assert_eq!(opt.get_lr(), 0.0, "ExponentialLR initial_lr {initial_lr:?}");
             assert!(opt.get_lr().is_finite());
         }
     }
@@ -10793,7 +10974,10 @@ mod tests {
         let lr = opt.get_lr();
         assert_eq!(lr, 0.0);
         assert!(lr.is_finite(), "loaded invalid scalars must keep lr finite");
-        assert!(lr >= 0.0, "loaded invalid scalars must keep lr non-negative");
+        assert!(
+            lr >= 0.0,
+            "loaded invalid scalars must keep lr non-negative"
+        );
     }
 
     #[test]
@@ -11940,11 +12124,7 @@ mod tests {
         close(&apply!(vec![1.0, -1.0]), &[0.9, 10.1], "step1");
         close(&apply!(vec![1.0, -1.0]), &[0.78, 10.22], "step2");
         let before_flip = session.tensor_values(x).expect("values before flip");
-        close(
-            &apply!(vec![-1.0, 1.0]),
-            &before_flip,
-            "sign-flip skip",
-        );
+        close(&apply!(vec![-1.0, 1.0]), &before_flip, "sign-flip skip");
         close(
             opt.step_sizes[0].as_ref().expect("step sizes"),
             &[0.06, 0.06],
@@ -12164,11 +12344,7 @@ mod tests {
                 ],
             });
             sched.step(&mut opt, Some(5));
-            assert_eq!(
-                opt.get_lr(),
-                0.0,
-                "PolynomialLR initial_lr {initial_lr:?}"
-            );
+            assert_eq!(opt.get_lr(), 0.0, "PolynomialLR initial_lr {initial_lr:?}");
             assert!(opt.get_lr().is_finite());
 
             let x = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
@@ -12508,8 +12684,8 @@ mod tests {
                 .tensor_variable(vec![1.0], vec![1], true)
                 .expect("variable");
             let mut opt = SGD::new(vec![x], 0.1);
-            let mut scheduler = CyclicLR::new(&opt, 0.001, 0.01, 1)
-                .mode(CyclicLRMode::ExpRange { gamma });
+            let mut scheduler =
+                CyclicLR::new(&opt, 0.001, 0.01, 1).mode(CyclicLRMode::ExpRange { gamma });
 
             scheduler.step(&mut opt, None);
             scheduler.step(&mut opt, None);
@@ -12561,7 +12737,10 @@ mod tests {
             max_scheduler.step(&mut opt_max, None);
             assert_eq!(opt_max.get_lr(), 0.0, "loaded invalid bound {bound:?}");
             assert!(opt_max.get_lr().is_finite(), "loaded lr must remain finite");
-            assert!(opt_max.get_lr() >= 0.0, "loaded lr must remain non-negative");
+            assert!(
+                opt_max.get_lr() >= 0.0,
+                "loaded lr must remain non-negative"
+            );
         }
     }
 
@@ -12915,7 +13094,10 @@ mod tests {
 
         let mut opt2 = SGD::new(vec![w2], 0.1);
         let applied = scaler.step(&mut s2, &mut opt2, &report2).unwrap();
-        assert!(applied, "finite scaled gradients should apply the optimizer step");
+        assert!(
+            applied,
+            "finite scaled gradients should apply the optimizer step"
+        );
         assert!(!scaler.last_step_was_skipped());
 
         let scaled_step_value = s2.tensor_values(w2).unwrap();
@@ -12944,7 +13126,9 @@ mod tests {
         let w1 = s1.tensor_variable(vec![1.0], vec![1], true).unwrap();
         let mut last_report1 = None;
         for target_value in targets {
-            let target = s1.tensor_variable(vec![target_value], vec![1], false).unwrap();
+            let target = s1
+                .tensor_variable(vec![target_value], vec![1], false)
+                .unwrap();
             let loss = s1.mse_loss(w1, target).unwrap();
             last_report1 = Some(s1.tensor_backward(loss).unwrap());
         }
@@ -12962,7 +13146,9 @@ mod tests {
         let mut scaler = GradScaler::with_config(8.0, 2.0, 0.5, 100);
         let mut last_report2 = None;
         for target_value in targets {
-            let target = s2.tensor_variable(vec![target_value], vec![1], false).unwrap();
+            let target = s2
+                .tensor_variable(vec![target_value], vec![1], false)
+                .unwrap();
             let loss = s2.mse_loss(w2, target).unwrap();
             let scaled_loss = scaler.scale_loss(&mut s2, loss).unwrap();
             last_report2 = Some(s2.tensor_backward(scaled_loss).unwrap());
@@ -13085,7 +13271,9 @@ mod tests {
         scaler.steps_since_growth = 2;
 
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let w = s.tensor_variable(vec![f64::MAX / 2.0], vec![1], true).unwrap();
+        let w = s
+            .tensor_variable(vec![f64::MAX / 2.0], vec![1], true)
+            .unwrap();
         let target = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
         let mut opt = SGD::new(vec![w], 0.1);
         let loss = s.mse_loss(w, target).unwrap();

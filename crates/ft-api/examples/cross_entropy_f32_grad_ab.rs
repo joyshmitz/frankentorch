@@ -22,7 +22,9 @@ fn main() {
 
     let new_step = || {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable_f32(logits.clone(), vec![batch, classes], true).unwrap();
+        let x = s
+            .tensor_variable_f32(logits.clone(), vec![batch, classes], true)
+            .unwrap();
         let t = s.tensor_variable(tgt.clone(), vec![batch], false).unwrap();
         let o = s.functional_cross_entropy(x, t, "mean").unwrap();
         s.tensor_backward(o).unwrap();
@@ -30,7 +32,9 @@ fn main() {
     // OLD: composed log_softmax + nll_loss op-graph.
     let old_step = || {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable_f32(logits.clone(), vec![batch, classes], true).unwrap();
+        let x = s
+            .tensor_variable_f32(logits.clone(), vec![batch, classes], true)
+            .unwrap();
         let t = s.tensor_variable(tgt.clone(), vec![batch], false).unwrap();
         let lp = s.tensor_log_softmax(x, 1).unwrap();
         let o = s.tensor_nll_loss(lp, t, "mean").unwrap();
@@ -52,5 +56,8 @@ fn main() {
         new_step();
         bn = bn.min(t.elapsed().as_secs_f64() * 1e3);
     }
-    eprintln!("cross_entropy f32 fwd+bwd [{batch}x{classes}]: composed {bo:.2} ms / fused {bn:.2} ms / speedup {:.2}x", bo / bn);
+    eprintln!(
+        "cross_entropy f32 fwd+bwd [{batch}x{classes}]: composed {bo:.2} ms / fused {bn:.2} ms / speedup {:.2}x",
+        bo / bn
+    );
 }

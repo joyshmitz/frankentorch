@@ -13,12 +13,16 @@ fn main() {
     // LLaMA-style RMSNorm: [batch*seq, d_model].
     let (rows, nn) = (8192usize, 1024usize);
     let eps = 1e-6;
-    let xv: Vec<f32> = (0..rows * nn).map(|i| ((i % 877) as f32 - 400.0) * 0.002).collect();
+    let xv: Vec<f32> = (0..rows * nn)
+        .map(|i| ((i % 877) as f32 - 400.0) * 0.002)
+        .collect();
     let wv: Vec<f32> = (0..nn).map(|j| 1.0 + (j % 13) as f32 * 0.01).collect();
 
     let new_step = || {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable_f32(xv.clone(), vec![rows, nn], true).unwrap();
+        let x = s
+            .tensor_variable_f32(xv.clone(), vec![rows, nn], true)
+            .unwrap();
         let w = s.tensor_variable_f32(wv.clone(), vec![nn], true).unwrap();
         let o = s.functional_rms_norm(x, vec![nn], Some(w), eps).unwrap();
         let l = s.tensor_sum(o).unwrap();
@@ -27,7 +31,9 @@ fn main() {
     // OLD: manual composed RMSNorm (square/mean/eps/rsqrt/normalize/affine).
     let old_step = || {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable_f32(xv.clone(), vec![rows, nn], true).unwrap();
+        let x = s
+            .tensor_variable_f32(xv.clone(), vec![rows, nn], true)
+            .unwrap();
         let w = s.tensor_variable_f32(wv.clone(), vec![nn], true).unwrap();
         let sq = s.tensor_mul(x, x).unwrap();
         let ms = s.tensor_mean_dim(sq, 1).unwrap();
@@ -59,5 +65,8 @@ fn main() {
         new_step();
         bn = bn.min(t.elapsed().as_secs_f64() * 1e3);
     }
-    eprintln!("rms_norm f32 fwd+bwd [{rows}x{nn}]: composed {bo:.2} ms / fused {bn:.2} ms / speedup {:.2}x", bo / bn);
+    eprintln!(
+        "rms_norm f32 fwd+bwd [{rows}x{nn}]: composed {bo:.2} ms / fused {bn:.2} ms / speedup {:.2}x",
+        bo / bn
+    );
 }

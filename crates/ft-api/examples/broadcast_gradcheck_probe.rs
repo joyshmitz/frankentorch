@@ -2,13 +2,18 @@
 //! (add/mul/sub/div with [3,1] op [1,4]) — catches wrong-axis sum-reduction in
 //! the broadcast backward that shape checks alone would miss.
 use ft_api::FrankenTorchSession;
-use ft_core::ExecutionMode;
 use ft_autograd::TensorNodeId;
+use ft_core::ExecutionMode;
 
 const LA: [usize; 2] = [3, 1];
 const LB: [usize; 2] = [1, 4];
 
-fn apply(s: &mut FrankenTorchSession, name: &str, a: TensorNodeId, b: TensorNodeId) -> TensorNodeId {
+fn apply(
+    s: &mut FrankenTorchSession,
+    name: &str,
+    a: TensorNodeId,
+    b: TensorNodeId,
+) -> TensorNodeId {
     let o = match name {
         "add" => s.tensor_add(a, b),
         "mul" => s.tensor_mul(a, b),

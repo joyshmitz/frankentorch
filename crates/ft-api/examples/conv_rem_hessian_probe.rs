@@ -12,7 +12,11 @@ fn run(
     xs: Vec<usize>,
     wv: Vec<f64>,
     ws: Vec<usize>,
-    f: impl Fn(&mut FrankenTorchSession, TensorNodeId, TensorNodeId) -> Result<TensorNodeId, AutogradError>,
+    f: impl Fn(
+        &mut FrankenTorchSession,
+        TensorNodeId,
+        TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError>,
     k: usize,
 ) {
     let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
@@ -26,7 +30,9 @@ fn run(
         s.tensor_functional_hessian(loss, x)
     })() {
         Ok(h) => {
-            let d: Vec<f64> = (0..k.min(n)).map(|i| (h[i * n + i] * 1e5).round() / 1e5).collect();
+            let d: Vec<f64> = (0..k.min(n))
+                .map(|i| (h[i * n + i] * 1e5).round() / 1e5)
+                .collect();
             println!("{name}: {d:?}");
         }
         Err(e) => println!("{name}: ERR {e:?}"),
@@ -49,7 +55,9 @@ fn main() {
         vec![1, 1, 2, 2],
         vec![0.2, -0.4, 0.1, 0.3],
         vec![1, 1, 2, 2],
-        |s, x, w| s.functional_conv_transpose2d_dilated(x, w, None, (1, 1), (0, 0), (0, 0), (2, 2), 1),
+        |s, x, w| {
+            s.functional_conv_transpose2d_dilated(x, w, None, (1, 1), (0, 0), (0, 0), (2, 2), 1)
+        },
         4,
     );
     run(

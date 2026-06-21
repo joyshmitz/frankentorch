@@ -45,7 +45,9 @@ fn main() {
     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
     let new = pn.install(|| {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let v = s.tensor_variable(data.clone(), in_shape.to_vec(), false).unwrap();
+        let v = s
+            .tensor_variable(data.clone(), in_shape.to_vec(), false)
+            .unwrap();
         let r = s.tensor_repeat(v, &repeats).unwrap();
         let got = s.tensor_values(r).unwrap();
         assert_eq!(got.len(), want.len());
@@ -54,7 +56,9 @@ fn main() {
         }
         let mut best = f64::INFINITY;
         for _ in 0..15 {
-            let v = s.tensor_variable(data.clone(), in_shape.to_vec(), false).unwrap();
+            let v = s
+                .tensor_variable(data.clone(), in_shape.to_vec(), false)
+                .unwrap();
             let t = Instant::now();
             std::hint::black_box(s.tensor_repeat(v, &repeats).unwrap());
             best = best.min(t.elapsed().as_secs_f64() * 1e3);
@@ -67,5 +71,8 @@ fn main() {
         std::hint::black_box(serial(&data, &in_shape, &repeats));
         old = old.min(t.elapsed().as_secs_f64() * 1e3);
     }
-    println!("repeat [256,256]x[8,8] -> 4.2M (bit-exact OK): OLD serial {old:.2}ms  NEW({nthreads}t) {new:.2}ms  =>  {:.2}x", old / new);
+    println!(
+        "repeat [256,256]x[8,8] -> 4.2M (bit-exact OK): OLD serial {old:.2}ms  NEW({nthreads}t) {new:.2}ms  =>  {:.2}x",
+        old / new
+    );
 }

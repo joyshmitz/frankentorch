@@ -13,10 +13,25 @@ fn main() {
         let rep = s.tensor_backward(ssum).unwrap();
         std::hint::black_box(s.tensor_gradient(&rep, v).unwrap());
     };
-    let bench = |reps: usize| { run(); let mut best=f64::INFINITY; for _ in 0..reps { let t=Instant::now(); run(); best=best.min(t.elapsed().as_secs_f64()*1e3);} best };
-    let p1=rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
-    let old=p1.install(|| bench(20));
-    let pn=rayon::ThreadPoolBuilder::new().build().unwrap();
-    let new=pn.install(|| bench(20));
-    println!("vander fwd+bwd [{rows},{cols}]: OLD(1t) {old:.2}ms NEW({nthreads}t) {new:.2}ms => {:.2}x", old/new);
+    let bench = |reps: usize| {
+        run();
+        let mut best = f64::INFINITY;
+        for _ in 0..reps {
+            let t = Instant::now();
+            run();
+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+        }
+        best
+    };
+    let p1 = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+    let old = p1.install(|| bench(20));
+    let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
+    let new = pn.install(|| bench(20));
+    println!(
+        "vander fwd+bwd [{rows},{cols}]: OLD(1t) {old:.2}ms NEW({nthreads}t) {new:.2}ms => {:.2}x",
+        old / new
+    );
 }

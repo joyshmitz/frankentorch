@@ -127,16 +127,8 @@ fn make_lstm_case(
     hidden_size: usize,
 ) -> (FrankenTorchSession, LSTM, ft_autograd::TensorNodeId) {
     let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-    let lstm = LSTM::new(
-        &mut session,
-        input_size,
-        hidden_size,
-        1,
-        false,
-        0.0,
-        false,
-    )
-    .expect("lstm");
+    let lstm =
+        LSTM::new(&mut session, input_size, hidden_size, 1, false, 0.0, false).expect("lstm");
     let values = (0..(seq_len * batch_size * input_size))
         .map(|idx| (idx % 251) as f64 * 0.001)
         .collect::<Vec<_>>();
@@ -192,16 +184,7 @@ fn make_gru_case(
     hidden_size: usize,
 ) -> (FrankenTorchSession, GRU, ft_autograd::TensorNodeId) {
     let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-    let gru = GRU::new(
-        &mut session,
-        input_size,
-        hidden_size,
-        1,
-        false,
-        0.0,
-        false,
-    )
-    .expect("gru");
+    let gru = GRU::new(&mut session, input_size, hidden_size, 1, false, 0.0, false).expect("gru");
     let values = (0..(seq_len * batch_size * input_size))
         .map(|idx| (idx % 251) as f64 * 0.001)
         .collect::<Vec<_>>();
@@ -257,13 +240,7 @@ fn make_rnn_case(
     hidden_size: usize,
 ) -> (FrankenTorchSession, RNN, ft_autograd::TensorNodeId) {
     let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-    let rnn = RNN::new(
-        &mut session,
-        input_size,
-        hidden_size,
-        RNNConfig::default(),
-    )
-    .expect("rnn");
+    let rnn = RNN::new(&mut session, input_size, hidden_size, RNNConfig::default()).expect("rnn");
     let values = (0..(seq_len * batch_size * input_size))
         .map(|idx| (idx % 251) as f64 * 0.001)
         .collect::<Vec<_>>();
@@ -306,9 +283,15 @@ fn bench_attention_core(c: &mut Criterion) {
     let mut group = c.benchmark_group("attention_core");
     for &(bh, s, hd) in &[(8usize, 512usize, 16usize), (8, 1024, 16)] {
         let scale = 1.0 / (hd as f64).sqrt();
-        let q: Vec<f64> = (0..bh * s * hd).map(|i| (i % 251) as f64 * 0.001 - 0.12).collect();
-        let k: Vec<f64> = (0..bh * s * hd).map(|i| (i % 241) as f64 * 0.0011 - 0.13).collect();
-        let v: Vec<f64> = (0..bh * s * hd).map(|i| (i % 233) as f64 * 0.0009 - 0.10).collect();
+        let q: Vec<f64> = (0..bh * s * hd)
+            .map(|i| (i % 251) as f64 * 0.001 - 0.12)
+            .collect();
+        let k: Vec<f64> = (0..bh * s * hd)
+            .map(|i| (i % 241) as f64 * 0.0011 - 0.13)
+            .collect();
+        let v: Vec<f64> = (0..bh * s * hd)
+            .map(|i| (i % 233) as f64 * 0.0009 - 0.10)
+            .collect();
         group.bench_function(&format!("materialized_{bh}x{s}x{hd}"), |b| {
             b.iter(|| {
                 let qs: Vec<f64> = q.iter().map(|&x| x * scale).collect();

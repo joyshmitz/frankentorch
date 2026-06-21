@@ -3399,13 +3399,9 @@ mod tests {
 
     #[test]
     fn dense_matrix_view_preserves_storage_offset() {
-        let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu)
-            .with_storage_offset(2);
-        let tensor = DenseTensor::from_storage(
-            meta,
-            vec![99.0, 98.0, 1.0, 2.0, 3.0, 4.0],
-        )
-        .unwrap();
+        let meta =
+            TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu).with_storage_offset(2);
+        let tensor = DenseTensor::from_storage(meta, vec![99.0, 98.0, 1.0, 2.0, 3.0, 4.0]).unwrap();
 
         let view = tensor.view(vec![4, 1]).unwrap();
 
@@ -4630,8 +4626,8 @@ mod tests {
             -2,
         )
         .expect("offset quantized meta");
-        let tensor = DenseTensor::from_storage_qint8(meta, vec![99, 0, 2])
-            .expect("offset quantized tensor");
+        let tensor =
+            DenseTensor::from_storage_qint8(meta, vec![99, 0, 2]).expect("offset quantized tensor");
 
         let cast = tensor.to_dtype(DType::F64).expect("cast offset qint8");
 
@@ -4684,9 +4680,7 @@ mod tests {
         let storage = TensorStorage::F64(Arc::new(vec![9.0, 1.5, 2.5, 8.0]));
         let tensor = DenseTensor::from_typed_storage(meta, storage).expect("offset f64 tensor");
 
-        let cast = tensor
-            .to_dtype(DType::Complex128)
-            .expect("cast offset f64");
+        let cast = tensor.to_dtype(DType::Complex128).expect("cast offset f64");
 
         assert_eq!(cast.meta().dtype(), DType::Complex128);
         assert_eq!(cast.meta().storage_offset(), 0);
@@ -4738,9 +4732,7 @@ mod tests {
         ]));
         let tensor = DenseTensor::from_typed_storage(meta, storage).expect("offset c128 tensor");
 
-        let cast = tensor
-            .to_dtype(DType::Complex64)
-            .expect("cast c128 to c64");
+        let cast = tensor.to_dtype(DType::Complex64).expect("cast c128 to c64");
 
         assert_eq!(cast.meta().dtype(), DType::Complex64);
         assert_eq!(cast.meta().storage_offset(), 0);
@@ -5557,9 +5549,14 @@ mod tests {
         let coords = vec![vec![0, 1], vec![1, 0]];
         let values = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
 
-        let sparse =
-            SparseCOOTensor::from_coords(&coords, values, vec![2, 2, 2, 2], DType::F64, Device::Cpu)
-                .unwrap();
+        let sparse = SparseCOOTensor::from_coords(
+            &coords,
+            values,
+            vec![2, 2, 2, 2],
+            DType::F64,
+            Device::Cpu,
+        )
+        .unwrap();
 
         assert_eq!(sparse.sparse_dim(), 2);
         assert_eq!(sparse.values().meta().shape(), &[2, 2, 2]);
@@ -5591,7 +5588,10 @@ mod tests {
 
         let dense = sparse.to_dense().unwrap();
         assert_eq!(dense.meta().dtype(), DType::F32);
-        assert_eq!(dense.contiguous_values_f32().unwrap(), &[0.0, 1.5, 2.5, 0.0]);
+        assert_eq!(
+            dense.contiguous_values_f32().unwrap(),
+            &[0.0, 1.5, 2.5, 0.0]
+        );
     }
 
     #[test]
@@ -5728,8 +5728,7 @@ mod tests {
     #[test]
     fn sparse_coo_empty_preserves_requested_dtype() {
         let sparse =
-            SparseCOOTensor::from_coords(&[], vec![], vec![2, 3], DType::F32, Device::Cpu)
-                .unwrap();
+            SparseCOOTensor::from_coords(&[], vec![], vec![2, 3], DType::F32, Device::Cpu).unwrap();
 
         assert_eq!(sparse.dtype(), DType::F32);
         assert!(matches!(
@@ -5762,8 +5761,7 @@ mod tests {
     #[test]
     fn sparse_coo_empty_preserves_requested_f16_dtype() {
         let sparse =
-            SparseCOOTensor::from_coords(&[], vec![], vec![2, 2], DType::F16, Device::Cpu)
-                .unwrap();
+            SparseCOOTensor::from_coords(&[], vec![], vec![2, 2], DType::F16, Device::Cpu).unwrap();
 
         assert_eq!(sparse.dtype(), DType::F16);
         assert!(matches!(
@@ -5795,14 +5793,9 @@ mod tests {
 
     #[test]
     fn sparse_coo_empty_preserves_requested_complex128_dtype() {
-        let sparse = SparseCOOTensor::from_coords(
-            &[],
-            vec![],
-            vec![2, 2],
-            DType::Complex128,
-            Device::Cpu,
-        )
-        .unwrap();
+        let sparse =
+            SparseCOOTensor::from_coords(&[], vec![], vec![2, 2], DType::Complex128, Device::Cpu)
+                .unwrap();
 
         assert_eq!(sparse.dtype(), DType::Complex128);
         assert!(matches!(

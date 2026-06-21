@@ -5211,7 +5211,10 @@ mod tests {
         // A single state_dict mixing f64/f32/f16/bf16 must round-trip each tensor's
         // dtype, shape, and bit-exact values through one save/load. frankentorch-unwe6.
         let mut sd = BTreeMap::new();
-        sd.insert("f64".to_string(), make_f64_tensor(vec![1.5, -2.25, 3.0], vec![3]));
+        sd.insert(
+            "f64".to_string(),
+            make_f64_tensor(vec![1.5, -2.25, 3.0], vec![3]),
+        );
         let f32_meta = TensorMeta::from_shape(vec![2], DType::F32, Device::Cpu);
         sd.insert(
             "f32".to_string(),
@@ -5234,13 +5237,25 @@ mod tests {
         let loaded = load_state_dict_from_bytes(&bytes).unwrap();
         assert_eq!(loaded.len(), 4);
         assert_eq!(loaded["f64"].meta().dtype(), DType::F64);
-        assert_eq!(loaded["f64"].contiguous_values().unwrap(), &[1.5, -2.25, 3.0]);
+        assert_eq!(
+            loaded["f64"].contiguous_values().unwrap(),
+            &[1.5, -2.25, 3.0]
+        );
         assert_eq!(loaded["f32"].meta().dtype(), DType::F32);
-        assert_eq!(loaded["f32"].contiguous_values_f32().unwrap(), &[0.5f32, -1.25]);
+        assert_eq!(
+            loaded["f32"].contiguous_values_f32().unwrap(),
+            &[0.5f32, -1.25]
+        );
         assert_eq!(loaded["f16"].meta().dtype(), DType::F16);
-        assert_eq!(loaded["f16"].typed_storage().as_f16().unwrap(), f16_vals.as_slice());
+        assert_eq!(
+            loaded["f16"].typed_storage().as_f16().unwrap(),
+            f16_vals.as_slice()
+        );
         assert_eq!(loaded["bf16"].meta().dtype(), DType::BF16);
-        assert_eq!(loaded["bf16"].typed_storage().as_bf16().unwrap(), bf16_vals.as_slice());
+        assert_eq!(
+            loaded["bf16"].typed_storage().as_bf16().unwrap(),
+            bf16_vals.as_slice()
+        );
     }
 
     #[test]

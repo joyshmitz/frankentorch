@@ -53,14 +53,23 @@ fn main() {
         let od = (pd - kd) / sd + 1;
         let oh = (ph - kh) / sh + 1;
         let ow = (pw - kw) / sw + 1;
-        let padded: Vec<f64> = (0..n * c * pd * ph * pw).map(|i| (i % 911) as f64 * 0.01).collect();
-        let weight: Vec<f64> = (0..c * kd * kh * kw).map(|i| (i % 41) as f64 * 0.1 - 1.5).collect();
+        let padded: Vec<f64> = (0..n * c * pd * ph * pw)
+            .map(|i| (i % 911) as f64 * 0.01)
+            .collect();
+        let weight: Vec<f64> = (0..c * kd * kh * kw)
+            .map(|i| (i % 41) as f64 * 0.1 - 1.5)
+            .collect();
 
         let direct = depthwise_conv3d_forward_f64(
             &padded, &weight, None, n, c, pd, ph, pw, kd, kh, kw, od, oh, ow, sd, sh, sw,
         );
-        let group = per_group(&padded, &weight, n, c, pd, ph, pw, kd, kh, kw, od, oh, ow, sd, sh, sw);
-        let bx = direct.iter().zip(group.iter()).all(|(a, b)| (a - b).abs() < 1e-9);
+        let group = per_group(
+            &padded, &weight, n, c, pd, ph, pw, kd, kh, kw, od, oh, ow, sd, sh, sw,
+        );
+        let bx = direct
+            .iter()
+            .zip(group.iter())
+            .all(|(a, b)| (a - b).abs() < 1e-9);
         eprintln!("[depthwise3d {n}x{c}x{pd}x{ph}x{pw} k3x3x3] within-1e-9: {bx}");
         assert!(bx, "direct depthwise3d diverged from per-group");
 
@@ -81,6 +90,9 @@ fn main() {
             ));
             bn = bn.min(t.elapsed().as_secs_f64() * 1e3);
         }
-        eprintln!("  per-group {bo:.2} ms / direct {bn:.2} ms / speedup {:.2}x\n", bo / bn);
+        eprintln!(
+            "  per-group {bo:.2} ms / direct {bn:.2} ms / speedup {:.2}x\n",
+            bo / bn
+        );
     }
 }

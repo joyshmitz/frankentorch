@@ -20,7 +20,9 @@ fn main() {
     };
     match build(&mut s, x).and_then(|loss| s.tensor_functional_hessian(loss, x)) {
         Ok(h) => {
-            let diag: Vec<f64> = (0..12).map(|i| (h[i * 12 + i] * 1e6).round() / 1e6).collect();
+            let diag: Vec<f64> = (0..12)
+                .map(|i| (h[i * 12 + i] * 1e6).round() / 1e6)
+                .collect();
             println!("linear_sq diag={diag:?}");
             println!("linear_sq H[0,4]={:.6} H[0,8]={:.6}", h[4], h[8]);
         }

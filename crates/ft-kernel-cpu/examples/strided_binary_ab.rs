@@ -13,14 +13,8 @@ use std::time::Instant;
 fn transposed_meta(rows: usize, cols: usize) -> TensorMeta {
     // Logical [cols, rows] transposed view of a row-major [rows, cols] buffer:
     // shape [cols, rows], strides [1, cols] => non-contiguous, hits the strided path.
-    TensorMeta::from_shape_and_strides(
-        vec![cols, rows],
-        vec![1, cols],
-        0,
-        DType::F64,
-        Device::Cpu,
-    )
-    .unwrap()
+    TensorMeta::from_shape_and_strides(vec![cols, rows], vec![1, cols], 0, DType::F64, Device::Cpu)
+        .unwrap()
 }
 
 fn bench(label: &str, rows: usize, cols: usize) {
@@ -31,7 +25,10 @@ fn bench(label: &str, rows: usize, cols: usize) {
 
     let run = || atan2_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).unwrap();
 
-    let pool1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let pool1 = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
     let pooln = rayon::ThreadPoolBuilder::new().build().unwrap();
     let nthreads = pooln.current_num_threads();
 
@@ -54,7 +51,10 @@ fn bench(label: &str, rows: usize, cols: usize) {
         std::hint::black_box(pooln.install(&run));
         new = new.min(t.elapsed().as_secs_f64() * 1e3);
     }
-    println!("{label} [{cols}x{rows}={n}] (1t vs {nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x", old / new);
+    println!(
+        "{label} [{cols}x{rows}={n}] (1t vs {nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x",
+        old / new
+    );
 }
 
 fn bench_unary(label: &str, rows: usize, cols: usize) {
@@ -63,7 +63,10 @@ fn bench_unary(label: &str, rows: usize, cols: usize) {
     let meta = transposed_meta(rows, cols);
     let run = || erf_tensor_contiguous_f64(&x, &meta).unwrap();
 
-    let pool1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let pool1 = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
     let pooln = rayon::ThreadPoolBuilder::new().build().unwrap();
     let nthreads = pooln.current_num_threads();
     let serial = pool1.install(&run);
@@ -83,7 +86,10 @@ fn bench_unary(label: &str, rows: usize, cols: usize) {
         std::hint::black_box(pooln.install(&run));
         new = new.min(t.elapsed().as_secs_f64() * 1e3);
     }
-    println!("{label} [{cols}x{rows}={n}] (1t vs {nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x", old / new);
+    println!(
+        "{label} [{cols}x{rows}={n}] (1t vs {nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x",
+        old / new
+    );
 }
 
 fn main() {

@@ -9,10 +9,18 @@ use rayon::prelude::*;
 use std::time::Instant;
 
 fn serial(incoming: &[f64], x: &[f64]) -> Vec<f64> {
-    incoming.iter().zip(x.iter()).map(|(&g, &xi)| g * xi.cos()).collect()
+    incoming
+        .iter()
+        .zip(x.iter())
+        .map(|(&g, &xi)| g * xi.cos())
+        .collect()
 }
 fn par(incoming: &[f64], x: &[f64]) -> Vec<f64> {
-    incoming.par_iter().zip(x.par_iter()).map(|(&g, &xi)| g * xi.cos()).collect()
+    incoming
+        .par_iter()
+        .zip(x.par_iter())
+        .map(|(&g, &xi)| g * xi.cos())
+        .collect()
 }
 
 fn bench(label: &str, n: usize) {
@@ -36,7 +44,10 @@ fn bench(label: &str, n: usize) {
         std::hint::black_box(par(&incoming, &x));
         new = new.min(t.elapsed().as_secs_f64() * 1e3);
     }
-    println!("{label} n={n} ({nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x", old / new);
+    println!(
+        "{label} n={n} ({nthreads}t, bit-exact OK): serial {old:.3}ms  par {new:.3}ms  =>  {:.2}x",
+        old / new
+    );
 }
 
 fn main() {

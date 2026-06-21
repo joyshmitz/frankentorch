@@ -4,18 +4,23 @@
 use ft_api::FrankenTorchSession;
 use ft_core::ExecutionMode;
 
-type Build = dyn Fn(&mut FrankenTorchSession, ft_autograd::TensorNodeId) -> ft_autograd::TensorNodeId;
+type Build =
+    dyn Fn(&mut FrankenTorchSession, ft_autograd::TensorNodeId) -> ft_autograd::TensorNodeId;
 
 fn loss_at(build: &Build, xv: &[f64]) -> f64 {
     let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-    let x = s.tensor_variable(xv.to_vec(), vec![xv.len()], false).unwrap();
+    let x = s
+        .tensor_variable(xv.to_vec(), vec![xv.len()], false)
+        .unwrap();
     let loss = build(&mut s, x);
     s.tensor_values(loss).unwrap()[0]
 }
 
 fn analytic(build: &Build, xv: &[f64]) -> Vec<f64> {
     let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-    let x = s.tensor_variable(xv.to_vec(), vec![xv.len()], true).unwrap();
+    let x = s
+        .tensor_variable(xv.to_vec(), vec![xv.len()], true)
+        .unwrap();
     let loss = build(&mut s, x);
     let report = s.tensor_backward(loss).unwrap();
     s.tensor_gradient(&report, x).unwrap().to_vec()

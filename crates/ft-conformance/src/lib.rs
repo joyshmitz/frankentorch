@@ -5284,14 +5284,18 @@ fn run_tensor_fft_case(
 
     let actual_output = match case.op.as_str() {
         "fftfreq" => {
-            let n = case.n.ok_or_else(|| format!("fftfreq requires n for '{}'", case.name))?;
+            let n = case
+                .n
+                .ok_or_else(|| format!("fftfreq requires n for '{}'", case.name))?;
             let d = case.d.unwrap_or(1.0);
             session
                 .tensor_fft_fftfreq(n, d)
                 .map_err(|error| format!("fftfreq failed for '{}': {error}", case.name))?
         }
         "rfftfreq" => {
-            let n = case.n.ok_or_else(|| format!("rfftfreq requires n for '{}'", case.name))?;
+            let n = case
+                .n
+                .ok_or_else(|| format!("rfftfreq requires n for '{}'", case.name))?;
             let d = case.d.unwrap_or(1.0);
             session
                 .tensor_fft_rfftfreq(n, d)
@@ -5300,7 +5304,9 @@ fn run_tensor_fft_case(
         "fftshift" => {
             let input = session
                 .tensor_variable(case.input.clone(), case.shape.clone(), false)
-                .map_err(|error| format!("fftshift input build failed for '{}': {error}", case.name))?;
+                .map_err(|error| {
+                    format!("fftshift input build failed for '{}': {error}", case.name)
+                })?;
             session
                 .tensor_fftshift(input, None)
                 .map_err(|error| format!("fftshift failed for '{}': {error}", case.name))?
@@ -5308,7 +5314,9 @@ fn run_tensor_fft_case(
         "ifftshift" => {
             let input = session
                 .tensor_variable(case.input.clone(), case.shape.clone(), false)
-                .map_err(|error| format!("ifftshift input build failed for '{}': {error}", case.name))?;
+                .map_err(|error| {
+                    format!("ifftshift input build failed for '{}': {error}", case.name)
+                })?;
             session
                 .tensor_ifftshift(input, None)
                 .map_err(|error| format!("ifftshift failed for '{}': {error}", case.name))?
@@ -5316,25 +5324,29 @@ fn run_tensor_fft_case(
         "fftshift_ifftshift_roundtrip" => {
             let input = session
                 .tensor_variable(case.input.clone(), case.shape.clone(), false)
-                .map_err(|error| format!("roundtrip input build failed for '{}': {error}", case.name))?;
-            let shifted = session
-                .tensor_fftshift(input, None)
-                .map_err(|error| format!("fftshift in roundtrip failed for '{}': {error}", case.name))?;
-            session
-                .tensor_ifftshift(shifted, None)
-                .map_err(|error| format!("ifftshift in roundtrip failed for '{}': {error}", case.name))?
+                .map_err(|error| {
+                    format!("roundtrip input build failed for '{}': {error}", case.name)
+                })?;
+            let shifted = session.tensor_fftshift(input, None).map_err(|error| {
+                format!("fftshift in roundtrip failed for '{}': {error}", case.name)
+            })?;
+            session.tensor_ifftshift(shifted, None).map_err(|error| {
+                format!("ifftshift in roundtrip failed for '{}': {error}", case.name)
+            })?
         }
         "rfft_irfft_roundtrip" => {
             let input = session
                 .tensor_variable(case.input.clone(), case.shape.clone(), false)
-                .map_err(|error| format!("roundtrip input build failed for '{}': {error}", case.name))?;
+                .map_err(|error| {
+                    format!("roundtrip input build failed for '{}': {error}", case.name)
+                })?;
             let n = case.shape.first().copied();
-            let fft_result = session
-                .tensor_rfft(input, n)
-                .map_err(|error| format!("rfft in roundtrip failed for '{}': {error}", case.name))?;
-            session
-                .tensor_irfft(fft_result, n)
-                .map_err(|error| format!("irfft in roundtrip failed for '{}': {error}", case.name))?
+            let fft_result = session.tensor_rfft(input, n).map_err(|error| {
+                format!("rfft in roundtrip failed for '{}': {error}", case.name)
+            })?;
+            session.tensor_irfft(fft_result, n).map_err(|error| {
+                format!("irfft in roundtrip failed for '{}': {error}", case.name)
+            })?
         }
         _ => {
             return Err(format!(
@@ -5424,16 +5436,30 @@ fn run_tensor_pool_case(
                 .map_err(|error| format!("max_pool2d failed for '{}': {error}", case.name))?
         }
         "adaptive_avg_pool1d" => {
-            let output_size = case.output_size.ok_or_else(|| format!("adaptive_avg_pool1d requires output_size for '{}'", case.name))?;
+            let output_size = case.output_size.ok_or_else(|| {
+                format!(
+                    "adaptive_avg_pool1d requires output_size for '{}'",
+                    case.name
+                )
+            })?;
             session
                 .tensor_adaptive_avg_pool1d(input, output_size)
-                .map_err(|error| format!("adaptive_avg_pool1d failed for '{}': {error}", case.name))?
+                .map_err(|error| {
+                    format!("adaptive_avg_pool1d failed for '{}': {error}", case.name)
+                })?
         }
         "adaptive_max_pool1d" => {
-            let output_size = case.output_size.ok_or_else(|| format!("adaptive_max_pool1d requires output_size for '{}'", case.name))?;
+            let output_size = case.output_size.ok_or_else(|| {
+                format!(
+                    "adaptive_max_pool1d requires output_size for '{}'",
+                    case.name
+                )
+            })?;
             let (output, _indices) = session
                 .tensor_adaptive_max_pool1d(input, output_size)
-                .map_err(|error| format!("adaptive_max_pool1d failed for '{}': {error}", case.name))?;
+                .map_err(|error| {
+                    format!("adaptive_max_pool1d failed for '{}': {error}", case.name)
+                })?;
             output
         }
         _ => {
@@ -5447,7 +5473,8 @@ fn run_tensor_pool_case(
     let actual_values = session
         .tensor_values(out)
         .map_err(|error| format!("tensor value read failed for '{}': {error}", case.name))?;
-    let actual_shape = session.tensor_shape(out)
+    let actual_shape = session
+        .tensor_shape(out)
         .map_err(|error| format!("tensor shape read failed for '{}': {error}", case.name))?;
 
     let tolerance = case.tolerance.unwrap_or(1e-12);
@@ -5457,7 +5484,11 @@ fn run_tensor_pool_case(
         tolerance,
     );
     let shape_ok = actual_shape == case.expected_shape;
-    let outcome = if output_ok && shape_ok { "pass" } else { "fail" };
+    let outcome = if output_ok && shape_ok {
+        "pass"
+    } else {
+        "fail"
+    };
     let reason_code = if outcome == "pass" {
         "tensor_pool_parity_ok"
     } else {
@@ -5510,9 +5541,11 @@ fn run_tensor_conv_case(
         .map_err(|error| format!("conv weight build failed for '{}': {error}", case.name))?;
     let bias = if let Some(ref b) = case.bias {
         let out_channels = case.weight_shape[0];
-        Some(session
-            .tensor_variable(b.clone(), vec![out_channels], false)
-            .map_err(|error| format!("conv bias build failed for '{}': {error}", case.name))?)
+        Some(
+            session
+                .tensor_variable(b.clone(), vec![out_channels], false)
+                .map_err(|error| format!("conv bias build failed for '{}': {error}", case.name))?,
+        )
     } else {
         None
     };
@@ -5539,7 +5572,8 @@ fn run_tensor_conv_case(
     let actual_values = session
         .tensor_values(out)
         .map_err(|error| format!("tensor value read failed for '{}': {error}", case.name))?;
-    let actual_shape = session.tensor_shape(out)
+    let actual_shape = session
+        .tensor_shape(out)
         .map_err(|error| format!("tensor shape read failed for '{}': {error}", case.name))?;
 
     let tolerance = case.tolerance.unwrap_or(1e-10);
@@ -5549,7 +5583,11 @@ fn run_tensor_conv_case(
         tolerance,
     );
     let shape_ok = actual_shape == case.expected_shape;
-    let outcome = if output_ok && shape_ok { "pass" } else { "fail" };
+    let outcome = if output_ok && shape_ok {
+        "pass"
+    } else {
+        "fail"
+    };
     let reason_code = if outcome == "pass" {
         "tensor_conv_parity_ok"
     } else {
@@ -27349,12 +27387,17 @@ print(json.dumps({"results": out}, sort_keys=True))
 
         let oracle = super::run_legacy_oracle_script(&config, script, &payload)
             .expect("torch MaxPool2d oracle should run");
-        let results = oracle.get("results").and_then(Value::as_array).expect("results");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("results");
         assert_eq!(results.len(), cases.len());
 
         for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
             let (kernel, stride, ref input_shape) = *case;
-            let expected_shape: Vec<usize> = oracle_entry.get("shape").and_then(Value::as_array)
+            let expected_shape: Vec<usize> = oracle_entry
+                .get("shape")
+                .and_then(Value::as_array)
                 .expect("oracle shape array")
                 .iter()
                 .map(|v| usize::try_from(v.as_u64().expect("u64")).expect("usize"))
@@ -27362,13 +27405,16 @@ print(json.dumps({"results": out}, sort_keys=True))
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
             let pool = MaxPool2d::new(kernel, stride);
             let numel: usize = input_shape.iter().copied().product();
-            let x = session.tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+            let x = session
+                .tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
                 .expect("input tensor");
-            let out = pool.forward(&mut session, x)
+            let out = pool
+                .forward(&mut session, x)
                 .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
             let out_shape = session.tensor_shape(out).expect("output shape");
             assert_eq!(
-                out_shape, expected_shape.as_slice(),
+                out_shape,
+                expected_shape.as_slice(),
                 "case {i}: MaxPool2d F32 shape diverges"
             );
         }
@@ -27394,9 +27440,11 @@ print(json.dumps({"results": out}, sort_keys=True))
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
             let pool = AdaptiveAvgPool2d::new(*output_size);
             let numel: usize = input_shape.iter().copied().product();
-            let x = session.tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+            let x = session
+                .tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
                 .expect("input tensor");
-            let out = pool.forward(&mut session, x)
+            let out = pool
+                .forward(&mut session, x)
                 .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
             let out_shape = session.tensor_shape(out).expect("output shape");
             let expected = vec![input_shape[0], input_shape[1], output_size.0, output_size.1];
@@ -27468,28 +27516,44 @@ print(json.dumps({"results": out}, sort_keys=True))
 
         let oracle = super::run_legacy_oracle_script(&config, script, &payload)
             .expect("torch ConvTranspose1d oracle should run");
-        let results = oracle.get("results").and_then(Value::as_array).expect("results");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("results");
         assert_eq!(results.len(), cases.len());
 
         for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
             let (in_ch, out_ch, kernel, stride, padding, output_padding, ref input_shape) = *case;
-            let expected_shape: Vec<usize> = oracle_entry.get("shape").and_then(Value::as_array)
+            let expected_shape: Vec<usize> = oracle_entry
+                .get("shape")
+                .and_then(Value::as_array)
                 .expect("oracle shape array")
                 .iter()
                 .map(|v| usize::try_from(v.as_u64().expect("u64")).expect("usize"))
                 .collect();
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
             let deconv = ConvTranspose1d::new(
-                &mut session, in_ch, out_ch, kernel, stride, padding, output_padding, false,
-            ).expect("ConvTranspose1d::new should succeed");
+                &mut session,
+                in_ch,
+                out_ch,
+                kernel,
+                stride,
+                padding,
+                output_padding,
+                false,
+            )
+            .expect("ConvTranspose1d::new should succeed");
             let numel: usize = input_shape.iter().copied().product();
-            let x = session.tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+            let x = session
+                .tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
                 .expect("input tensor");
-            let out = deconv.forward(&mut session, x)
+            let out = deconv
+                .forward(&mut session, x)
                 .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
             let out_shape = session.tensor_shape(out).expect("output shape");
             assert_eq!(
-                out_shape, expected_shape.as_slice(),
+                out_shape,
+                expected_shape.as_slice(),
                 "case {i}: ConvTranspose1d F32 shape diverges"
             );
         }
@@ -27540,8 +27604,24 @@ print(json.dumps({"results": out}, sort_keys=True))
 "#;
 
         let cases = [
-            (1, 1, (3, 3, 3), (1, 1, 1), (1, 1, 1), (0, 0, 0), vec![1, 1, 4, 4, 4]),
-            (2, 3, (3, 3, 3), (2, 2, 2), (1, 1, 1), (0, 0, 0), vec![1, 2, 3, 3, 3]),
+            (
+                1,
+                1,
+                (3, 3, 3),
+                (1, 1, 1),
+                (1, 1, 1),
+                (0, 0, 0),
+                vec![1, 1, 4, 4, 4],
+            ),
+            (
+                2,
+                3,
+                (3, 3, 3),
+                (2, 2, 2),
+                (1, 1, 1),
+                (0, 0, 0),
+                vec![1, 2, 3, 3, 3],
+            ),
         ];
 
         let payload = json!({
@@ -27557,28 +27637,44 @@ print(json.dumps({"results": out}, sort_keys=True))
 
         let oracle = super::run_legacy_oracle_script(&config, script, &payload)
             .expect("torch ConvTranspose3d oracle should run");
-        let results = oracle.get("results").and_then(Value::as_array).expect("results");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("results");
         assert_eq!(results.len(), cases.len());
 
         for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
             let (in_ch, out_ch, kernel, stride, padding, output_padding, ref input_shape) = *case;
-            let expected_shape: Vec<usize> = oracle_entry.get("shape").and_then(Value::as_array)
+            let expected_shape: Vec<usize> = oracle_entry
+                .get("shape")
+                .and_then(Value::as_array)
                 .expect("oracle shape array")
                 .iter()
                 .map(|v| usize::try_from(v.as_u64().expect("u64")).expect("usize"))
                 .collect();
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
             let deconv = ConvTranspose3d::new(
-                &mut session, in_ch, out_ch, kernel, stride, padding, output_padding, false,
-            ).expect("ConvTranspose3d::new should succeed");
+                &mut session,
+                in_ch,
+                out_ch,
+                kernel,
+                stride,
+                padding,
+                output_padding,
+                false,
+            )
+            .expect("ConvTranspose3d::new should succeed");
             let numel: usize = input_shape.iter().copied().product();
-            let x = session.tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+            let x = session
+                .tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
                 .expect("input tensor");
-            let out = deconv.forward(&mut session, x)
+            let out = deconv
+                .forward(&mut session, x)
                 .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
             let out_shape = session.tensor_shape(out).expect("output shape");
             assert_eq!(
-                out_shape, expected_shape.as_slice(),
+                out_shape,
+                expected_shape.as_slice(),
                 "case {i}: ConvTranspose3d F32 shape diverges"
             );
         }
@@ -27642,12 +27738,17 @@ print(json.dumps({"results": out}, sort_keys=True))
 
         let oracle = super::run_legacy_oracle_script(&config, script, &payload)
             .expect("torch LayerNorm oracle should run");
-        let results = oracle.get("results").and_then(Value::as_array).expect("results");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("results");
         assert_eq!(results.len(), cases.len());
 
         for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
             let (normalized_shape, input_shape) = case;
-            let expected_shape: Vec<usize> = oracle_entry.get("shape").and_then(Value::as_array)
+            let expected_shape: Vec<usize> = oracle_entry
+                .get("shape")
+                .and_then(Value::as_array)
                 .expect("oracle shape array")
                 .iter()
                 .map(|v| usize::try_from(v.as_u64().expect("u64")).expect("usize"))
@@ -27656,13 +27757,16 @@ print(json.dumps({"results": out}, sort_keys=True))
             let ln = LayerNorm::new(&mut session, normalized_shape.clone(), 1e-5)
                 .expect("LayerNorm::new should succeed");
             let numel: usize = input_shape.iter().copied().product();
-            let x = session.tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+            let x = session
+                .tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
                 .expect("input tensor");
-            let out = ln.forward(&mut session, x)
+            let out = ln
+                .forward(&mut session, x)
                 .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
             let out_shape = session.tensor_shape(out).expect("output shape");
             assert_eq!(
-                out_shape, expected_shape.as_slice(),
+                out_shape,
+                expected_shape.as_slice(),
                 "case {i}: LayerNorm F32 shape diverges (normalized_shape={normalized_shape:?}, input={input_shape:?})"
             );
         }
@@ -27725,12 +27829,17 @@ print(json.dumps({"results": out}, sort_keys=True))
 
         let oracle = super::run_legacy_oracle_script(&config, script, &payload)
             .expect("torch Conv1d oracle should run");
-        let results = oracle.get("results").and_then(Value::as_array).expect("results");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("results");
         assert_eq!(results.len(), cases.len());
 
         for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
             let (in_ch, out_ch, kernel, stride, padding, ref input_shape) = *case;
-            let expected_shape: Vec<usize> = oracle_entry.get("shape").and_then(Value::as_array)
+            let expected_shape: Vec<usize> = oracle_entry
+                .get("shape")
+                .and_then(Value::as_array)
                 .expect("oracle shape array")
                 .iter()
                 .map(|v| usize::try_from(v.as_u64().expect("u64")).expect("usize"))
@@ -27739,13 +27848,16 @@ print(json.dumps({"results": out}, sort_keys=True))
             let conv = Conv1d::new(&mut session, in_ch, out_ch, kernel, stride, padding, false)
                 .expect("Conv1d::new should succeed");
             let numel: usize = input_shape.iter().copied().product();
-            let x = session.tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+            let x = session
+                .tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
                 .expect("input tensor");
-            let out = conv.forward(&mut session, x)
+            let out = conv
+                .forward(&mut session, x)
                 .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
             let out_shape = session.tensor_shape(out).expect("output shape");
             assert_eq!(
-                out_shape, expected_shape.as_slice(),
+                out_shape,
+                expected_shape.as_slice(),
                 "case {i}: Conv1d F32 shape diverges (in_ch={in_ch}, out_ch={out_ch}, kernel={kernel}, stride={stride}, padding={padding}, input={input_shape:?})"
             );
         }
@@ -27813,12 +27925,17 @@ print(json.dumps({"results": out}, sort_keys=True))
 
         let oracle = super::run_legacy_oracle_script(&config, script, &payload)
             .expect("torch Conv3d oracle should run");
-        let results = oracle.get("results").and_then(Value::as_array).expect("results");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("results");
         assert_eq!(results.len(), cases.len());
 
         for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
             let (in_ch, out_ch, kernel, stride, padding, ref input_shape) = *case;
-            let expected_shape: Vec<usize> = oracle_entry.get("shape").and_then(Value::as_array)
+            let expected_shape: Vec<usize> = oracle_entry
+                .get("shape")
+                .and_then(Value::as_array)
                 .expect("oracle shape array")
                 .iter()
                 .map(|v| usize::try_from(v.as_u64().expect("u64")).expect("usize"))
@@ -27827,13 +27944,16 @@ print(json.dumps({"results": out}, sort_keys=True))
             let conv = Conv3d::new(&mut session, in_ch, out_ch, kernel, stride, padding, false)
                 .expect("Conv3d::new should succeed");
             let numel: usize = input_shape.iter().copied().product();
-            let x = session.tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+            let x = session
+                .tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
                 .expect("input tensor");
-            let out = conv.forward(&mut session, x)
+            let out = conv
+                .forward(&mut session, x)
                 .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
             let out_shape = session.tensor_shape(out).expect("output shape");
             assert_eq!(
-                out_shape, expected_shape.as_slice(),
+                out_shape,
+                expected_shape.as_slice(),
                 "case {i}: Conv3d F32 shape diverges"
             );
         }
@@ -27924,7 +28044,11 @@ print(json.dumps({"results": out}, sort_keys=True))
             .get("results")
             .and_then(Value::as_array)
             .expect("oracle Conv2d results");
-        assert_eq!(results.len(), cases.len(), "oracle returned wrong number of results");
+        assert_eq!(
+            results.len(),
+            cases.len(),
+            "oracle returned wrong number of results"
+        );
 
         for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
             let (in_ch, out_ch, kernel, stride, padding, ref input_shape) = *case;
@@ -27940,16 +28064,8 @@ print(json.dumps({"results": out}, sort_keys=True))
                 .collect();
 
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-            let conv = Conv2d::new(
-                &mut session,
-                in_ch,
-                out_ch,
-                kernel,
-                stride,
-                padding,
-                false,
-            )
-            .expect("Conv2d::new should succeed");
+            let conv = Conv2d::new(&mut session, in_ch, out_ch, kernel, stride, padding, false)
+                .expect("Conv2d::new should succeed");
 
             let numel: usize = input_shape.iter().copied().product();
             let x = session
@@ -28669,8 +28785,10 @@ print(json.dumps({"results": results}, sort_keys=True))
                 continue;
             }
             if expected.is_infinite() {
-                assert!(got.is_infinite() && got.signum() == expected.signum(),
-                    "case {i} (a={av}, b={bv}): expected {expected}, got {got}");
+                assert!(
+                    got.is_infinite() && got.signum() == expected.signum(),
+                    "case {i} (a={av}, b={bv}): expected {expected}, got {got}"
+                );
                 continue;
             }
             let diff = (got - expected).abs();
@@ -28889,7 +29007,9 @@ print(json.dumps({"results": results}, sort_keys=True))
             let input = decode(case);
             let expected = decode(expected_value);
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-            let xt = session.tensor_variable(vec![input], vec![1], false).unwrap();
+            let xt = session
+                .tensor_variable(vec![input], vec![1], false)
+                .unwrap();
             let out = session.tensor_special_ndtri(xt).unwrap();
             let got = session.tensor_values(out).expect("got")[0];
 
@@ -32459,7 +32579,9 @@ print(json.dumps({"erf": erf_out, "erfc": erfc_out}))
             .map(|s| s.success())
             .unwrap_or(false);
         if !python_available {
-            eprintln!("torch_fft_numpy_subprocess_conformance: python3/numpy not available, skipping");
+            eprintln!(
+                "torch_fft_numpy_subprocess_conformance: python3/numpy not available, skipping"
+            );
             return;
         }
 
@@ -32516,10 +32638,22 @@ print(json.dumps({"results": out}))
             }
         };
         let results = response.get("results").expect("results");
-        let np_fft = results.get("fft").and_then(|v| v.as_array()).expect("fft results");
-        let np_ifft = results.get("ifft").and_then(|v| v.as_array()).expect("ifft results");
-        let np_rfft = results.get("rfft").and_then(|v| v.as_array()).expect("rfft results");
-        let np_irfft = results.get("irfft").and_then(|v| v.as_array()).expect("irfft results");
+        let np_fft = results
+            .get("fft")
+            .and_then(|v| v.as_array())
+            .expect("fft results");
+        let np_ifft = results
+            .get("ifft")
+            .and_then(|v| v.as_array())
+            .expect("ifft results");
+        let np_rfft = results
+            .get("rfft")
+            .and_then(|v| v.as_array())
+            .expect("rfft results");
+        let np_irfft = results
+            .get("irfft")
+            .and_then(|v| v.as_array())
+            .expect("irfft results");
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let mut mismatches = Vec::<String>::new();
@@ -32539,7 +32673,10 @@ print(json.dumps({"results": out}))
             // previous N^2 * EPSILON post-hpo6. Non-power-of-2 N
             // still uses the naive O(N^2) fallback so retain the
             // N^2 bound on that path. frankentorch-2mfg.
-            let abs_max = input.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs())).max(1.0);
+            let abs_max = input
+                .iter()
+                .fold(0.0_f64, |acc, &v| acc.max(v.abs()))
+                .max(1.0);
             let bound = if n.is_power_of_two() && n > 1 {
                 (n as f64) * (n as f64).log2() * 64.0 * f64::EPSILON * abs_max + 1e-12
             } else {
@@ -32547,7 +32684,9 @@ print(json.dumps({"results": out}))
             };
 
             // fft
-            let x = session.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let x = session
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("x");
             let freq = session.tensor_fft(x, None).expect("fft");
             let re_view = session.tensor_real(freq).expect("real");
             let im_view = session.tensor_imag(freq).expect("imag");
@@ -32566,7 +32705,9 @@ print(json.dumps({"results": out}))
             }
 
             // rfft (output length n/2 + 1)
-            let x2 = session.tensor_variable(input.clone(), vec![n], false).expect("x2");
+            let x2 = session
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("x2");
             let rfreq = session.tensor_rfft(x2, None).expect("rfft");
             let re_r = session.tensor_real(rfreq).expect("re_r");
             let im_r = session.tensor_imag(rfreq).expect("im_r");
@@ -32577,8 +32718,7 @@ print(json.dumps({"results": out}))
             assert_eq!(re_r_vals.len(), n / 2 + 1);
             for k in 0..(n / 2 + 1) {
                 let (want_re, want_im) = decode_complex(&np_rcase[k]);
-                if (re_r_vals[k] - want_re).abs() > bound
-                    || (im_r_vals[k] - want_im).abs() > bound
+                if (re_r_vals[k] - want_re).abs() > bound || (im_r_vals[k] - want_im).abs() > bound
                 {
                     mismatches.push(format!(
                         "rfft case={case_idx} k={k}: got ({}, {}), numpy ({}, {})",
@@ -32590,7 +32730,9 @@ print(json.dumps({"results": out}))
             // ifft: round-trip via fft to obtain a complex input, then
             // run ifft. Compare to numpy's ifft of the same fft output
             // (so both are inverse-DFT of fft(input)).
-            let x3 = session.tensor_variable(input.clone(), vec![n], false).expect("x3");
+            let x3 = session
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("x3");
             let freq3 = session.tensor_fft(x3, None).expect("fft3");
             let inv = session.tensor_ifft(freq3, None).expect("ifft");
             let re_inv = session.tensor_real(inv).expect("re_inv");
@@ -32612,7 +32754,9 @@ print(json.dumps({"results": out}))
 
             // irfft: round-trip via rfft then irfft. Compare to numpy
             // irfft(rfft(input)).
-            let x4 = session.tensor_variable(input.clone(), vec![n], false).expect("x4");
+            let x4 = session
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("x4");
             let rf = session.tensor_rfft(x4, None).expect("rfft4");
             let irfft_out = session.tensor_irfft(rf, Some(n)).expect("irfft");
             let irfft_vals = session.tensor_values(irfft_out).expect("irfft vals");
@@ -32658,7 +32802,9 @@ print(json.dumps({"results": out}))
             .map(|s| s.success())
             .unwrap_or(false);
         if !python_available {
-            eprintln!("torch_diag_embed_numpy_subprocess_conformance: python3/numpy not available, skipping");
+            eprintln!(
+                "torch_diag_embed_numpy_subprocess_conformance: python3/numpy not available, skipping"
+            );
             return;
         }
 
@@ -32705,13 +32851,18 @@ print(json.dumps({"results": out}))
                 return;
             }
         };
-        let results = response.get("results").and_then(|v| v.as_array()).expect("results");
+        let results = response
+            .get("results")
+            .and_then(|v| v.as_array())
+            .expect("results");
 
         let mut mismatches = Vec::<String>::new();
         for (case_idx, (input, offset)) in cases.iter().enumerate() {
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
             let n = input.len();
-            let x = session.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let x = session
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("x");
             let embedded = match session.tensor_diag_embed(x, *offset) {
                 Ok(t) => t,
                 Err(_) => {
@@ -35614,9 +35765,7 @@ print(json.dumps({"xlog1py": out}))
             .map(|s| s.success())
             .unwrap_or(false);
         if !python_available {
-            eprintln!(
-                "torch_hypot_libm_subprocess_conformance: python3 not available, skipping"
-            );
+            eprintln!("torch_hypot_libm_subprocess_conformance: python3 not available, skipping");
             return;
         }
 

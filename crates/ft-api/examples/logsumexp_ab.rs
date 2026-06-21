@@ -55,7 +55,9 @@ fn main() {
     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
     let new = pn.install(|| {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let v = s.tensor_variable(data.clone(), vec![rows, cols], false).unwrap();
+        let v = s
+            .tensor_variable(data.clone(), vec![rows, cols], false)
+            .unwrap();
         let r = s.tensor_logsumexp(v, 1).unwrap();
         let got = s.tensor_values(r).unwrap();
         assert_eq!(got.len(), want.len());
@@ -64,7 +66,9 @@ fn main() {
         }
         let mut best = f64::INFINITY;
         for _ in 0..15 {
-            let v = s.tensor_variable(data.clone(), vec![rows, cols], false).unwrap();
+            let v = s
+                .tensor_variable(data.clone(), vec![rows, cols], false)
+                .unwrap();
             let t = Instant::now();
             let r = s.tensor_logsumexp(v, 1).unwrap();
             std::hint::black_box(r);

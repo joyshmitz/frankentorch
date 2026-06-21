@@ -12,7 +12,10 @@ fn run_best(
     out: &[f64],
     meta: &TensorMeta,
 ) -> (f64, Vec<f64>) {
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .unwrap();
     pool.install(|| {
         let r = cumprod_backward_tensor_contiguous_f64(go, inp, out, meta, 1).unwrap();
         let mut best = f64::INFINITY;
@@ -31,7 +34,9 @@ fn main() {
     let (rows, cols) = (8192usize, 1024);
     let n = rows * cols;
     // Non-zero inputs near 1.0 so cumprod stays finite (common, non-zero branch).
-    let inp: Vec<f64> = (0..n).map(|i| 1.0 + (((i % 17) as f64) - 8.0) * 1e-3).collect();
+    let inp: Vec<f64> = (0..n)
+        .map(|i| 1.0 + (((i % 17) as f64) - 8.0) * 1e-3)
+        .collect();
     let meta = TensorMeta::from_shape(vec![rows, cols], DType::F64, Device::Cpu);
     let out = cumprod_tensor_contiguous_f64(&inp, &meta, 1).unwrap();
     let go: Vec<f64> = (0..n).map(|i| 1.0 + ((i % 13) as f64) * 1e-3).collect();

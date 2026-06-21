@@ -28,7 +28,10 @@ fn run_once(seq_len: usize, n_queries: usize, reps: usize) -> f64 {
 fn main() {
     let nthreads = rayon::current_num_threads();
     let (seq_len, n_queries) = (4096usize, 262_144usize);
-    let p1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let p1 = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
     let old = p1.install(|| run_once(seq_len, n_queries, 30));
     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
     let new = pn.install(|| run_once(seq_len, n_queries, 30));

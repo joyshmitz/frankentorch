@@ -11,9 +11,15 @@ fn main() {
         let (kh, kw, sh, sw) = (3usize, 3, 1, 1);
         let oh = (ph - kh) / sh + 1;
         let ow = (pw - kw) / sw + 1;
-        let padded: Vec<f32> = (0..n * c * ph * pw).map(|i| (i % 877) as f32 * 0.01).collect();
-        let weight: Vec<f32> = (0..c * kh * kw).map(|i| (i % 47) as f32 * 0.1 - 2.0).collect();
-        let dout: Vec<f32> = (0..n * c * oh * ow).map(|i| (i % 53) as f32 * 0.05 - 1.3).collect();
+        let padded: Vec<f32> = (0..n * c * ph * pw)
+            .map(|i| (i % 877) as f32 * 0.01)
+            .collect();
+        let weight: Vec<f32> = (0..c * kh * kw)
+            .map(|i| (i % 47) as f32 * 0.1 - 2.0)
+            .collect();
+        let dout: Vec<f32> = (0..n * c * oh * ow)
+            .map(|i| (i % 53) as f32 * 0.05 - 1.3)
+            .collect();
         let inplane = ph * pw;
         let outplane = oh * ow;
         let wsz = kh * kw;
@@ -59,6 +65,9 @@ fn main() {
             ));
             bn = bn.min(t.elapsed().as_secs_f64() * 1e3);
         }
-        eprintln!("[dw-bwd-f32 {n}x{c}x{ph}x{pw}] per-channel {bo:.2} ms / direct {bn:.2} ms / speedup {:.2}x", bo / bn);
+        eprintln!(
+            "[dw-bwd-f32 {n}x{c}x{ph}x{pw}] per-channel {bo:.2} ms / direct {bn:.2} ms / speedup {:.2}x",
+            bo / bn
+        );
     }
 }

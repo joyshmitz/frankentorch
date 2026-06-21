@@ -12,7 +12,12 @@ fn gp(
     wv: Vec<f64>,
     ws: Vec<usize>,
     bv: Vec<f64>,
-    f: impl Fn(&mut FrankenTorchSession, TensorNodeId, TensorNodeId, TensorNodeId) -> Result<TensorNodeId, AutogradError>,
+    f: impl Fn(
+        &mut FrankenTorchSession,
+        TensorNodeId,
+        TensorNodeId,
+        TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError>,
 ) {
     let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
     let x0 = s.tensor_variable(xv, xs, true).unwrap();

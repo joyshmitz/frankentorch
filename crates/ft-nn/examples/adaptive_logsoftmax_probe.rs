@@ -4,9 +4,9 @@
 //! `torch.nn.AdaptiveLogSoftmaxWithLoss` with the SAME weights and compares
 //! forward output/loss, log_prob, and predict.
 //!   cargo run -q -p ft-nn --example adaptive_logsoftmax_probe
-use ft_nn::{AdaptiveLogSoftmaxWithLoss, Module};
 use ft_api::FrankenTorchSession;
 use ft_core::ExecutionMode;
+use ft_nn::{AdaptiveLogSoftmaxWithLoss, Module};
 
 fn line(key: &str, v: &[f64]) {
     let s: Vec<String> = v.iter().map(|x| format!("{x:.17e}")).collect();
@@ -29,11 +29,19 @@ fn main() {
     line("head_bias", &hb);
     // Tail cluster projections.
     for (i, (l0, l1)) in alswl.tail().iter().enumerate() {
-        line(&format!("tail{i}_l0"), &s.tensor_values(l0.weight()).unwrap());
-        line(&format!("tail{i}_l1"), &s.tensor_values(l1.weight()).unwrap());
+        line(
+            &format!("tail{i}_l0"),
+            &s.tensor_values(l0.weight()).unwrap(),
+        );
+        line(
+            &format!("tail{i}_l1"),
+            &s.tensor_values(l1.weight()).unwrap(),
+        );
     }
 
-    let xdata: Vec<f64> = (0..n * in_f).map(|i| (i as f64 % 7.0) * 0.13 - 0.4).collect();
+    let xdata: Vec<f64> = (0..n * in_f)
+        .map(|i| (i as f64 % 7.0) * 0.13 - 0.4)
+        .collect();
     line("input", &xdata);
     let tdata = vec![0.0, 2.0, 3.0, 5.0, 6.0, 9.0];
     line("target", &tdata);

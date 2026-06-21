@@ -25,7 +25,10 @@ fn run_once(numel: usize, n_classes: usize, reps: usize) -> f64 {
 fn main() {
     let nthreads = rayon::current_num_threads();
     let (numel, n_classes) = (4_000_000usize, 1000usize);
-    let p1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let p1 = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
     let old = p1.install(|| run_once(numel, n_classes, 20));
     let pn = rayon::ThreadPoolBuilder::new().build().unwrap();
     let new = pn.install(|| run_once(numel, n_classes, 20));

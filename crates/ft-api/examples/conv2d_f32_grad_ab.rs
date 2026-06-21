@@ -11,8 +11,12 @@ use std::time::Instant;
 fn main() {
     let (n, cin, cout, ih, iw, k) = (8usize, 64usize, 64usize, 30usize, 30usize, 3usize);
     let (sh, sw, ph, pw) = (1usize, 1usize, 1usize, 1usize);
-    let xv: Vec<f32> = (0..n * cin * ih * iw).map(|i| (i % 877) as f32 * 0.01).collect();
-    let wv: Vec<f32> = (0..cout * cin * k * k).map(|i| (i % 47) as f32 * 0.1 - 2.0).collect();
+    let xv: Vec<f32> = (0..n * cin * ih * iw)
+        .map(|i| (i % 877) as f32 * 0.01)
+        .collect();
+    let wv: Vec<f32> = (0..cout * cin * k * k)
+        .map(|i| (i % 47) as f32 * 0.1 - 2.0)
+        .collect();
     let oh = (ih + 2 * ph - k) / sh + 1;
     let ow = (iw + 2 * pw - k) / sw + 1;
     let patch_w = cin * k * k;
@@ -21,8 +25,12 @@ fn main() {
     // NEW: fused fast path.
     let new_step = || {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable_f32(xv.clone(), vec![n, cin, ih, iw], true).unwrap();
-        let w = s.tensor_variable_f32(wv.clone(), vec![cout, cin, k, k], true).unwrap();
+        let x = s
+            .tensor_variable_f32(xv.clone(), vec![n, cin, ih, iw], true)
+            .unwrap();
+        let w = s
+            .tensor_variable_f32(wv.clone(), vec![cout, cin, k, k], true)
+            .unwrap();
         let o = s.functional_conv2d(x, w, None, (sh, sw), (ph, pw)).unwrap();
         let l = s.tensor_sum(o).unwrap();
         s.tensor_backward(l).unwrap();
@@ -30,8 +38,12 @@ fn main() {
     // OLD: manual composed conv2d (unfold+permute+reshape+matmul).
     let old_step = || {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable_f32(xv.clone(), vec![n, cin, ih, iw], true).unwrap();
-        let w = s.tensor_variable_f32(wv.clone(), vec![cout, cin, k, k], true).unwrap();
+        let x = s
+            .tensor_variable_f32(xv.clone(), vec![n, cin, ih, iw], true)
+            .unwrap();
+        let w = s
+            .tensor_variable_f32(wv.clone(), vec![cout, cin, k, k], true)
+            .unwrap();
         let padded = s.tensor_pad(x, &[pw, pw, ph, ph], 0.0).unwrap();
         let uh = s.tensor_unfold(padded, 2, k, sh).unwrap();
         let uhw = s.tensor_unfold(uh, 3, k, sw).unwrap();
@@ -63,5 +75,8 @@ fn main() {
         new_step();
         bn = bn.min(t.elapsed().as_secs_f64() * 1e3);
     }
-    eprintln!("conv2d f32 fwd+bwd [{n},{cin}->{cout},{ih}x{iw}] k{k}: composed {bo:.2} ms / fused {bn:.2} ms / speedup {:.2}x", bo / bn);
+    eprintln!(
+        "conv2d f32 fwd+bwd [{n},{cin}->{cout},{ih}x{iw}] k{k}: composed {bo:.2} ms / fused {bn:.2} ms / speedup {:.2}x",
+        bo / bn
+    );
 }

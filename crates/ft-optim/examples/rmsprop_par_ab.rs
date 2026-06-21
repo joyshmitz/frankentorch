@@ -28,7 +28,10 @@ fn time_step(pool: &ThreadPool, n: usize) -> f64 {
 }
 
 fn main() {
-    let pool1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let pool1 = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
     let pooln = rayon::ThreadPoolBuilder::new().build().unwrap();
     let nt = pooln.current_num_threads();
     let n = 1usize << 21; // 2M params

@@ -71,7 +71,10 @@ fn main() {
     let bm = TensorMeta::from_shape(vec![k, n], DType::F64, Device::Cpu);
 
     // Force single-threaded for a per-core comparison.
-    let pool1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let pool1 = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
 
     let bench = |f: &dyn Fn() -> Vec<f64>| -> f64 {
         let mut best = f64::INFINITY;
@@ -91,11 +94,24 @@ fn main() {
     // correctness sanity vs naive (tolerance)
     let rn = naive(&a, &b, m, k, n);
     let rb = blocked(&a, &b, m, k, n);
-    let maxdiff = rn.iter().zip(rb.iter()).map(|(x, y)| (x - y).abs()).fold(0.0, f64::max);
+    let maxdiff = rn
+        .iter()
+        .zip(rb.iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f64::max);
 
     eprintln!("gemm 1024^3 (1 core):");
-    eprintln!("  naive triple loop : {bn:.1} ms  {:.1} GF/s", gflops(m, k, n, bn));
-    eprintln!("  blocked 4x8       : {bb:.1} ms  {:.1} GF/s  (blocked-vs-naive maxdiff {maxdiff:.2e})", gflops(m, k, n, bb));
-    eprintln!("  matrixmultiply    : {bp:.1} ms  {:.1} GF/s", gflops(m, k, n, bp));
+    eprintln!(
+        "  naive triple loop : {bn:.1} ms  {:.1} GF/s",
+        gflops(m, k, n, bn)
+    );
+    eprintln!(
+        "  blocked 4x8       : {bb:.1} ms  {:.1} GF/s  (blocked-vs-naive maxdiff {maxdiff:.2e})",
+        gflops(m, k, n, bb)
+    );
+    eprintln!(
+        "  matrixmultiply    : {bp:.1} ms  {:.1} GF/s",
+        gflops(m, k, n, bp)
+    );
     eprintln!("  blocked/matrixmultiply per-core ratio: {:.2}x", bp / bb);
 }

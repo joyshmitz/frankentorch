@@ -8,14 +8,15 @@ use ft_conformance::{
     HarnessConfig, run_autograd_scheduler_conformance, run_dispatch_conformance,
     run_nn_state_conformance, run_op_schema_conformance, run_optimizer_conformance,
     run_scalar_conformance, run_serialization_conformance, run_smoke,
-    run_tensor_advanced_conformance, run_tensor_comparison_conformance, run_tensor_conv_conformance,
-    run_tensor_einsum_conformance, run_tensor_elementwise_cmp_conformance,
-    run_tensor_factory_conformance, run_tensor_fft_conformance, run_tensor_indexing_conformance,
-    run_tensor_init_conformance, run_tensor_inplace_conformance, run_tensor_join_conformance,
-    run_tensor_linalg_conformance, run_tensor_loss_conformance, run_tensor_meta_conformance,
-    run_tensor_normalize_conformance, run_tensor_pool_conformance, run_tensor_random_conformance,
-    run_tensor_reduction_conformance, run_tensor_scan_conformance, run_tensor_searchsorted_conformance,
-    run_tensor_shape_conformance, run_tensor_sort_conformance, run_tensor_unary_conformance,
+    run_tensor_advanced_conformance, run_tensor_comparison_conformance,
+    run_tensor_conv_conformance, run_tensor_einsum_conformance,
+    run_tensor_elementwise_cmp_conformance, run_tensor_factory_conformance,
+    run_tensor_fft_conformance, run_tensor_indexing_conformance, run_tensor_init_conformance,
+    run_tensor_inplace_conformance, run_tensor_join_conformance, run_tensor_linalg_conformance,
+    run_tensor_loss_conformance, run_tensor_meta_conformance, run_tensor_normalize_conformance,
+    run_tensor_pool_conformance, run_tensor_random_conformance, run_tensor_reduction_conformance,
+    run_tensor_scan_conformance, run_tensor_searchsorted_conformance, run_tensor_shape_conformance,
+    run_tensor_sort_conformance, run_tensor_unary_conformance,
 };
 use ft_core::{DType, DenseTensor, Device, ExecutionMode, TensorMeta};
 use ft_runtime::{EvidenceKind, RuntimeContext};

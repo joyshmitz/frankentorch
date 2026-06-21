@@ -74,7 +74,10 @@ fn main() {
         let src: Vec<f64> = (0..n).map(|i| (i % 9973) as f64 * 0.001).collect();
         let old = generic_perm(&src, &shape, &perm);
         let new = mha_blocked(&src, b, s, h, d);
-        let bx = old.iter().zip(new.iter()).all(|(x, y)| x.to_bits() == y.to_bits());
+        let bx = old
+            .iter()
+            .zip(new.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits());
         eprintln!("[MHA {b}x{s}x{h}x{d}] bit-exact: {bx}");
         assert!(bx, "mha blocked diverged from generic");
         let t = Instant::now();
@@ -83,6 +86,9 @@ fn main() {
         let t = Instant::now();
         std::hint::black_box(mha_blocked(&src, b, s, h, d));
         let ne = t.elapsed().as_secs_f64() * 1e3;
-        eprintln!("  generic-4D {o:.2} ms / blocked {ne:.2} ms / speedup {:.2}x\n", o / ne);
+        eprintln!(
+            "  generic-4D {o:.2} ms / blocked {ne:.2} ms / speedup {:.2}x\n",
+            o / ne
+        );
     }
 }

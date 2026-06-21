@@ -11,7 +11,11 @@ fn run(
     xs: Vec<usize>,
     wv: Vec<f64>,
     ws: Vec<usize>,
-    f: impl Fn(&mut FrankenTorchSession, TensorNodeId, TensorNodeId) -> Result<TensorNodeId, AutogradError>,
+    f: impl Fn(
+        &mut FrankenTorchSession,
+        TensorNodeId,
+        TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError>,
     k: usize,
 ) {
     let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
@@ -27,9 +31,14 @@ fn run(
         s.tensor_functional_hessian(loss, x)
     })() {
         Ok(h) => {
-            let d: Vec<f64> = (0..k.min(n)).map(|i| (h[i * n + i] * 1e4).round() / 1e4).collect();
+            let d: Vec<f64> = (0..k.min(n))
+                .map(|i| (h[i * n + i] * 1e4).round() / 1e4)
+                .collect();
             let allzero = h.iter().all(|&v| v == 0.0);
-            println!("{name}: diag={d:?}{}", if allzero { " (ALL ZERO)" } else { "" });
+            println!(
+                "{name}: diag={d:?}{}",
+                if allzero { " (ALL ZERO)" } else { "" }
+            );
         }
         Err(e) => println!("{name}: ERR {e:?}"),
     }
