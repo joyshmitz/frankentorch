@@ -11,6 +11,13 @@
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- max_pool3d
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- linear
 //!   cargo bench -p ft-api --bench pytorch_gauntlet_bench -- sdpa
+//!
+//! Fair allocator mode for allocator-sensitive FT/PyTorch comparisons:
+//!   cargo bench -p ft-api --features fair-alloc --bench pytorch_gauntlet_bench -- avg_pool1d
+
+#[cfg(feature = "fair-alloc")]
+#[global_allocator]
+static FAIR_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::path::PathBuf;
 use std::process::{Command, exit};

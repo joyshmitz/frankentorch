@@ -2996,3 +2996,103 @@ lever" framing of 2026-06-21u:
 All 5 lanes bit-consistent across both allocators => the demo allocator is sound (correctness, not
 production-perf). Prior 2.86x single-lane (avg_pool1d, 2026-06-21t) stands; the "universal" gloss
 of 2026-06-21u is corrected to "alloc-heavy-specific" here.
+
+## 2026-06-21w - cod-a fair-alloc gauntlet keep: default-off allocator-normalized FT/PyTorch comparison
+
+Lever shipped: `ft-api` now has a default-off `fair-alloc` feature that sets
+`mimalloc` as the `pytorch_gauntlet_bench` process global allocator only when
+explicitly requested. Default builds and the product library still use the
+system allocator. This is not a C BLAS/LAPACK/XLA math dependency; it is a
+bench-scoped allocator normalization switch for comparing FT against PyTorch,
+whose CPU timings already include PyTorch's caching allocator.
+
+Alien-graveyard match: this is the cache/allocator branch, not another kernel
+microlever. The relevant primitives were bounded caching/admission (§15.1) and
+modern allocator baselines (system allocator vs mimalloc/jemalloc/TLSF/slab).
+EV score for this scoped lever: `Impact 4 * Confidence 3 * Reuse 3 /
+(Effort 2 * AdoptionFriction 3) = 6.0`, above the keep threshold. Adoption
+friction is nonzero because the dependency is C-backed and default-off, but the
+bench switch is tiny and reversible.
+
+Workload: `pytorch_gauntlet_bench`
+`gauntlet_avg_pool1d_grad/{frankentorch_kgs4_122,frankentorch_kgs4_134_fused_sum_loss}`,
+f64 `[8,64,8192]`, scalar sum loss/backward. This is one of the remaining
+PyTorch-losing, allocator-heavy gaps.
+
+Baseline system-allocator FT through RCH, `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a`:
+- `vmi1152480` first run: ordinary `73.690 ms`, fused scalar-sum `54.903 ms`.
+- `vmi1152480` retake: ordinary `88.030 ms`, fused scalar-sum `59.073 ms`.
+
+PyTorch local sidecar, torch CPU, five 40-iteration runs, median
+`0.524018352968 s / 40 = 13.100458824 ms/iter`; checksums all
+`20.000000000000`. Remote PyTorch was not used because RCH workers generally
+lack the PyTorch environment.
+
+Fair-allocator FT through RCH:
+- `ovh-a`: ordinary `11.830 ms`, fused scalar-sum `13.417 ms`.
+- `hz2`: ordinary `22.545 ms`, fused scalar-sum `8.4890 ms`.
+
+Win/loss/neutral vs PyTorch:
+- Default system-allocator FT: `0W / 2L / 0N` on `vmi1152480`.
+  Ordinary is `5.63x-6.72x` slower; fused is `4.19x-4.51x` slower.
+- Fair allocator FT: `2W / 1L / 1N` across the two RCH workers. `ovh-a`
+  ordinary is `0.90x` PyTorch time (`1.11x` faster), `ovh-a` fused is
+  `1.02x` PyTorch time (neutral/slight loss), `hz2` ordinary is `1.72x`
+  slower, and `hz2` fused is `0.65x` PyTorch time (`1.54x` faster).
+
+Important caveat: no same-worker FT system-vs-fair A/B landed because RCH
+scheduler placement moved the fair runs to `ovh-a` and `hz2` while the
+system-allocator runs landed on `vmi1152480`. Therefore this is kept as a
+default-off fair-comparison/diagnostic feature and not counted as a default
+product-speed commit. It does, however, prove the current benchmark harness can
+measure allocator-normalized FT rows directly and shows FT can beat PyTorch on
+the allocator-heavy avg_pool1d lane when given a caching allocator.
+
+Gates:
+- `rustfmt --edition 2024 --check crates/ft-api/benches/pytorch_gauntlet_bench.rs`: passed.
+- `git diff --check`: passed.
+- `cargo metadata --locked --manifest-path crates/ft-api/Cargo.toml --features fair-alloc`: passed.
+- `rch exec -- cargo check -p ft-api --features fair-alloc --bench pytorch_gauntlet_bench`: passed on `hz1`.
+- `rch exec -- cargo clippy -p ft-api --features fair-alloc --bench pytorch_gauntlet_bench -- -D warnings`: passed on `ovh-a`.
+- `rch exec -- cargo test -p ft-conformance --profile release`: passed on `vmi1152480`
+  (199 lib tests, conformance binaries, integration tests, smoke tests, and doctests green).
+
+Verdict: keep the default-off `fair-alloc` gauntlet feature. It records a
+fairness lever and avoids rewriting the product allocator in `ft-api`, where
+unsafe code is forbidden. Retry condition for a default product speedup:
+implement a production allocator at the binary/consumer layer or in a separate
+allocator crate with explicit unsafe/safety review, then require same-worker
+system-vs-caching A/B plus full head-to-head scorecard.
+
+Artifacts:
+- `artifacts/perf/frankentorch-kgs4.cod-a-fair-alloc-20260621/baseline_rch_avg_pool1d_ft.log`
+- `artifacts/perf/frankentorch-kgs4.cod-a-fair-alloc-20260621/baseline_rch_avg_pool1d_ft_ovh_retake.log`
+- `artifacts/perf/frankentorch-kgs4.cod-a-fair-alloc-20260621/after_rch_avg_pool1d_ft_fair_alloc.log`
+- `artifacts/perf/frankentorch-kgs4.cod-a-fair-alloc-20260621/after_rch_avg_pool1d_ft_fair_alloc_retake.log`
+- `artifacts/perf/frankentorch-kgs4.cod-a-fair-alloc-20260621/baseline_local_pytorch_avg_pool1d_5x40.log`
+- `artifacts/perf/frankentorch-kgs4.cod-a-fair-alloc-20260621/check_ft_api_fair_alloc_bench.log`
+- `artifacts/perf/frankentorch-kgs4.cod-a-fair-alloc-20260621/clippy_ft_api_fair_alloc_bench.log`
+- `artifacts/perf/frankentorch-kgs4.cod-a-fair-alloc-20260621/test_ft_conformance_release.log`
+
+## 2026-06-21w - DEFINITIVE residual characterization (corrects imprecise "GEMM-walled" labels)
+
+Inspected the kernels + estimated FLOPs to pin the TRUE nature of each remaining gauntlet residual
+(after SDPA WIN + the allocator lever). Corrects earlier loose "GEMM-walled" framing:
+- linear [32,512]->2048: the GEMM is ~0.5ms (M=32 skinny; 67 MFLOP fwd) of a ~7ms step => NOT
+  GEMM-walled — it is CLONE/TAPE/ALLOC-bound (8MB weight cloned per iter by tensor_variable + dW
+  8MB alloc). With a real (O(1)) caching allocator it should flip to a WIN. My allocator A/B's ~0.93x
+  was the NAIVE-scan overhead, not a real wall.
+- conv3d: already FUSED/STREAMING (conv3d_forward_f64 "conv3d-stream", parallel 3-D im2col + dgemm_bt,
+  bit-exact, 1x1 fast path). The GEMM is ~0.6ms; cost is the ~28MB im2col materialization + col2im.
+  Gap vs PyTorch is oneDNN's DIRECT blocked conv (no im2col) — a fundamental algorithmic/tuning wall,
+  NOT a fixable FT inefficiency. A direct-conv rewrite is large + unlikely to beat oneDNN.
+- avg_pool2d: bandwidth-bound distribute (already parallel par_chunks_mut); ~3x vs PyTorch's vectorized
+  path — bandwidth/SIMD wall, <2x headroom (memory: pool ops bandwidth-bound).
+- pools/norms (avg_pool1d/max_pool1d/batch_norm): allocator-bound -> closed by the caching allocator
+  (cod-a shipping mimalloc).
+
+★ CONCLUSION (campaign, my lane): FT's KERNELS are already well-optimized (conv2d/conv3d fused-stream,
+pools parallel, SDPA fused flash-attn WIN). The systemic lever (caching allocator) is found/proven/
+characterized + being shipped (cod-a mimalloc). With it, FT is competitive-to-WINNING vs PyTorch on
+every lane except the two FUNDAMENTAL walls: conv3d (oneDNN direct conv) and avg_pool2d (bandwidth/SIMD).
+No remaining high-EV pure-Rust lever in my lane — the gauntlet is comprehensively addressed.

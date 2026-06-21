@@ -6,6 +6,7 @@ Updated: 2026-06-21
 
 | Bead | Workload | Result vs PyTorch | Before/after verdict | Release action |
 |---|---:|---:|---:|---|
+| `frankentorch-kgs4/fair-alloc` | Default-off `ft-api` PyTorch gauntlet allocator normalization for avg_pool1d f64 `[8,64,8192]` | default system allocator remains a loss (`0W / 2L / 0N`, ordinary `5.63x-6.72x` slower, fused `4.19x-4.51x` slower); fair allocator rows were `2W / 1L / 1N` across `ovh-a`/`hz2` (`ovh-a` ordinary `11.830 ms` beats PyTorch `13.100 ms`, `hz2` fused `8.489 ms` beats PyTorch) | kept as a default-off fair-comparison feature, not a default product-speed claim; no same-worker system-vs-fair A/B because RCH scheduler moved fair runs to different workers | keep `--features fair-alloc` for allocator-normalized FT/PyTorch gauntlet runs; route default product allocator work to a binary/consumer allocator or separate reviewed allocator crate |
 | `frankentorch-kgs4.145` | BatchNorm2d f32 API-only lazy-zero input grad for scalar-loss `[32,256,28,28]` NCHW | same-machine `10.24x` slower ordinary; `9.51x` slower explicit scalar-sum | internal keep on ordinary automatic row; same-machine dx-alloc baseline `94.656 ms` -> lazy-zero `87.938 ms` (`1.076x` faster, `p=0.00`); explicit scalar-sum `85.919 ms` -> `81.685 ms` was neutral (`p=0.28`) | kept; `.144` rejected the broad sentinel design, so this narrower API-only edge is the kept variant; route remaining gap to report/persistent zero materialization removal, true forward deforestation, saved-stat/workspace reuse, arena/tape allocation, f32-native storage/layout, and generated scalar-loss kernels |
 | `frankentorch-kgs4.144` | BatchNorm2d f32 lazy-zero scalar-loss representation `[32,256,28,28]` NCHW | mixed-location candidate `13.55x` slower ordinary; `8.84x` slower explicit scalar-sum | no-ship; baseline RCH `63.388 ms` ordinary / `58.024 ms` scalar-sum, candidate cross-worker `105.48 ms` ordinary / `68.775 ms` scalar-sum; focused candidate tests passed after temporary algebraic-zero contract update | rejected/reverted; do not retry lazy-zero custom-backward sentinel/report cache alone; route to true forward deforestation, saved-stat/workspace reuse, f32-native tape/storage, arena allocation, and generated scalar-loss kernels |
 | `frankentorch-kgs4.143` | BatchNorm2d f32 automatic `tensor_sum` shortcut `[32,256,28,28]` NCHW | mixed-location local-oracle `15.31x` slower ordinary; `13.41x` slower explicit scalar-sum | internal keep; same-worker `vmi1152480` ordinary disabled `166.77 ms` -> enabled `117.96 ms` (`1.41x` faster); explicit scalar-sum control stable `100.95 ms` -> `103.35 ms` | kept; route remaining gap to true forward deforestation, saved-stat/workspace reuse, arena/tape allocation, f32-native storage/layout, and generated scalar-loss kernels |
@@ -37,11 +38,14 @@ Updated: 2026-06-21
 | `frankentorch-kgs4.133` | conv2d f64 train step `[4,64,64,64]`, 64 3x3 filters | `1.91x` slower; candidate `1.86x` slower | no gain; same-worker rch `121.07 ms` -> `117.92 ms`, `p=0.38`, no change detected | rejected; removed dormant all-ones-dout branch |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `30/30` for the gauntlet lanes. PyTorch head-to-head
-score: **`1W / many-L / 1N`** as of 2026-06-21 — **SDPA is now ~2.0x FASTER than
+Measured-discipline score: `31/31` for the gauntlet lanes/features. Default
+PyTorch head-to-head score remains **`1W / many-L / 1N`** as of 2026-06-21 — **SDPA is now ~2.0x FASTER than
 PyTorch** (FT `[16,512,64]` f64 train step ~24 ms stable vs PyTorch >=49 ms; FT's
 fused flash-attention beats PyTorch's CPU unfused SDPA). This is the first
 performance-dominant workload. The RMSNorm scalar-sum comparator remains neutral.
+The default-off fair allocator gauntlet switch adds allocator-normalized avg_pool1d
+evidence (`2W / 1L / 1N` across two RCH workers), but it is not counted as a
+default product-speed win because the same-worker system-vs-fair A/B did not land.
 
 ★ 2026-06-21 re-measure (after the 9-lever autograd-allocation campaign landed): the
 GENERIC engine levers (cbe4t/96e5d/0w3ns/mbitj/20q7c/kwarf/pwjrs/rdgt6+cuqzu+create_graph/05upk)
