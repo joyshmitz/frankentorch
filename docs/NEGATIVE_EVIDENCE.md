@@ -4162,3 +4162,18 @@ regression was caught + fixed in 21cc). Ready bead queue (20) = cc-conformance g
 (sparse/DataLoader/DenseTensor) -- NO in-lane BlackThrush perf work. Both winnable veins (strided-scan
 cache-reorder + batched-small-linalg) COMPREHENSIVELY HARVESTED + bounded. Remaining perf needs
 parity-breaking (SIMD-transcendental, memory-policy-blocked) or a multi-session deep-linalg rewrite.
+
+## 2026-06-21cg - LEAD (not shipped): batched-tiny matmul 50x slower than PyTorch — bottleneck is the PATH, not the kernel
+
+MEASURED: tensor_matmul [100000,4,4]@[100000,4,4] = FT 46.9ms vs PyTorch bmm 0.9ms (50x SLOWER); [20000,16,16]
+FT 191ms vs 10ms (19x). Surfaced via the pinv/reconstruction probes (bmm dominated their cost). ROOT-CAUSE
+localized: added a tiny-plane inline fast path to bmm_tensor_contiguous_f64 (bit-exact, ft-kernel-cpu 521/0)
+-> ZERO effect on tensor_matmul (still 46.9ms). So the kernel COMPUTE is NOT the bottleneck; the overhead is
+in the tensor_matmul -> broadcast_to -> reshape -> tensor_bmm -> tape.bmm PATH (ft-api + ft-autograd) -- per-call
+node/tape overhead, broadcast/reshape materialization, or tape.bmm not dispatching the parallel kernel over
+many tiny planes. REVERTED the no-op kernel change (unmeasured benefit). This BLOCKS the reconstruction ops
+(pinv/hermitian-pinv/batched-linalg-grad all use bmm). FIX = a cross-layer (ft-api + ft-autograd tape.bmm)
+batched-tiny matmul diagnosis -- core-op + partly out-of-lane + best-case ~parity (PyTorch MKL bmm 0.9ms is
+bandwidth-optimal, FT can't DOMINATE it). FILED as lead; value is unlocking hermitian-pinv (eigh-fast + fast
+bmm -> ~8x est), not dominating bmm itself. LESSON: localize a perf gap to the exact layer (kernel vs API/tape)
+with a no-op-elsewhere probe BEFORE optimizing -- my kernel fix targeted the wrong layer.
