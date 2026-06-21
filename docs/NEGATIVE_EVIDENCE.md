@@ -15,21 +15,28 @@ the diagnosis:
 
 - The compute KERNELS are competitive (many of these have a kept "internal keep" microlever
   that already made FT 1.2-2.3x faster than its own prior code). The residual gap vs PyTorch
-  is **autograd memory traffic**, not arithmetic: each train step allocates fresh dense
-  gradient buffers (`vec![0; numel]` per node), materializes a full `dx` even for scalar-sum
-  losses, recomputes saved stats, and never reuses workspace across steps (the documented
-  gmuml tape-retention behavior — the session tape never frees nodes).
-- This is why the per-op attempts (kgs4.138-145 etc.) keep landing "internal keep, PyTorch
-  loss": a per-op microlever cannot fix a cross-cutting allocator/tape problem. PyTorch's
-  autograd reuses buffers and fuses; FT's allocates per step.
+  is **PER-STEP autograd memory traffic**, not arithmetic: each backward allocates fresh dense
+  gradient buffers (`vec![0; numel]` per node), materializes a full dense `dx` even for
+  scalar-sum losses (whose upstream grad is a constant broadcast), recomputes saved stats, and
+  does no buffer fusion. PyTorch's autograd reuses buffers / fuses / writes in place.
+- IMPORTANT (refines an earlier framing): the gap is the WITHIN-STEP allocation above, NOT
+  cross-step tape retention. gmuml node-retention is allocator-GRACEFUL (~1.15x steady-state
+  for uniform shapes) and is effectively tamed for serving — measured FLAT no-grad serving to
+  2.4 GB (SDPA) / 1.6 GB (conv2d). So "the tape never frees" is real but is NOT what floors
+  these train steps; per-backward dense-buffer traffic is.
+- This is why per-op attempts (kgs4.138-145 etc.) keep landing "internal keep, PyTorch loss":
+  a per-op microlever cannot fix cross-cutting per-step allocation/materialization.
 
-THE single highest-value remaining perf lever for the train-step frontier is therefore a
-**structural ft-autograd change**: a session/tape arena (bump/reuse grad + workspace buffers
-across steps) + algebraic zero-`dx` (don't materialize a dense gradient that is provably zero)
-+ saved-stat/workspace reuse. This is a multi-session RAII-handle rewrite, NOT a small
-per-crate lever — which is exactly why it keeps being deferred. Until it lands, the train-step
-losses above are floored by allocation, and further per-op microlevers there will keep
-returning "internal keep, PyTorch loss". (The INFERENCE/no-grad frontier, by contrast, is in
+Remaining train-step levers, cheapest first:
+1. **borrowed-inputs conversion (CHEAP, bounded, no engine change, bit-exact)** — convert
+   `tensor_apply_function` sites that `save_for_backward` full-size INPUT tensors to the
+   existing `tensor_apply_function_f64_borrowed_inputs` (backward re-reads the live leaf
+   instead of cloning it into ctx). Already done for cross_entropy/conv-pad/gaussian_nll/
+   smooth_l1; audit the rest. Covers the input-clone half of per-step traffic.
+2. **algebraic zero-`dx` / scalar-loss fusion** — don't materialize a dense gradient that is
+   a known constant/zero (partially tried per-op: kgs4.140/141/145 = "internal keep").
+3. **session/workspace arena** (bump/reuse grad + workspace buffers) — the structural
+   multi-session ft-autograd change; biggest but deferred (parity-absolute, touches every op). (The INFERENCE/no-grad frontier, by contrast, is in
 good shape — SDPA fwd kgs4.151-154 + fair-harness shows f32 2.1-2.65x and f64 2.95x/3.1x wins;
 the no-grad fast paths already borrow inputs and skip the tape.)
 
