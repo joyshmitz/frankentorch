@@ -3096,3 +3096,21 @@ pools parallel, SDPA fused flash-attn WIN). The systemic lever (caching allocato
 characterized + being shipped (cod-a mimalloc). With it, FT is competitive-to-WINNING vs PyTorch on
 every lane except the two FUNDAMENTAL walls: conv3d (oneDNN direct conv) and avg_pool2d (bandwidth/SIMD).
 No remaining high-EV pure-Rust lever in my lane — the gauntlet is comprehensively addressed.
+
+## 2026-06-21x - VERIFIED conv3d + max_pool3d head-to-head (hypothesis "overlooked SDPA-style win" REFUTED)
+
+Tested whether conv3d/max_pool3d are overlooked wins (the SDPA insight: PyTorch CPU has unoptimized
+paths). MEASURED head-to-head (local, torch 2.12, system alloc, [conv3d 2x32x8x16x16 k3; max_pool3d
+2x32x16x32x32]):
+- conv3d: FT 23.6 ms vs PyTorch 10.4 ms = **~2.3x SLOWER (LOSS)**. PyTorch CPU conv3d IS well-optimized
+  (oneDNN/mkldnn) — confirms the oneDNN wall. FT's fused-stream im2col-GEMM can't beat oneDNN's direct
+  conv here. Not an overlooked win.
+- max_pool3d: FT 4.7 ms (scalar-sum) / 6.1 ms (std) vs PyTorch 1.79 ms = **~2.6-3.4x SLOWER (LOSS)**.
+  BUT the raw max_pool3d kernel alone is ~219 us -> the step is TAPE/ALLOC-bound (clone + indices +
+  dout/din + report), NOT kernel-walled. A real O(1) caching allocator (mimalloc) should narrow it
+  (my naive-scan allocator regressed it, 2026-06-21v). PyTorch's max_pool3d is tight (1.79ms) though.
+
+★ The SDPA pattern (FT beats PyTorch's unoptimized CPU path) does NOT generalize to conv3d/max_pool3d —
+PyTorch optimizes those well. SDPA remains the unique algorithmic WIN. conv3d = fundamental oneDNN wall;
+max_pool3d = alloc-bound (mimalloc-narrowable, won't win). Tally unchanged: 1W (sdpa) + allocator
+closes the alloc-heavy losses; conv3d/max_pool3d/avg_pool2d are PyTorch-optimized losses.
