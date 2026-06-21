@@ -3263,3 +3263,13 @@ tensor_sdpa_fused_matches_validated_and_finite_diff, sdpa_causal_mask, sdpa_gqa_
 to-head tally grows: 2W (train ±causal) + inference wins. A real shipped pure-Rust lever (not just the
 kernel — removed the API-path dead clones that made inference lose). Per-call (fresh-session) basis; the
 3x tensor_variable input-setup (6 ms) is the caller's, amortized in real serving.
+
+## 2026-06-21ag - extended SDPA borrow-elision to the 2nd entry point (tensor_scaled_dot_product_attention) — GQA inference
+
+tensor_scaled_dot_product_attention (lib.rs ~18947) is a SEPARATE SDPA entry point from
+scaled_dot_product_attention (5043, fixed in 2026-06-21af) — used by GQA (grouped-query attention,
+modern-LLM attention via repeat_kv_heads -> this entry) + direct callers. It had the SAME dead 3x
+tensor_values clone feeding sdpa_forward_f64. Applied the identical contiguous_values() borrow
+(bit-exact). VERIFIED: 17 sdpa + 4 gqa tests pass (incl sdpa_gqa_matches_torch, sdpa_gqa_grad_flows).
+=> the no-grad f64 SDPA inference win now also covers GQA + this entry point. Both SDPA entry points'
+no-grad f64 fast paths are now clone-free.
