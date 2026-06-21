@@ -19258,6 +19258,57 @@ pub fn triangular_solve_backward_grad_a_f64(
     grad_a
 }
 
+/// Batched symmetric-eigenvalue BACKWARD (VJP): given `grad_evals [B*k]` and the saved eigenvectors
+/// `evecs [B*k*k]` (columns of V per plane), returns `grad_A [B*k*k]` where each plane's
+/// `grad_A = V diag(grad_λ) Vᵀ` (i.e. `grad_A[a][b] = Σ_i V[a][i]·grad_λ_i·V[b][i]`). FUSED + parallel
+/// over the batch — the backward of batched eigvalsh, no autograd tape per plane. Bit-identical to
+/// looping the verified 2-D eigvalsh backward. frankentorch-batched-eigh. (BlackThrush)
+pub fn eigvalsh_grad_batched_contiguous_f64(
+    grad_evals: &[f64],
+    evecs: &[f64],
+) -> Result<Vec<f64>, KernelError> {
+    if grad_evals.is_empty() {
+        return Ok(Vec::new());
+    }
+    // k = evecs.len() / grad_evals.len()  (= (B·k·k)/(B·k));  B = grad_evals.len()/k.
+    let total_g = grad_evals.len();
+    if evecs.len() % total_g != 0 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![evecs.len()],
+            rhs: vec![total_g],
+        });
+    }
+    let k = evecs.len() / total_g;
+    if k == 0 || total_g % k != 0 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![evecs.len()],
+            rhs: vec![total_g],
+        });
+    }
+    let plane = k * k;
+    let mut out = vec![0.0f64; evecs.len()];
+    out.par_chunks_mut(plane)
+        .zip(evecs.par_chunks(plane))
+        .zip(grad_evals.par_chunks(k))
+        .for_each(|((o, v), gl)| {
+            // o[a][b] = Σ_i V[a][i]·gl_i·V[b][i]; hoist sa[i] = V[a][i]·gl_i per row a.
+            let mut sa = vec![0.0f64; k];
+            for a in 0..k {
+                for i in 0..k {
+                    sa[i] = v[a * k + i] * gl[i];
+                }
+                for b in 0..k {
+                    let mut s = 0.0;
+                    for i in 0..k {
+                        s += sa[i] * v[b * k + i];
+                    }
+                    o[a * k + b] = s;
+                }
+            }
+        });
+    Ok(out)
+}
+
 /// Batched symmetric eigenvalues: input `[..., k, k]` -> eigenvalues `[B*k]` (row-major). Parallelizes
 /// the verified 2-D [`eigvalsh_contiguous_f64`] over the batch. PyTorch loops LAPACK per plane (per-call
 /// overhead dominates for small k); values-only so cheaper than batched eigh. Bit-identical to looping
@@ -31261,6 +31312,36 @@ mod tests {
             for i in 0..mn {
                 assert_eq!(out[b * mn + i].to_bits(), s[i].to_bits());
             }
+        }
+    }
+
+    #[test]
+    fn eigvalsh_grad_batched_reconstructs_a_when_gradl_is_lambda() {
+        // With grad_λ = λ, the VJP grad_A = V diag(λ) Vᵀ = A. So feeding (λ, V) from eigh must
+        // reconstruct A — a strong correctness check of the batched eigvalsh backward.
+        let (bb, k) = (8usize, 5usize);
+        let mut a = vec![0.0f64; bb * k * k];
+        for x in 0..bb * k * k {
+            a[x] = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
+        }
+        for b in 0..bb {
+            for i in 0..k {
+                for j in (i + 1)..k {
+                    let s = (a[b * k * k + i * k + j] + a[b * k * k + j * k + i]) * 0.5;
+                    a[b * k * k + i * k + j] = s;
+                    a[b * k * k + j * k + i] = s;
+                }
+            }
+            for i in 0..k {
+                a[b * k * k + i * k + i] += (k + 10) as f64;
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![bb, k, k], DType::F64, Device::Cpu);
+        let (evals, evecs) = super::eigh_batched_contiguous_f64(&a, &meta).unwrap();
+        let grad_a = super::eigvalsh_grad_batched_contiguous_f64(&evals, &evecs).unwrap();
+        assert_eq!(grad_a.len(), bb * k * k);
+        for t in 0..bb * k * k {
+            assert!((grad_a[t] - a[t]).abs() < 1e-9, "grad_A != A at {t}: {} vs {}", grad_a[t], a[t]);
         }
     }
 

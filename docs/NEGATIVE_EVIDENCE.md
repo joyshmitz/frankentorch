@@ -4315,3 +4315,18 @@ has no MKL-SIMD edge (FT dgemm ~ MKL dgemm -> FT wins by closing the reshape gap
 sgemm SIMD >> FT matrixmultiply sgemm). => f32 matmul is MKL-walled (parity-at-best); NOT a winnable lever.
 LEAD CLOSED. f64 N-D matmul win (cn) stands. 33 wins. KEY BOUND: FT wins f64 batched matmul (dgemm ~ MKL)
 but loses f32 (MKL sgemm SIMD advantage) -- same dense-GEMM SIMD wall as the original campaign, surfacing in f32.
+
+## 2026-06-21cq - WIN (34th): batched eigvalsh GRADIENT (fwd+bwd step) = 6.4-9.0x vs PyTorch
+
+Differentiable batched eigvalsh via FUSED forward (eigh_batched_contiguous_f64 + save V) + FUSED backward
+kernel (eigvalsh_grad_batched_contiguous_f64: grad_A = V diag(grad_λ) Vᵀ per plane, parallel), wired
+through tensor_apply_function (IN-LANE: ft-api + ft-kernel-cpu, NO ft-autograd-tape changes). MEASURED
+(examples/eigvalsh_grad_h2h.rs, loss = sum(λ²) -> grad = 2A):
+  [100000,4,4]  FT 19.5ms vs torch 174.5ms = 8.95x FASTER
+  [20000,16,16] FT 57.5ms vs torch 368.7ms = 6.41x
+CORRECT: grad-2A err ~1e-14 (kernel test eigvalsh_grad_batched_reconstructs_a_when_gradl_is_lambda: with
+grad_l=λ, grad_A = V diag(λ) Vᵀ = A). ft-kernel-cpu 527/0 + ft-api eigvalsh 4/0. ★ The "autograd-walled"
+lesson (grad-step tape-overhead masks the kernel win, from CHEAP scan kernels) does NOT apply: batched
+eigvalsh FORWARD is EXPENSIVE (eigh) + the backward is a FUSED kernel -> the fwd-dominated step wins 6-9x.
+The fused-kernel pattern EXTENDS to GRADIENTS. 34 wins. NEXT: svdvals/qr/eig batched grad (same fused-
+backward-kernel pattern, per-op VJP).
