@@ -3624,3 +3624,15 @@ SDPA-3D-artifact correction (the transpose-trick exploration 21av found the cach
 reorder ships it cleanly). Generalizes to cumprod / logcumsumexp (same `for inner { for d }` strided
 pattern) — strong next target. NOTE: dim=0 still serial (outer=1); inner-lane parallelism could push
 further but 2.83x is already a clean win.
+
+## 2026-06-21ax - cumprod forward cache-friendly reorder = 2.65x vs PyTorch (strided dim=0), bit-exact (cumsum lever generalized)
+
+Applied the cumsum loop-reorder lever (21aw/0ccf6167) to cumprod_tensor_contiguous_f64/f32 (forward):
+`for inner { for d }` -> `for d { for inner }` + acc[inner_size] (cumprod_lane_block_f64/f32). PyTorch
+cumprod along a strided dim is cache-thrashing (205ms dim=0 vs 24ms last-dim).
+MEASURED (examples/cumprod_headtohead.rs, bit-exact MATCH 1.3e-13): [262144,64] dim=0 FT 68.6ms vs
+PyTorch 181.9ms = 2.65x FASTER; [2048,2048] dim=0 parity (1.04x); last-dim unchanged (inner_size=1
+path). VERIFIED ft-kernel-cpu 504/0, ft-api cumprod 6/0. cumprod BACKWARD deferred (division + O(dim^2)
+zero-branch, more complex). cummax (PyTorch dim=0 425ms!) + logcumsumexp (215ms) are apply_function in
+ft-api (not ft-kernel-cpu kernels) — separate lever. Scan-family cache-reorder win now = cumsum + cumprod
+forward (both f64/f32). Generalizable strided-scan cache lever PyTorch CPU lacks.

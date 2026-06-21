@@ -12959,29 +12959,46 @@ pub fn cumprod_tensor_contiguous_f64(
             .enumerate()
             .for_each(|(outer, out_chunk)| {
                 let base = outer * lane;
-                for inner in 0..inner_size {
-                    let mut acc = 1.0;
-                    for d in 0..dim_size {
-                        let idx = d * inner_size + inner;
-                        acc *= data[base + idx];
-                        out_chunk[idx] = acc;
-                    }
-                }
+                cumprod_lane_block_f64(&data[base..base + lane], out_chunk, dim_size, inner_size);
             });
     } else {
         for outer in 0..outer_size {
-            for inner in 0..inner_size {
-                let mut acc = 1.0;
-                for d in 0..dim_size {
-                    let idx = outer * lane + d * inner_size + inner;
-                    acc *= data[idx];
-                    output[idx] = acc;
-                }
-            }
+            let base = outer * lane;
+            cumprod_lane_block_f64(
+                &data[base..base + lane],
+                &mut output[base..base + lane],
+                dim_size,
+                inner_size,
+            );
         }
     }
 
     Ok(output)
+}
+
+/// Cumprod one `[dim_size, inner_size]` contiguous block into `out`. Cache-friendly d-outer/
+/// inner-inner walk over a CONTIGUOUS inner run (acc[] carries the running products), mirroring
+/// [`cumsum_lane_block_f64`] but multiplying. Per-lane order unchanged => bit-exact. (BlackThrush)
+#[inline]
+fn cumprod_lane_block_f64(block: &[f64], out: &mut [f64], dim_size: usize, inner_size: usize) {
+    if inner_size == 1 {
+        let mut acc = 1.0;
+        for d in 0..dim_size {
+            acc *= block[d];
+            out[d] = acc;
+        }
+        return;
+    }
+    let mut acc = vec![1.0; inner_size];
+    for d in 0..dim_size {
+        let row = d * inner_size;
+        let src = &block[row..row + inner_size];
+        let dst = &mut out[row..row + inner_size];
+        for inner in 0..inner_size {
+            acc[inner] *= src[inner];
+            dst[inner] = acc[inner];
+        }
+    }
 }
 
 /// Backward pass for cumprod.
@@ -25826,28 +25843,44 @@ pub fn cumprod_tensor_contiguous_f32(
             .enumerate()
             .for_each(|(outer, out_chunk)| {
                 let base = outer * lane;
-                for inner in 0..inner_size {
-                    let mut acc = 1.0f32;
-                    for d in 0..dim_size {
-                        let idx = d * inner_size + inner;
-                        acc *= data[base + idx];
-                        out_chunk[idx] = acc;
-                    }
-                }
+                cumprod_lane_block_f32(&data[base..base + lane], out_chunk, dim_size, inner_size);
             });
     } else {
         for outer in 0..outer_size {
-            for inner in 0..inner_size {
-                let mut acc = 1.0f32;
-                for d in 0..dim_size {
-                    let idx = outer * lane + d * inner_size + inner;
-                    acc *= data[idx];
-                    output[idx] = acc;
-                }
-            }
+            let base = outer * lane;
+            cumprod_lane_block_f32(
+                &data[base..base + lane],
+                &mut output[base..base + lane],
+                dim_size,
+                inner_size,
+            );
         }
     }
     Ok(output)
+}
+
+/// f32 mirror of [`cumprod_lane_block_f64`] — cache-friendly cumprod of one contiguous block.
+/// Bit-exact per lane. (BlackThrush)
+#[inline]
+fn cumprod_lane_block_f32(block: &[f32], out: &mut [f32], dim_size: usize, inner_size: usize) {
+    if inner_size == 1 {
+        let mut acc = 1.0f32;
+        for d in 0..dim_size {
+            acc *= block[d];
+            out[d] = acc;
+        }
+        return;
+    }
+    let mut acc = vec![1.0f32; inner_size];
+    for d in 0..dim_size {
+        let row = d * inner_size;
+        let src = &block[row..row + inner_size];
+        let dst = &mut out[row..row + inner_size];
+        for inner in 0..inner_size {
+            acc[inner] *= src[inner];
+            dst[inner] = acc[inner];
+        }
+    }
 }
 
 pub fn cumprod_backward_tensor_contiguous_f32(
