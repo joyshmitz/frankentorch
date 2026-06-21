@@ -2225,3 +2225,22 @@ is explicitly satisfied.
   across runs). Per-clone cost reference: a 4M f64 alloc+copy = ~9.8 ms (kwarf A/B). Deep
   training graphs (N intermediates) save ~N clones. Shipped primarily as a correctness+
   consistency fix (matches create_graph path + PyTorch) that is also strictly less work.
+
+## 2026-06-20h - frankentorch-20q7c - WIN (shipped): apply_function_with_create_graph borrows contiguous-f64 inputs (Cow)
+
+- mbitj (2026-06-20d) fixed the PLAIN `apply_function` to Cow-borrow f64 inputs, but the
+  `apply_function_with_create_graph` variant — used by 26 ft-api ops incl conv2d, avg_pool2d
+  (cqmed double-backward), and the special functions (exp2/digamma/bessel i0/i1/...) for
+  their create_graph (double-backward) path — still cloned EVERY input via
+  `contiguous_values_as_f64()` (full numel `to_vec`) on every forward.
+- Lever: identical Cow refactor — `Cow::Borrowed(contiguous_values())` zero-copy for
+  contiguous-F64 inputs, `Cow::Owned(...)` only for non-f64/non-contiguous; borrows scoped in
+  a block ending before the `&mut self` node push. The create_graph forward closure only
+  reads `&[f64]` and `ctx` is moved into the record unmutated afterward, so it is
+  BIT-IDENTICAL. Removes one numel alloc+copy per forward for these 26 ops.
+- Bit-exact + can't-regress. Gates GREEN: ft-autograd 476/0, conformance 199/0 + all
+  sub-suites, ft-autograd clippy clean; ft-api 2336 passed / 2 failed (the SAME pre-existing
+  `complex_arithmetic_golden` + `batch_norm1d_3d_native_fused` reds on clean origin/main —
+  not introduced here; verified across all conv2d/avg_pool2d/special-fn double-backward,
+  hessian, and gradient-penalty tests). Per-clone cost reference: 4M f64 alloc+copy ~9.8 ms
+  (kwarf A/B). Traffic-reduction → core-count-independent (wins in the rch ~10-core sandbox).
