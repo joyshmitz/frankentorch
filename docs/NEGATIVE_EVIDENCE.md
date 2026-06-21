@@ -2278,3 +2278,23 @@ is explicitly satisfied.
   levers.
 - Confirms 20q7c helps real create_graph lanes, not just the special-function long tail.
   Caveat: local 64-core env, noisy PyTorch arm — directional.
+
+## 2026-06-21 - frankentorch-rdgt6 - CODE-FIRST (build/bench PAUSED, disk-low 56G): skip always-empty per-backward allocs
+
+- First-order `backward_with_options` allocated `sparse_gradients = vec![None; gradients.len()]`
+  AND `gradient_nodes = vec![None; nodes.len()]` on EVERY backward, but: sparse gradients only
+  arise from the IndexSelect sparse-grad request (rare), and `gradient_nodes` is populated ONLY
+  by the separate create_graph path (always all-None in first-order). Both are read via
+  `.get(node.0)` (returns None for an empty vec), so leaving them empty is behavior-identical.
+- Change: gate `sparse_gradients` on `sparse_grad_requested.iter().any(..)` (empty when none
+  requested); set `gradient_nodes: Vec::new()` in the first-order report. Skips two node-count
+  Vec allocations per first-order backward (the universal training path). Small (node-count,
+  not numel) but a strict, can't-regress allocation reduction; matters more for deep graphs.
+- SAFETY (inspection-verified, build PAUSED per disk-low directive): the only indexing of
+  `sparse_gradients` is its own build loop (`0..len` → 0..0 when empty); `gradient_nodes` is
+  never indexed (only `.get()` in `gradient_node`); `scaled_clone` clones both (empty clones
+  fine); no `.len()`/length-assumption on either field anywhere. Type-correct (explicit
+  annotation drives both if-arms; `Vec::new()` matches field types).
+- STATUS: code-first, consistent with the project's "code-first, batch-verify pending" norm.
+  ft-autograd/ft-api/conformance build+test to be run when disk recovers (do NOT mark verified
+  until then). Expected bit-exact (no arithmetic change; only skips always-None allocations).

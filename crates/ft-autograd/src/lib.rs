@@ -14513,7 +14513,18 @@ impl TensorTape {
             self.consumed_boundary = self.nodes.len();
         }
 
-        let mut sparse_gradients: Vec<Option<SparseCOOTensor>> = vec![None; gradients.len()];
+        // Only materialize the per-node sparse-gradient vector when some input
+        // actually requested a sparse-gradient surfacing (IndexSelect sparse path —
+        // rare). Otherwise leave it empty: `sparse_gradient`/`is_sparse_gradient` read
+        // it via `.get(node.0)`, which returns None for an empty vec, so behavior is
+        // identical without the per-backward `vec![None; gradients.len()]` allocation.
+        // frankentorch-rdgt6.
+        let any_sparse_requested = sparse_grad_requested.iter().any(|&r| r);
+        let mut sparse_gradients: Vec<Option<SparseCOOTensor>> = if any_sparse_requested {
+            vec![None; gradients.len()]
+        } else {
+            Vec::new()
+        };
         for idx in 0..sparse_gradients.len() {
             if !sparse_grad_requested[idx] {
                 continue;
@@ -14526,10 +14537,14 @@ impl TensorTape {
             sparse_gradients[idx] = Some(Self::build_sparse_grad_dim0(dense_grad, &shape, device)?);
         }
 
+        // First-order backward never produces differentiable gradient *nodes* (only the
+        // create_graph path does, via its own report construction). Leave this empty
+        // instead of allocating `vec![None; nodes.len()]`; `gradient_node` reads it via
+        // `.get(node.0)` and returns None for an empty vec. frankentorch-rdgt6.
         Ok(TensorBackwardReport {
             sparse_gradients,
             gradients,
-            gradient_nodes: vec![None; self.nodes.len()],
+            gradient_nodes: Vec::new(),
             steps,
             telemetry,
         })
