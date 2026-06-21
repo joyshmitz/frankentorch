@@ -3171,3 +3171,19 @@ f64 gap is what FT's fused kernel wins. On f32, PyTorch's tuned flash CPU beats 
 ≈ FT's f64 sdpa (~24-46 ms) — FT doesn't specialize f32 hard; PyTorch f32 (19 ms) << PyTorch f64 (50 ms).
 HONEST BOUND: the 2 SDPA wins are real on the f64 gauntlet basis but do NOT extend to f32 inference.
 Tally: 2W (f64 sdpa ±causal) + this f32 LOSS recorded. No f32-sdpa lever (PyTorch flash CPU is tuned AVX).
+
+## 2026-06-21ab - SDPA win RE-VERIFIED robust (rules out contention-inflation); seq-scaling INCONCLUSIVE
+
+Re-measured the gauntlet f64 SDPA (BH=16, seq=512) on ONE worker, 3 runs back-to-back:
+- FT: 24.06 / 22.76 / 23.10 ms (stable)   PyTorch: 47.6 / 51.0 / 48.6 ms (stable) => **~2.1x WIN**.
+Both arms STABLE across the 3 runs => the win is NOT a PyTorch-contention artifact (firms the headline
+against the earlier "is the PyTorch arm just contended?" skepticism). The 2W tally stands.
+
+Attempted to quantify the win's SEQUENCE-LENGTH scaling (seq 512/1024/2048, examples/sdpa_seqscale_
+headtohead.rs) — INCONCLUSIVE, FT rayon-contention-confounded. The in-process ANCHOR (FT BH=16 seq=512,
+known-clean ~23 ms) instead measured 36 ms (BH=8 run) / 65.9 ms (BH=16 run) — ~1.5-3x FT inflation —
+while the PyTorch subprocess arm stayed ~stable (FT shares the worker's cores with peer agents; the
+subprocess is scheduled apart). Per anchored-A/B discipline (a failed anchor flags the bad window),
+DISCARDED. Under *uniform* contention the trend hinted FT's relative position improves with seq (ratio
+0.60->1.05->1.10 at the confounded BH=8 run) — plausible (both O(seq^2); FT flash constant better) but
+NOT cleanly measurable on the current contended fleet. Needs an uncontended worker. No claim made.
