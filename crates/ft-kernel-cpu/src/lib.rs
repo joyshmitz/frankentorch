@@ -12779,29 +12779,48 @@ pub fn cumsum_tensor_contiguous_f64(
             .enumerate()
             .for_each(|(outer, out_chunk)| {
                 let base = outer * lane;
-                for inner in 0..inner_size {
-                    let mut acc = 0.0;
-                    for d in 0..dim_size {
-                        let idx = d * inner_size + inner;
-                        acc += data[base + idx];
-                        out_chunk[idx] = acc;
-                    }
-                }
+                cumsum_lane_block_f64(&data[base..base + lane], out_chunk, dim_size, inner_size);
             });
     } else {
         for outer in 0..outer_size {
-            for inner in 0..inner_size {
-                let mut acc = 0.0;
-                for d in 0..dim_size {
-                    let idx = outer * lane + d * inner_size + inner;
-                    acc += data[idx];
-                    output[idx] = acc;
-                }
-            }
+            let base = outer * lane;
+            cumsum_lane_block_f64(
+                &data[base..base + lane],
+                &mut output[base..base + lane],
+                dim_size,
+                inner_size,
+            );
         }
     }
 
     Ok(output)
+}
+
+/// Cumsum one `[dim_size, inner_size]` contiguous block (row-major) into `out`. Walks `d` OUTER and
+/// `inner` INNER so each d-step touches a CONTIGUOUS `inner_size` run (`acc[]` carries the running
+/// sums) — avoids the stride-`inner_size` scan that wastes cache lines (and blocks SIMD) for
+/// inner_size>=8. Per-lane (fixed inner) addition order is unchanged => bit-exact. This is what
+/// makes cumsum along a non-last dim (e.g. dim=0 of [262144,64]) cache-friendly. (BlackThrush)
+#[inline]
+fn cumsum_lane_block_f64(block: &[f64], out: &mut [f64], dim_size: usize, inner_size: usize) {
+    if inner_size == 1 {
+        let mut acc = 0.0;
+        for d in 0..dim_size {
+            acc += block[d];
+            out[d] = acc;
+        }
+        return;
+    }
+    let mut acc = vec![0.0; inner_size];
+    for d in 0..dim_size {
+        let row = d * inner_size;
+        let src = &block[row..row + inner_size];
+        let dst = &mut out[row..row + inner_size];
+        for inner in 0..inner_size {
+            acc[inner] += src[inner];
+            dst[inner] = acc[inner];
+        }
+    }
 }
 
 /// Backward pass for cumsum: reverse cumulative sum.
@@ -12847,30 +12866,51 @@ pub fn cumsum_backward_tensor_contiguous_f64(
             .enumerate()
             .for_each(|(outer, out_chunk)| {
                 let base = outer * lane;
-                for inner in 0..inner_size {
-                    let mut acc = 0.0;
-                    for d in (0..dim_size).rev() {
-                        let idx = d * inner_size + inner;
-                        acc += data[base + idx];
-                        out_chunk[idx] = acc;
-                    }
-                }
+                cumsum_backward_lane_block_f64(
+                    &data[base..base + lane],
+                    out_chunk,
+                    dim_size,
+                    inner_size,
+                );
             });
     } else {
         for outer in 0..outer_size {
-            for inner in 0..inner_size {
-                let mut acc = 0.0;
-                // Reverse iteration for reverse cumsum
-                for d in (0..dim_size).rev() {
-                    let idx = outer * lane + d * inner_size + inner;
-                    acc += data[idx];
-                    grad_input[idx] = acc;
-                }
-            }
+            let base = outer * lane;
+            cumsum_backward_lane_block_f64(
+                &data[base..base + lane],
+                &mut grad_input[base..base + lane],
+                dim_size,
+                inner_size,
+            );
         }
     }
 
     Ok(grad_input)
+}
+
+/// Reverse-cumsum one `[dim_size, inner_size]` contiguous block into `out` (cumsum backward).
+/// Cache-friendly d-outer/inner-inner walk over a CONTIGUOUS inner run, mirroring
+/// [`cumsum_lane_block_f64`] but iterating `d` in reverse. Bit-exact per lane. (BlackThrush)
+#[inline]
+fn cumsum_backward_lane_block_f64(block: &[f64], out: &mut [f64], dim_size: usize, inner_size: usize) {
+    if inner_size == 1 {
+        let mut acc = 0.0;
+        for d in (0..dim_size).rev() {
+            acc += block[d];
+            out[d] = acc;
+        }
+        return;
+    }
+    let mut acc = vec![0.0; inner_size];
+    for d in (0..dim_size).rev() {
+        let row = d * inner_size;
+        let src = &block[row..row + inner_size];
+        let dst = &mut out[row..row + inner_size];
+        for inner in 0..inner_size {
+            acc[inner] += src[inner];
+            dst[inner] = acc[inner];
+        }
+    }
 }
 
 /// Cumulative product along a given dimension.
@@ -25635,28 +25675,44 @@ pub fn cumsum_tensor_contiguous_f32(
             .enumerate()
             .for_each(|(outer, out_chunk)| {
                 let base = outer * lane;
-                for inner in 0..inner_size {
-                    let mut acc = 0.0f32;
-                    for d in 0..dim_size {
-                        let idx = d * inner_size + inner;
-                        acc += data[base + idx];
-                        out_chunk[idx] = acc;
-                    }
-                }
+                cumsum_lane_block_f32(&data[base..base + lane], out_chunk, dim_size, inner_size);
             });
     } else {
         for outer in 0..outer_size {
-            for inner in 0..inner_size {
-                let mut acc = 0.0f32;
-                for d in 0..dim_size {
-                    let idx = outer * lane + d * inner_size + inner;
-                    acc += data[idx];
-                    output[idx] = acc;
-                }
-            }
+            let base = outer * lane;
+            cumsum_lane_block_f32(
+                &data[base..base + lane],
+                &mut output[base..base + lane],
+                dim_size,
+                inner_size,
+            );
         }
     }
     Ok(output)
+}
+
+/// f32 mirror of [`cumsum_lane_block_f64`] — cache-friendly d-outer/inner-inner cumsum of one
+/// `[dim_size, inner_size]` contiguous block. Bit-exact per lane. (BlackThrush)
+#[inline]
+fn cumsum_lane_block_f32(block: &[f32], out: &mut [f32], dim_size: usize, inner_size: usize) {
+    if inner_size == 1 {
+        let mut acc = 0.0f32;
+        for d in 0..dim_size {
+            acc += block[d];
+            out[d] = acc;
+        }
+        return;
+    }
+    let mut acc = vec![0.0f32; inner_size];
+    for d in 0..dim_size {
+        let row = d * inner_size;
+        let src = &block[row..row + inner_size];
+        let dst = &mut out[row..row + inner_size];
+        for inner in 0..inner_size {
+            acc[inner] += src[inner];
+            dst[inner] = acc[inner];
+        }
+    }
 }
 
 pub fn cumsum_backward_tensor_contiguous_f32(
@@ -25692,28 +25748,49 @@ pub fn cumsum_backward_tensor_contiguous_f32(
             .enumerate()
             .for_each(|(outer, out_chunk)| {
                 let base = outer * lane;
-                for inner in 0..inner_size {
-                    let mut acc = 0.0f32;
-                    for d in (0..dim_size).rev() {
-                        let idx = d * inner_size + inner;
-                        acc += data[base + idx];
-                        out_chunk[idx] = acc;
-                    }
-                }
+                cumsum_backward_lane_block_f32(
+                    &data[base..base + lane],
+                    out_chunk,
+                    dim_size,
+                    inner_size,
+                );
             });
     } else {
         for outer in 0..outer_size {
-            for inner in 0..inner_size {
-                let mut acc = 0.0f32;
-                for d in (0..dim_size).rev() {
-                    let idx = outer * lane + d * inner_size + inner;
-                    acc += data[idx];
-                    grad_input[idx] = acc;
-                }
-            }
+            let base = outer * lane;
+            cumsum_backward_lane_block_f32(
+                &data[base..base + lane],
+                &mut grad_input[base..base + lane],
+                dim_size,
+                inner_size,
+            );
         }
     }
     Ok(grad_input)
+}
+
+/// f32 mirror of [`cumsum_backward_lane_block_f64`] — cache-friendly reverse-cumsum of one
+/// `[dim_size, inner_size]` contiguous block. Bit-exact per lane. (BlackThrush)
+#[inline]
+fn cumsum_backward_lane_block_f32(block: &[f32], out: &mut [f32], dim_size: usize, inner_size: usize) {
+    if inner_size == 1 {
+        let mut acc = 0.0f32;
+        for d in (0..dim_size).rev() {
+            acc += block[d];
+            out[d] = acc;
+        }
+        return;
+    }
+    let mut acc = vec![0.0f32; inner_size];
+    for d in (0..dim_size).rev() {
+        let row = d * inner_size;
+        let src = &block[row..row + inner_size];
+        let dst = &mut out[row..row + inner_size];
+        for inner in 0..inner_size {
+            acc[inner] += src[inner];
+            dst[inner] = acc[inner];
+        }
+    }
 }
 
 pub fn cumprod_tensor_contiguous_f32(

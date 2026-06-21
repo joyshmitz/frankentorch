@@ -3607,3 +3607,20 @@ Conformance gate: `rch exec -- cargo test -p ft-conformance --profile release` p
 Retry predicate: do not retry p=1 `cdist` with indexing-only or iterator-shape micro-levers. A credible
 retry needs a deeper SIMD/tiled Manhattan kernel that can beat PyTorch's vectorized CPU path, with exact
 checksum reporting in the head-to-head harness before scoring.
+## 2026-06-21aw - ★ REAL WIN: cumsum cache-friendly loop reorder = 2.83x vs PyTorch (strided dim=0), bit-exact
+
+The cumsum kernels (cumsum_tensor_contiguous_f64/f32 + backward) scanned with `for inner { for d }`:
+for a NON-last scan dim (e.g. dim=0 of [262144,64]) each d-step jumps `inner_size` elements, wasting
+7/8 of a cache line (and blocking SIMD); worse, dim=0 has outer_size=1 so it also misses the
+parallel-over-outer path. FIX: reorder to `for d { for inner }` with an `acc[inner_size]` vector so each
+d-step touches a CONTIGUOUS inner run (extracted into cumsum_lane_block_f64/f32 + reverse mirrors for
+backward). Each lane's (fixed inner) addition order is unchanged => BIT-EXACT.
+MEASURED (examples/cumsum_headtohead.rs, op-only, 15 iters MIN, bit-exact MATCH 5.8e-13):
+  [262144,64] dim=0 : FT 68ms vs PyTorch 193ms = 2.83x FASTER
+  [4194304] 1-D     : 1.14x   |  last-dim cases unchanged (inner_size=1 path)
+VERIFIED: ft-kernel-cpu 504/0, ft-api cumsum 16/0. A GENUINE clean vs-PyTorch win — no leak, no region,
+no transpose; PyTorch CPU runs the strided scan directly. FIRST real DOMINATE-PyTorch win after the
+SDPA-3D-artifact correction (the transpose-trick exploration 21av found the cache lever; the kernel loop
+reorder ships it cleanly). Generalizes to cumprod / logcumsumexp (same `for inner { for d }` strided
+pattern) — strong next target. NOTE: dim=0 still serial (outer=1); inner-lane parallelism could push
+further but 2.83x is already a clean win.
