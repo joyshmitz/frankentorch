@@ -4131,3 +4131,18 @@ LOW-level op (svdvals) can break DOWNSTREAM callers that extract its result via 
 when changing an op's dtype behavior, grep its callers and add casts to the value-extracting consumers.
 f32 batched-linalg + svd-derived now COMPLETE. 27 vs-PyTorch wins. NEXT (bead ogu1e): genuinely new op
 family/regime (batched-linalg f64+f32 direct+derived comprehensively harvested).
+
+## 2026-06-21cd - NEGATIVE: remaining batched-linalg ops NOT clean levers — vein COMPREHENSIVELY HARVESTED
+
+Swept the batched ops PyTorch still loops/composes: ldl 22-71ms, cholesky_inverse 66-120ms, householder_
+product 63-108ms, matrix_power(50) 65-272ms, lu_solve 59-116ms — all MODERATE (not the 10x eig/svd
+LAPACK-loop pattern); matmul-based (matpow -> MKL bmm, vendor-competitive) or batched-kernel (chol/lu/solve
+-> reasonable). pinv(hermitian=True) is the one clear remaining LAPACK-loop weakness (381-582ms random /
+151-387ms well-cond, loops eigh per plane). PROBED FT-composed (batched eigh + V diag(1/lambda) V^T
+reconstruction via public ops): only 1.28-1.63x — the per-plane RECONSTRUCTION bmm + through-tape overhead
+eat the batched-eigh advantage — AND chk diverged ~12-15% (reconstruction math/tolerance needs debugging).
+NOT shipped (marginal + incorrect). ★ KEY BOUND: clean batched-linalg 10x levers = the eig/svd LAPACK-loop
+families + their PURE-REDUCTION derived ops (norm2/nuc/cond/matrix_rank). Ops needing a per-plane
+RECONSTRUCTION (pinv via V diag V^T, hermitian or svd) are matmul/bmm-bound (~1.3x, vendor-competitive),
+NOT clean. BATCHED-LINALG VEIN COMPREHENSIVELY HARVESTED (f64+f32, direct + derived). 27 vs-PyTorch wins
+stand. NEXT: a genuinely different regime (non-linalg) or conformance/bug triage (bv/br).
