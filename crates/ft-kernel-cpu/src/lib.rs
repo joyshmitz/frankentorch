@@ -4148,6 +4148,105 @@ pub fn sdpa_backward_f32(
     (dq, dk, dv)
 }
 
+/// f32 SDPA backward for exact all-ones upstream gradients (`sum(attn)`).
+///
+/// This is algebraically identical to [`sdpa_backward_f32`] with
+/// `dout = ones([num_bh, seq_q, d_v])`, but avoids materialising that `dout`
+/// and replaces the two GEMMs that multiply by an all-ones matrix with row and
+/// column reductions:
+///
+/// - `dP[i,j] = sum_l V[j,l]`
+/// - `dV[j,l] = sum_i P[i,j]` for every value lane `l`
+///
+/// The remaining `dQ`/`dK` GEMMs are unchanged.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn sdpa_backward_f32_unit_dout(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    num_bh: usize,
+    seq_q: usize,
+    seq_k: usize,
+    d_k: usize,
+    d_v: usize,
+    scale: f32,
+    causal: bool,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mut dq = vec![0.0f32; num_bh * seq_q * d_k];
+    let mut dk = vec![0.0f32; num_bh * seq_k * d_k];
+    let mut dv = vec![0.0f32; num_bh * seq_k * d_v];
+    let qs = seq_q * d_k;
+    let ks = seq_k * d_k;
+    let vs = seq_k * d_v;
+    dq.par_chunks_mut(qs)
+        .zip(dk.par_chunks_mut(ks))
+        .zip(dv.par_chunks_mut(vs))
+        .enumerate()
+        .for_each(|(bh, ((dq_bh, dk_bh), dv_bh))| {
+            let qh = &q[bh * qs..bh * qs + qs];
+            let kh = &k[bh * ks..bh * ks + ks];
+            let vh = &v[bh * vs..bh * vs + vs];
+
+            let mut p = vec![0.0f32; seq_q * seq_k];
+            gemm::sgemm_bt(seq_q, d_k, seq_k, qh, kh, &mut p);
+            for i in 0..seq_q {
+                let limit = if causal { (i + 1).min(seq_k) } else { seq_k };
+                let row = &mut p[i * seq_k..(i + 1) * seq_k];
+                let mut m = f32::NEG_INFINITY;
+                for s in row.iter_mut().take(limit) {
+                    *s *= scale;
+                    if *s > m {
+                        m = *s;
+                    }
+                }
+                let mut sum = 0.0f32;
+                for s in row.iter_mut().take(limit) {
+                    let e = (*s - m).exp();
+                    *s = e;
+                    sum += e;
+                }
+                for s in row.iter_mut().take(limit) {
+                    *s /= sum;
+                }
+                for s in row.iter_mut().skip(limit) {
+                    *s = 0.0;
+                }
+            }
+
+            let mut v_row_sum = vec![0.0f32; seq_k];
+            for j in 0..seq_k {
+                let mut sum = 0.0f32;
+                for &x in &vh[j * d_v..(j + 1) * d_v] {
+                    sum += x;
+                }
+                v_row_sum[j] = sum;
+            }
+
+            let mut p_col_sum = vec![0.0f32; seq_k];
+            let mut du = vec![0.0f32; seq_q * seq_k];
+            for i in 0..seq_q {
+                let pr = &p[i * seq_k..(i + 1) * seq_k];
+                let dr = &mut du[i * seq_k..(i + 1) * seq_k];
+                let mut dot = 0.0f32;
+                for j in 0..seq_k {
+                    dot += pr[j] * v_row_sum[j];
+                }
+                for j in 0..seq_k {
+                    dr[j] = pr[j] * (v_row_sum[j] - dot);
+                    p_col_sum[j] += pr[j];
+                }
+            }
+
+            for j in 0..seq_k {
+                dv_bh[j * d_v..(j + 1) * d_v].fill(p_col_sum[j]);
+            }
+            gemm::sgemm_scaled(seq_q, seq_k, d_k, scale, &du, kh, dq_bh);
+            gemm::sgemm_tb_scaled(seq_k, seq_q, d_k, scale, &du, qh, dk_bh);
+        });
+    (dq, dk, dv)
+}
+
 /// Fused LayerNorm forward (f64): per row of `[batch, norm_size]`, computes
 /// `y = (x - mean) / sqrt(var + eps) * weight + bias` in two streaming passes,
 /// NEVER materialising the ~14 full-size intermediates (broadcast mean/var, the
@@ -28154,6 +28253,44 @@ pub fn sparse_coo_add(
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
+
+    #[test]
+    fn sdpa_backward_f32_unit_dout_matches_dense_ones() {
+        let (num_bh, seq_q, seq_k, d_k, d_v) = (2usize, 5usize, 6usize, 4usize, 3usize);
+        let q: Vec<f32> = (0..num_bh * seq_q * d_k)
+            .map(|i| ((i % 11) as f32 - 5.0) * 0.07)
+            .collect();
+        let k: Vec<f32> = (0..num_bh * seq_k * d_k)
+            .map(|i| ((i % 13) as f32 - 6.0) * 0.05)
+            .collect();
+        let v: Vec<f32> = (0..num_bh * seq_k * d_v)
+            .map(|i| ((i % 7) as f32 - 3.0) * 0.09)
+            .collect();
+        let dout = vec![1.0f32; num_bh * seq_q * d_v];
+        let scale = 1.0 / (d_k as f32).sqrt();
+
+        for &causal in &[false, true] {
+            let expected = super::sdpa_backward_f32(
+                &q, &k, &v, &dout, num_bh, seq_q, seq_k, d_k, d_v, scale, causal,
+            );
+            let actual = super::sdpa_backward_f32_unit_dout(
+                &q, &k, &v, num_bh, seq_q, seq_k, d_k, d_v, scale, causal,
+            );
+            for (label, a, b) in [
+                ("dq", &actual.0, &expected.0),
+                ("dk", &actual.1, &expected.1),
+                ("dv", &actual.2, &expected.2),
+            ] {
+                assert_eq!(a.len(), b.len(), "{label} length");
+                for (i, (&got, &want)) in a.iter().zip(b.iter()).enumerate() {
+                    assert!(
+                        (got - want).abs() <= 2.0e-4 + 2.0e-4 * want.abs(),
+                        "{label}[{i}] causal={causal}: unit {got} vs dense {want}"
+                    );
+                }
+            }
+        }
+    }
 
     // The parallel dim-argmax/argmin (frankentorch-kgs4.50) must match the serial
     // reference bit-for-bit, including PyTorch's first-occurrence ties and NaN-wins

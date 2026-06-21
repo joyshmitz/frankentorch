@@ -4469,3 +4469,32 @@ loss at roughly `1.12-1.25x` slower on local same-machine evidence. NEXT: do not
 `BR` constant again. Retry only after phase timing (`sdpa_inference_headtohead` raw-kernel vs API
 readback) points to a deeper lever: online softmax plus fused V accumulation, vectorized `exp`
 preserving tolerance, or a matrixmultiply/SIMD-class kernel change.
+
+## 2026-06-21cv - SMALL KEEP / NEGATIVE RATIO: f32 SDPA unit-dout backward improves FT but still loses to PyTorch
+
+Targeted the f32 SDPA training-step gap with an algebraic scalar-loss backward specialization:
+when the upstream gradient is exact all-ones (`sum(attn)`), avoid materializing dense `dout`
+and replace the all-ones `dP`/`dV` GEMMs with reductions (`dP[i,j] = sum_l V[j,l]`,
+`dV[j,l] = sum_i P[i,j]`). `dQ`/`dK` still use the existing GEMM path. This is the
+alien-graveyard lever for this pass: delete work proven redundant by the cotangent shape instead
+of retuning the same row-block constant family.
+
+MEASURED current source on RCH `vmi1227854`:
+  non-causal FT 31.363ms; causal FT 27.410ms. Workers lack torch, so PyTorch was measured by
+  retrieving the same release binary and running the local CPU sidecar with torch `2.12.1+cpu`:
+  non-causal FT 35.281ms vs PyTorch 19.625ms = `1.80x` slower;
+  causal FT 33.647ms vs PyTorch 19.586ms = `1.72x` slower.
+
+MEASURED candidate source:
+  RCH `vmi1227854` FT-only: non-causal 28.152ms (`1.114x` faster), causal 22.669ms (`1.209x` faster).
+  Local same-binary sidecar: non-causal FT 33.696ms vs PyTorch 19.623ms = `1.72x` slower;
+  causal FT 31.512ms vs PyTorch 19.840ms = `1.59x` slower.
+
+VERIFIED: `sdpa_backward_f32_unit_dout_matches_dense_ones` passed in `ft-kernel-cpu`;
+`sdpa_f32_grad_matches_f64_path` passed in `ft-api`; release-profile `ft-conformance`
+passed remotely on RCH `vmi1227854` with `RCH_REQUIRE_REMOTE=1` after a discarded local fallback
+hit mixed-rustc artifacts in the warm target directory. Score vs PyTorch for this pass:
+`0W / 2L / 0N`. Internal FT score vs current source: `2W / 0L / 0N`. Source disposition:
+small keep, but not a domination claim. NEXT: the remaining PyTorch gap needs a deeper CPU attention
+primitive: online softmax plus fused V accumulation in backward, vectorized exp/softmax within
+tolerance, or a BLAS/SIMD-class f32 matmul tile change.

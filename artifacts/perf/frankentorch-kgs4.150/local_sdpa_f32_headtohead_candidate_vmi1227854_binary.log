@@ -1,0 +1,3 @@
+f32 SDPA [16,512,64] train step, 20 iters median:
+  non-causal         FT   33.696 ms   PyTorch   19.623 ms  => FT 1.72x slower
+  causal             FT   31.512 ms   PyTorch   19.840 ms  => FT 1.59x slower

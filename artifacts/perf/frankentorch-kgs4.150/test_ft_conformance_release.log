@@ -1,0 +1,551 @@
+[RCH] local (no admissible workers: insufficient_slots=10,active_project_exclusion=1)
+   Compiling num-traits v0.2.19
+   Compiling matrixmultiply v0.3.10
+   Compiling memoffset v0.9.1
+   Compiling tracing-core v0.1.36
+   Compiling thread_local v1.1.9
+   Compiling libc v0.2.185
+   Compiling generic-array v0.14.7
+   Compiling crypto-common v0.2.1
+   Compiling rustix v1.1.4
+   Compiling block-buffer v0.12.0
+   Compiling parking_lot_core v0.9.12
+   Compiling itertools v0.10.5
+   Compiling nix v0.31.2
+   Compiling sharded-slab v0.1.7
+   Compiling lock_api v0.4.14
+   Compiling thiserror v2.0.18
+   Compiling crc32fast v1.5.0
+   Compiling signal-hook v0.4.4
+   Compiling bincode_derive-next v2.1.0
+   Compiling getrandom v0.4.2
+   Compiling hashbrown v0.17.0
+   Compiling futures-lite v2.6.1
+   Compiling bit-set v0.8.0
+error[E0514]: found crate `autocfg` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-traits-0.2.19/build.rs:2:14
+  |
+2 |     let ac = autocfg::new();
+  |              ^^^^^^^
+  |
+  = note: the following crate versions were found:
+          crate `autocfg` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libautocfg-ca6717da2c4ccec4.rlib
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `autocfg` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/matrixmultiply-0.3.10/build.rs:4:15
+  |
+4 |         match autocfg::AutoCfg::new() {
+  |               ^^^^^^^
+  |
+  = note: the following crate versions were found:
+          crate `autocfg` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libautocfg-ca6717da2c4ccec4.rlib
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+For more information about this error, try `rustc --explain E0514`.
+error[E0514]: found crate `autocfg` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memoffset-0.9.1/build.rs:1:1
+  |
+1 | extern crate autocfg;
+  | ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: the following crate versions were found:
+          crate `autocfg` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libautocfg-ca6717da2c4ccec4.rlib
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error: could not compile `num-traits` (build script) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `memoffset` (build script) due to 1 previous error
+error[E0514]: found crate `cfg_if` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thread_local-1.1.9/src/thread_id.rs:80:1
+   |
+80 | cfg_if::cfg_if! {
+   | ^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `cfg_if` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libcfg_if-d2e636d86701c50e.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error: could not compile `matrixmultiply` (build script) due to 1 previous error
+error[E0514]: found crate `once_cell` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-core-0.1.36/src/lazy.rs:2:16
+  |
+2 | pub(crate) use once_cell::sync::Lazy;
+  |                ^^^^^^^^^
+  |
+  = note: the following crate versions were found:
+          crate `once_cell` compiled by rustc 1.98.0-nightly (beae78130 2026-06-09): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libonce_cell-2127f27033a1cb3a.rmeta
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `hybrid_array` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/block-buffer-0.12.0/src/lib.rs:43:9
+   |
+43 | pub use hybrid_array as array;
+   |         ^^^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `hybrid_array` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libhybrid_array-0eb7c3b131d05b31.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `hybrid_array` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crypto-common-0.2.1/src/lib.rs:17:9
+   |
+17 | pub use hybrid_array as array;
+   |         ^^^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `hybrid_array` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libhybrid_array-0eb7c3b131d05b31.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0425]: cannot find function `get` in module `thread_id`
+   --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thread_local-1.1.9/src/lib.rs:185:35
+    |
+185 |         self.get_inner(thread_id::get())
+    |                                   ^^^ not found in `thread_id`
+
+error[E0425]: cannot find function `get` in module `thread_id`
+   --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thread_local-1.1.9/src/lib.rs:207:33
+    |
+207 |         let thread = thread_id::get();
+    |                                 ^^^ not found in `thread_id`
+
+error: could not compile `tracing-core` (lib) due to 1 previous error
+error[E0514]: found crate `cfg_aliases` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nix-0.31.2/build.rs:1:5
+  |
+1 | use cfg_aliases::cfg_aliases;
+  |     ^^^^^^^^^^^
+  |
+  = note: the following crate versions were found:
+          crate `cfg_aliases` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libcfg_aliases-8b942c066a2e7a69.rlib
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error: could not compile `crypto-common` (lib) due to 1 previous error
+error: could not compile `block-buffer` (lib) due to 1 previous error
+error: could not compile `nix` (build script) due to 1 previous error
+error[E0514]: found crate `scopeguard` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lock_api-0.4.14/src/lib.rs:94:1
+   |
+94 | extern crate scopeguard;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `scopeguard` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libscopeguard-6db82b174221e1c9.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error: could not compile `lock_api` (lib) due to 1 previous error
+error[E0514]: found crate `virtue` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bincode_derive-next-2.1.0/src/derive_enum.rs:2:5
+  |
+2 | use virtue::prelude::*;
+  |     ^^^^^^
+  |
+  = note: the following crate versions were found:
+          crate `virtue` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libvirtue_next-4849a74b3bb4aa22.rlib
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `lazy_static` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sharded-slab-0.1.7/src/sync.rs:66:20
+   |
+66 |     pub(crate) use lazy_static::lazy_static;
+   |                    ^^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `lazy_static` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/liblazy_static-7733bdc5d6350bbf.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `bit_vec` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bit-set-0.8.0/src/lib.rs:54:1
+   |
+54 | extern crate bit_vec;
+   | ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `bit_vec` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libbit_vec-013235981a65bdd5.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error: could not compile `bincode_derive-next` (lib) due to 1 previous error
+error: could not compile `sharded-slab` (lib) due to 1 previous error
+error: could not compile `bit-set` (lib) due to 1 previous error
+error[E0514]: found crate `either` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/itertools-0.10.5/src/lib.rs:60:9
+   |
+60 | pub use either::Either;
+   |         ^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `either` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libeither-133d0a758a0be45a.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error: could not compile `itertools` (lib) due to 1 previous error
+Some errors have detailed explanations: E0425, E0514.
+For more information about an error, try `rustc --explain E0425`.
+error[E0514]: found crate `fastrand` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.1/src/future.rs:36:5
+   |
+36 | use fastrand::Rng;
+   |     ^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `fastrand` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libfastrand-5687904ccbf0a842.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `pin_project_lite` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.1/src/future.rs:37:5
+   |
+37 | use pin_project_lite::pin_project;
+   |     ^^^^^^^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `pin_project_lite` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libpin_project_lite-c7fff26b062085d8.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `parking` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.1/src/future.rs:57:9
+   |
+57 |     use parking::Parker;
+   |         ^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `parking` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libparking-42a83911831675e7.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `futures_core` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.1/src/stream.rs:19:9
+   |
+19 | pub use futures_core::stream::Stream;
+   |         ^^^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `futures_core` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libfutures_core-da3f5e8ce034883e.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `futures_io` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.1/src/io.rs:21:9
+   |
+21 | pub use futures_io::{AsyncBufRead, AsyncRead, AsyncSeek, AsyncWrite};
+   |         ^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `futures_io` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libfutures_io-fe4c78e72beb9b13.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `linux_raw_sys` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/backend/linux_raw/conv.rs:48:5
+   |
+48 | use linux_raw_sys::general::__kernel_clockid_t;
+   |     ^^^^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `linux_raw_sys` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/liblinux_raw_sys-edd416b1846ae95c.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `allocator_api2` compiled by an incompatible version of rustc
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hashbrown-0.17.0/src/alloc.rs:35:20
+   |
+35 |     pub(crate) use allocator_api2::alloc::{Allocator, Global};
+   |                    ^^^^^^^^^^^^^^
+   |
+   = note: the following crate versions were found:
+           crate `allocator_api2` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/liballocator_api2-d6816e127d076781.rmeta
+   = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `foldhash` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hashbrown-0.17.0/src/hasher.rs:4:5
+  |
+4 |     foldhash::fast::RandomState,
+  |     ^^^^^^^^
+  |
+  = note: the following crate versions were found:
+          crate `foldhash` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libfoldhash-be15630f2903ac82.rmeta
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0514]: found crate `equivalent` compiled by an incompatible version of rustc
+   --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hashbrown-0.17.0/src/lib.rs:123:9
+    |
+123 | pub use equivalent::Equivalent;
+    |         ^^^^^^^^^^
+    |
+    = note: the following crate versions were found:
+            crate `equivalent` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libequivalent-f60641437efedd8b.rmeta
+    = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error: could not compile `thread_local` (lib) due to 3 previous errors
+error: could not compile `futures-lite` (lib) due to 5 previous errors
+error: could not compile `hashbrown` (lib) due to 3 previous errors
+error[E0514]: found crate `bitflags` compiled by an incompatible version of rustc
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/backend/linux_raw/event/epoll.rs:2:5
+  |
+2 | use bitflags::bitflags;
+  |     ^^^^^^^^
+  |
+  = note: the following crate versions were found:
+          crate `bitflags` compiled by rustc 1.98.0-nightly (b30f3df3b 2026-06-11): /data/projects/.rch-targets/frankentorch-cod-a/release/deps/libbitflags-9b2628aa989b307b.rmeta
+  = help: please recompile that crate using this compiler (rustc 1.98.0-nightly (f20a92ec0 2026-06-07)) (consider running `cargo clean` first)
+
+error[E0432]: unresolved imports `crate::fs::Mode`, `crate::fs::OFlags`
+   --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/backend/linux_raw/conv.rs:311:31
+    |
+311 |     use crate::fs::{FileType, Mode, OFlags};
+    |                               ^^^^  ^^^^^^ no `OFlags` in `fs`
+    |                               |
+    |                               no `Mode` in `fs`
+
+error[E0432]: unresolved import `crate::event::EventfdFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/backend/linux_raw/event/syscalls.rs:12:27
+   |
+12 | use crate::event::{epoll, EventfdFlags, FdSetElement, PollFd, Timespec};
+   |                           ^^^^^^^^^^^^ no `EventfdFlags` in `event`
+
+error[E0432]: unresolved imports `crate::fs::Mode`, `crate::fs::OFlags`
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/backend/linux_raw/fs/dir.rs:4:62
+  |
+4 |     fcntl_getfl, fstat, fstatfs, fstatvfs, openat, FileType, Mode, OFlags, Stat, StatFs, StatVfs,
+  |                                                              ^^^^  ^^^^^^ no `OFlags` in `fs`
+  |                                                              |
+  |                                                              no `Mode` in `fs`
+
+error[E0432]: unresolved imports `crate::fs::Access`, `crate::fs::AtFlags`, `crate::fs::FallocateFlags`, `crate::fs::MemfdFlags`, `crate::fs::Mode`, `crate::fs::OFlags`, `crate::fs::RenameFlags`, `crate::fs::ResolveFlags`, `crate::fs::SealFlags`, `crate::fs::StatVfsMountFlags`, `crate::fs::StatxFlags`, `crate::fs::XattrFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/backend/linux_raw/fs/syscalls.rs:34:14
+   |
+34 |     inotify, Access, Advice, AtFlags, FallocateFlags, FileType, FlockOperation, Fsid, Gid,
+   |              ^^^^^^          ^^^^^^^  ^^^^^^^^^^^^^^ no `FallocateFlags` in `fs`
+   |              |               |
+   |              |               no `AtFlags` in `fs`
+   |              no `Access` in `fs`
+35 |     MemfdFlags, Mode, OFlags, RenameFlags, ResolveFlags, SealFlags, SeekFrom, Stat, StatFs,
+   |     ^^^^^^^^^^  ^^^^  ^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^ no `SealFlags` in `fs`
+   |     |           |     |       |            |
+   |     |           |     |       |            no `ResolveFlags` in `fs`
+   |     |           |     |       no `RenameFlags` in `fs`
+   |     |           |     no `OFlags` in `fs`
+   |     |           no `Mode` in `fs`
+   |     no `MemfdFlags` in `fs`
+36 |     StatVfs, StatVfsMountFlags, Statx, StatxFlags, Timestamps, Uid, XattrFlags,
+   |              ^^^^^^^^^^^^^^^^^         ^^^^^^^^^^                   ^^^^^^^^^^
+   |              |
+   |              no `StatVfsMountFlags` in `fs`
+   |
+help: a similar name exists in the module
+   |
+34 -     inotify, Access, Advice, AtFlags, FallocateFlags, FileType, FlockOperation, Fsid, Gid,
+34 +     inotify, access, Advice, AtFlags, FallocateFlags, FileType, FlockOperation, Fsid, Gid,
+   |
+
+error[E0432]: unresolved imports `crate::io::DupFlags`, `crate::io::FdFlags`, `crate::io::ReadWriteFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/backend/linux_raw/io/syscalls.rs:29:23
+   |
+29 | use crate::io::{self, DupFlags, FdFlags, IoSlice, IoSliceMut, ReadWriteFlags};
+   |                       ^^^^^^^^  ^^^^^^^ no `FdFlags` in `io`  ^^^^^^^^^^^^^^ no `ReadWriteFlags` in `io`
+   |                       |
+   |                       no `DupFlags` in `io`
+
+error[E0432]: unresolved imports `crate::fs::Mode`, `crate::fs::OFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/backend/linux_raw/param/auxv.rs:13:17
+   |
+13 | use crate::fs::{Mode, OFlags};
+   |                 ^^^^  ^^^^^^ no `OFlags` in `fs`
+   |                 |
+   |                 no `Mode` in `fs`
+
+error[E0432]: unresolved imports `crate::pipe::PipeFlags`, `crate::pipe::SpliceFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/backend/linux_raw/pipe/syscalls.rs:12:31
+   |
+12 | use crate::pipe::{IoSliceRaw, PipeFlags, SpliceFlags};
+   |                               ^^^^^^^^^  ^^^^^^^^^^^ no `SpliceFlags` in `pipe`
+   |                               |
+   |                               no `PipeFlags` in `pipe`
+
+error[E0432]: unresolved imports `crate::process::PidfdFlags`, `crate::process::PidfdGetfdFlags`, `crate::process::WaitIdOptions`, `crate::process::WaitOptions`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/backend/linux_raw/process/syscalls.rs:21:17
+   |
+21 |     Flock, Pid, PidfdFlags, PidfdGetfdFlags, Resource, Rlimit, Uid, WaitId, WaitIdOptions,
+   |                 ^^^^^^^^^^  ^^^^^^^^^^^^^^^                                 ^^^^^^^^^^^^^ no `WaitIdOptions` in `process`
+   |                 |           |
+   |                 |           no `PidfdGetfdFlags` in `process`
+   |                 no `PidfdFlags` in `process`
+22 |     WaitIdStatus, WaitOptions, WaitStatus,
+   |                   ^^^^^^^^^^^ no `WaitOptions` in `process`
+
+error[E0432]: unresolved import `crate::fs::Mode`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/backend/linux_raw/process/syscalls.rs:29:51
+   |
+29 | use {crate::backend::conv::ret_c_uint_infallible, crate::fs::Mode};
+   |                                                   ^^^^^^^^^^^^^^^ no `Mode` in `fs`
+
+error[E0432]: unresolved imports `crate::time::TimerfdFlags`, `crate::time::TimerfdTimerFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/backend/linux_raw/time/syscalls.rs:12:47
+   |
+12 | use crate::time::{Itimerspec, TimerfdClockId, TimerfdFlags, TimerfdTimerFlags};
+   |                                               ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^ no `TimerfdTimerFlags` in `time`
+   |                                               |
+   |                                               no `TimerfdFlags` in `time`
+
+error[E0432]: unresolved import `backend::event::types::EventfdFlags`
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/event/eventfd.rs:4:9
+  |
+4 | pub use backend::event::types::EventfdFlags;
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `EventfdFlags` in `backend::event::types`
+
+error[E0432]: unresolved import `backend::event::poll_fd::PollFlags`
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/event/poll.rs:4:43
+  |
+4 | pub use backend::event::poll_fd::{PollFd, PollFlags};
+  |                                           ^^^^^^^^^ no `PollFlags` in `backend::event::poll_fd`
+
+error[E0432]: unresolved import `crate::fs::Access`
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/abs.rs:5:5
+  |
+5 | use crate::fs::Access;
+  |     ^^^^^^^^^^^^^^^^^ no `Access` in `fs`
+  |
+help: a similar name exists in the module
+  |
+5 - use crate::fs::Access;
+5 + use crate::fs::access;
+  |
+
+error[E0432]: unresolved imports `crate::fs::Mode`, `crate::fs::OFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/abs.rs:20:17
+   |
+20 | use crate::fs::{Mode, OFlags, Stat};
+   |                 ^^^^  ^^^^^^ no `OFlags` in `fs`
+   |                 |
+   |                 no `Mode` in `fs`
+
+error[E0432]: unresolved import `crate::fs::Access`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/at.rs:14:5
+   |
+14 | use crate::fs::Access;
+   |     ^^^^^^^^^^^^^^^^^ no `Access` in `fs`
+   |
+help: a similar name exists in the module
+   |
+14 - use crate::fs::Access;
+14 + use crate::fs::access;
+   |
+
+error[E0432]: unresolved import `crate::fs::AtFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/at.rs:16:5
+   |
+16 | use crate::fs::AtFlags;
+   |     ^^^^^^^^^^^^^^^^^^ no `AtFlags` in `fs`
+
+error[E0432]: unresolved import `crate::fs::RenameFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/at.rs:20:5
+   |
+20 | use crate::fs::RenameFlags;
+   |     ^^^^^^^^^^^^^^^^^^^^^^ no `RenameFlags` in `fs`
+
+error[E0432]: unresolved imports `crate::fs::Mode`, `crate::fs::OFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/at.rs:27:17
+   |
+27 | use crate::fs::{Mode, OFlags};
+   |                 ^^^^  ^^^^^^ no `OFlags` in `fs`
+   |                 |
+   |                 no `Mode` in `fs`
+
+error[E0432]: unresolved import `backend::fs::types::OFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/fcntl.rs:18:5
+   |
+18 | use backend::fs::types::OFlags;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^ no `OFlags` in `backend::fs::types`
+
+error[E0432]: unresolved import `backend::fs::types::SealFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/fcntl.rs:62:5
+   |
+62 | use backend::fs::types::SealFlags;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `SealFlags` in `backend::fs::types`
+
+error[E0432]: unresolved import `crate::fs::Mode`
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/fd.rs:4:5
+  |
+4 | use crate::fs::Mode;
+  |     ^^^^^^^^^^^^^^^ no `Mode` in `fs`
+
+error[E0432]: unresolved import `backend::fs::types::FallocateFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/fd.rs:19:5
+   |
+19 | use backend::fs::types::FallocateFlags;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `FallocateFlags` in `backend::fs::types`
+
+error[E0432]: unresolved imports `crate::backend::fs::inotify::CreateFlags`, `crate::backend::fs::inotify::ReadFlags`, `crate::backend::fs::inotify::WatchFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/inotify.rs:45:39
+   |
+45 | pub use crate::backend::fs::inotify::{CreateFlags, ReadFlags, WatchFlags};
+   |                                       ^^^^^^^^^^^  ^^^^^^^^^  ^^^^^^^^^^ no `WatchFlags` in `backend::fs::inotify`
+   |                                       |            |
+   |                                       |            no `ReadFlags` in `backend::fs::inotify`
+   |                                       no `CreateFlags` in `backend::fs::inotify`
+
+error[E0432]: unresolved import `backend::fs::types::MemfdFlags`
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/memfd_create.rs:3:5
+  |
+3 | use backend::fs::types::MemfdFlags;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `MemfdFlags` in `backend::fs::types`
+
+error[E0432]: unresolved imports `backend::fs::types::Mode`, `backend::fs::types::OFlags`, `backend::fs::types::ResolveFlags`
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/openat2.rs:4:26
+  |
+4 | use backend::fs::types::{Mode, OFlags, ResolveFlags};
+  |                          ^^^^  ^^^^^^  ^^^^^^^^^^^^ no `ResolveFlags` in `backend::fs::types`
+  |                          |     |
+  |                          |     no `OFlags` in `backend::fs::types`
+  |                          no `Mode` in `backend::fs::types`
+
+error[E0432]: unresolved import `crate::fs::AtFlags`
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/statx.rs:4:5
+  |
+4 | use crate::fs::AtFlags;
+  |     ^^^^^^^^^^^^^^^^^^ no `AtFlags` in `fs`
+
+error[E0432]: unresolved imports `crate::fs::AtFlags`, `crate::fs::StatxFlags`
+   --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/fs/statx.rs:218:21
+    |
+218 |     use crate::fs::{AtFlags, Statx, StatxFlags};
+    |                     ^^^^^^^         ^^^^^^^^^^ no `StatxFlags` in `fs`
+    |                     |
+    |                     no `AtFlags` in `fs`
+    |
+    = help: consider importing this unresolved item through its public re-export instead:
+            crate::fs::statx::AtFlags
+
+error[E0432]: unresolved import `backend::io::types::DupFlags`
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/io/dup.rs:8:9
+  |
+8 | pub use backend::io::types::DupFlags;
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `DupFlags` in `backend::io::types`
+
+error[E0432]: unresolved import `backend::io::types::FdFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/io/fcntl.rs:14:9
+   |
+14 | pub use backend::io::types::FdFlags;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `FdFlags` in `backend::io::types`
+
+error[E0432]: unresolved import `backend::io::types::ReadWriteFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/io/read_write.rs:14:9
+   |
+14 | pub use backend::io::types::ReadWriteFlags;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `ReadWriteFlags` in `backend::io::types`
+
+error[E0432]: unresolved import `backend::pipe::types::PipeFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/pipe.rs:21:9
+   |
+21 | pub use backend::pipe::types::PipeFlags;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `PipeFlags` in `backend::pipe::types`
+
+error[E0432]: unresolved import `backend::pipe::types::SpliceFlags`
+  --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/pipe.rs:24:44
+   |
+24 | pub use backend::pipe::types::{IoSliceRaw, SpliceFlags};
+   |                                            ^^^^^^^^^^^ no `SpliceFlags` in `backend::pipe::types`
+
+error[E0432]: unresolved import `crate::fs::Mode`
+ --> /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/process/umask.rs:6:5
+  |
+6 | use crate::fs::Mode;
+  |     ^^^^^^^^^^^^^^^ no `Mode` in `fs`
+
+Some errors have detailed explanations: E0432, E0514.
+For more information about an error, try `rustc --explain E0432`.
+error: could not compile `rustix` (lib) due to 35 previous errors
