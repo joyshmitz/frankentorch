@@ -2592,3 +2592,13 @@ structural, NOT from the frankentorch repo. Measured consumers:
   projects (frankenjax/frankenfs/frankenredis/frankenpandas caches if those campaigns are done).
 - IMPACT: until disk recovers, frankentorch perf work cannot be compiled/verified. Pending-bench
   queue (cuqzu 14291513 + create_graph skip 5fe70493) and the 05upk apply all wait on this.
+
+## 2026-06-21j - frankentorch-05upk plan upgraded to compile-ready (disk-low, no cargo)
+
+- Validated the Arc-share refactor site-by-site against current origin/main and resolved the one
+  real subtlety (the create_graph persist must be a `match`, NOT `entry().or_insert_with(|| Arc::new(vals))`
+  — that hits a move/borrow conflict on `vals`). Exact transcriptions for all ~15 ft-autograd sites +
+  ft-nn now in artifacts/perf/frankentorch-05upk/arc_refactor_plan.md (VALIDATION ADDENDUM). Apply with a
+  compiler (disk recovered) + full-workspace verify before merge.
+- PENDING-BENCH (unchanged, awaiting disk): cuqzu (14291513) + create_graph sparse skip (5fe70493) —
+  verify ft-autograd/ft-api/conformance, revert any hunk that fails to compile. rdgt6 verified.

@@ -90,3 +90,48 @@ Win: noise-buried on the gauntlet (1 leaf), but scales with #leaf-params per tra
 `-p ft-api` (optimizers + IndexSelect sparse + the 2 known pre-existing reds expected),
 `-p ft-conformance`, `cargo clippy -p ft-autograd -- -D warnings`. Expect BIT-EXACT (Arc share/make_mut
 preserve values exactly). If any compile/test fails, this is a core path — fix or revert, do not force.
+
+---
+
+## VALIDATION ADDENDUM (BlackThrush, 2026-06-21, against origin/main; line nums approximate)
+
+Site-by-site transcription validated by inspection against the current origin/main source.
+`Arc` is in scope unqualified (used by CustomFunctionBackward). EXACT forms:
+
+- struct field (lib.rs ~1173): `gradients: Vec<Option<Arc<Vec<f64>>>>,`
+- `gradient()` (~1185): `.and_then(|entry| entry.as_ref().map(|a| a.as_slice()))`
+- `gradients()` (~1189): `pub fn gradients(&self) -> &[Option<Arc<Vec<f64>>>]` (body `&self.gradients`)
+- `tensor_gradients_iter()` (~1234): `.map(|(i, opt)| (i, opt.as_ref().map(|a| a.as_slice())))`
+- `scaled_clone()` (~1244): `let scaled_gradients: Vec<Option<Arc<Vec<f64>>>> = self.gradients.iter()
+  .map(|opt| opt.as_ref().map(|grad| Arc::new(grad.iter().map(|&g| g*factor).collect::<Vec<f64>>()))).collect();`
+- `gradient_value` / `sparse_gradient` / `is_sparse_gradient` / `gradient_node`: UNCHANGED.
+- field `persistent_grads` (~4216): `BTreeMap<usize, Arc<Vec<f64>>>`. `BTreeMap::new()` unchanged;
+  `.retain(|&id, _| ...)` unchanged; `.remove()` unchanged.
+- `tensor_accumulated_gradient` (~4531): `.map(|a| a.as_slice())`
+- `tensor_accumulated_gradient_len` (~4548): `.map(|a| a.len())`
+- `zero_tensor_accumulated_gradient` (~4556): `if let Some(grad) = ...get_mut { Arc::make_mut(grad).fill(0.0); }`
+- `set_tensor_accumulated_gradient` (~4569): `insert(node.0, Arc::new(gradient))`
+- first-order build (~14416): `Some(grad.values)` -> `Some(Arc::new(grad.values))`
+- create_graph build (~17185): `gradients.push(Some(vals))` -> `gradients.push(Some(Arc::new(vals)))`
+- `update_tensor_values_with_accumulated_gradient` (~19903): the `let Some(gradient) = ...get(&id.0)`
+  yields `&Arc<Vec<f64>>`; pass `gradient.as_slice()` where a `&[f64]` is expected (read-only — no make_mut).
+- `accumulate_persistent_gradients` (~19812) NEW BODY (param `&[Option<Arc<Vec<f64>>>]`):
+  `let Some(arc) = gradient.as_ref() else { continue };` ... (keep is_leaf||retain gate) ...
+  `match self.persistent_grads.get_mut(&idx) {
+       Some(existing) => Self::accumulate_existing_tensor_gradient(node, Arc::make_mut(existing), arc.as_slice())?,
+       None => { self.persistent_grads.insert(idx, Arc::clone(arc)); } }`  // Arc::clone = the share, no to_vec
+  (accumulate_existing_tensor_gradient takes `&mut [f64]`; `Arc::make_mut(existing): &mut Vec<f64>` derefs OK.)
+- ★ create_graph PERSIST loop (~17296): CANNOT keep the `entry().and_modify(...).or_insert_with(|| Arc::new(vals))`
+  form — `vals` would be borrowed by and_modify AND moved into the or_insert_with closure = move/borrow
+  conflict (the original `.or_insert(vals)` passes vals by value, not a closure, so it compiled). REWRITE as a
+  match, like accumulate_persistent_gradients:
+  `match self.persistent_grads.get_mut(&idx) {
+       Some(existing) => { let t = Arc::make_mut(existing); for (e,v) in t.iter_mut().zip(vals.iter()){*e+=v;} }
+       None => { self.persistent_grads.insert(idx, Arc::new(vals)); } }`
+- ft-nn (~28579/28582): `report.gradients().len()` fine; the `for (i,g) in report.gradients().iter()` body uses
+  `g: &Option<Arc<Vec<f64>>>` — adapt its uses of `g` (e.g. `g.as_ref().map(|a| a.len())`). 1 line.
+- ft-autograd gradients() callers tests (~21184/21387): `assert_eq!(a.gradients(), b.gradients())` — Arc<Vec<f64>>
+  is PartialEq by content → unchanged.
+
+This plan is now compile-ready-confidence-high (the one borrow subtlety is resolved). Apply with a compiler
+(disk recovered) + full-workspace verify before merge; ft-nn must not be mid-rewrite when its 1-line edit lands.
