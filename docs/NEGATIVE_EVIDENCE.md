@@ -3823,3 +3823,17 @@ scout 21bh saw contiguous()=84ms but didn't assess the tiling headroom). 3 GB/s 
 likely FT's transpose-materialize path is a naive strided copy (NOT the blocked permute-vein kernel).
 FILED as a bead. Bit-exact (pure data movement). NEXT: locate FT's eager-transpose materialize path
 (tensor_tape.transpose), check naive-vs-blocked, implement a tiled transpose if naive, head-to-head.
+
+## 2026-06-21bk - REFUTED transpose-tiling lever: FT already 64-tiled + parallel at the ~3 GB/s hardware ceiling
+
+Pursued the filed transpose-tiling bead (21bj). Read FT's impl: tensor_transpose -> permute_typed_storage
+-> cache-blocked transpose_plane with TILE=64, parallel (batched -> par over planes; single large plane
+-> par over output row-tiles), standard tiled loop (contiguous reads, scattered tile writes). It is
+ALREADY well-blocked + parallel. FT 3.4 GB/s vs PyTorch ~3 GB/s. => ~3 GB/s IS the practical hardware
+ceiling for a [4096^2] f64 transpose: a 64-tile writes 64 output rows 32KB apart -> TLB/cache thrash
+regardless of blocking, and PyTorch (highly optimized) hits the same wall. FT already marginally BEATS
+PyTorch (3.4 vs 3 = the 1.04x parity). My filed "2-3x potential" was OPTIMISTIC — it assumed a naive
+strided copy + 10 GB/s achievable; reality: already 64-tiled, and PyTorch's 3 GB/s is the evidence that
+3 GB/s is near-ceiling (an optimized lib can't exceed it). REFUTED, no headroom. Bead closed.
+=> CONFIRMS: winnable safe-Rust CPU surface is comprehensively harvested. The transpose (last fresh
+candidate) is parity + hardware-ceiling-bound (FT competitive-or-slightly-winning). 7 scan wins stand.
