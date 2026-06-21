@@ -35,7 +35,25 @@ The causal win improves most (1.85x → 2.3x) thanks to the load-balanced split.
 times also carry fixed `tensor_variable` (~4.6ms input build) + `read_out` (~2.4ms) overhead
 that the kernel change does not touch; the RAW-kernel row isolates the ~1.4x kernel gain.
 
-## Win/loss/neutral vs PyTorch (32t): `2W / 0N` (widens two existing wins; no regression)
+### FAIR-HARNESS UPDATE (2026-06-21, cc) — the numbers above are UNDERSTATED
+
+The "through session" rows above used `sdpa_inference_headtohead`, whose FT loop re-creates
+q/k/v + reads the output every iter while PyTorch reuses pre-built tensors — apples-to-oranges
+(same harness artifact corrected for f32 in kgs4.154). Re-measured with PyTorch's harness
+(q/k/v built ONCE, time op+read only — `example sdpa_f64_fair_inference`), 32 torch threads,
+3 runs, rel-diff MATCH (2.12e-14 / 2.73e-14):
+
+| Lane | FT (fair op+read) | PyTorch (32t) | verdict |
+| --- | ---: | ---: | --- |
+| non-causal | `5.27–5.36 ms` | `15.4–15.8 ms` | **FT 2.92–2.97x faster** |
+| causal | `4.76–5.05 ms` | `15.4–15.5 ms` | **FT 3.08–3.25x faster** |
+
+So the true with-nested-block win is ~2.95x / ~3.1x (vs the understated 2.67x / 2.3x recorded
+above). NOTE: FT fair-*reuse* (5.0–5.4 ms) is FASTER than create-fresh-per-iter (6.3–7.5 ms),
+i.e. session-reuse over ~30 no-grad ops does NOT degrade here — the earlier GQA "reuse not
+faster" reading (kgs4.151 note) was contention noise, not tape retention at these iter counts.
+
+## Win/loss/neutral vs PyTorch (32t): `2W / 0N` (widens two existing wins; fair ~2.95x/3.1x)
 
 ## Gates
 
