@@ -4,6 +4,58 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-21 - frankentorch-kgs4.147 - avg_pool2d scalar-loss backward keep, forward-deforestation reject
+
+- Lever attempted: specialize `sum(functional_avg_pool2d(...))` for f64 4D
+  no-pad/no-ceil pooling. The accepted half keeps the existing optimized
+  `avg_pool2d_forward_f64` plus `sum_tensor_contiguous_f64` forward path, then
+  skips the dense output-gradient buffer in backward with
+  `avg_pool2d_backward_scalar_f64`. The rejected half tried full forward
+  deforestation with a logical pooled-output range reducer.
+- Workload: `pytorch_gauntlet_bench` `gauntlet_avg_pool2d_grad`, f64
+  `[N,C,H,W]=[8,64,64,64]`, kernel `(2,2)`, stride `(2,2)`, no padding,
+  scalar-sum loss and backward.
+- Correctness gate: final source passed
+  `rch exec -- cargo test -p ft-api --lib
+  functional_avg_pool2d_sum_matches_pool_sum_backward_bits --release --
+  --nocapture` on `vmi1153651`; 1 passed, 0 failed, 2339 filtered. Earlier
+  versions also passed the same focused test on `hz1`/`hz2`.
+- Conformance gate: `rch exec -- cargo test -p ft-conformance --profile
+  release` passed on `vmi1153651`; `ft-conformance` lib `199/0` plus binaries,
+  integration tests, smoke tests, and doctests green.
+- RCH evidence:
+  - Rejected allocation-free forward attempt on `vmi1152480`: materialized
+    row `43.653 ms`, fused logical range-sum row `78.599 ms`, so the candidate
+    was `1.80x` slower. That forward-deforestation code was removed.
+  - Final scalar-backward-only path on pinned `hz2`: materialized row
+    `10.685 ms`, fused scalar-loss row `6.2040 ms`, a `1.72x` same-worker
+    FrankenTorch speedup. Remote PyTorch was not used because RCH workers lack
+    `torch`.
+- PyTorch comparator: local PyTorch `2.12.1+cpu`, 32 compute/inter-op threads,
+  40 iterations through `crates/ft-api/benches/pytorch_avg_pool2d_grad.py`,
+  checksum `10.0`, total `0.107251892914 s`, or `2.681297323 ms/iter`.
+  Final fused FT/PyTorch ratio: `6.2040 / 2.681297323 = 2.31x` slower.
+  Materialized FT/PyTorch ratio from the same `hz2` run:
+  `10.685 / 2.681297323 = 3.98x` slower.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Final source state: keep the scalar-backward helper and
+  `functional_avg_pool2d_sum` API/bench row; revert/remove the allocation-free
+  forward-deforestation helper.
+- Hygiene notes: `git diff --check` passed. `rustfmt --edition 2024 --check`
+  on the touched Rust files reported broad pre-existing whole-file drift in
+  `ft-api/src/lib.rs` and `ft-kernel-cpu/src/lib.rs`; no format rewrite was
+  applied. Changed-file UBS was interrupted after a long silent scan of the
+  giant Rust files with no findings emitted.
+- Verdict: internal keep, PyTorch loss. The scalar-backward path is a measured
+  FT improvement, but the lane does not dominate PyTorch yet.
+- Retry condition: do not retry logical pooled-output range reduction without a
+  same-worker microprofile proving it beats the existing materialized forward
+  plus pairwise sum. Remaining gap should target allocator/tape allocation,
+  persistent workspace reuse, or a generated shape-specialized scalar-loss
+  kernel that keeps the optimized forward memory order.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.147/SCORECARD.md`
+
 ## 2026-06-21 - frankentorch-kgs4.146 - avg_pool1d exact-coverage scalar-fill no-ship
 
 - Lever attempted: specialize `avg_pool1d_backward_scalar_f64` for the exact
