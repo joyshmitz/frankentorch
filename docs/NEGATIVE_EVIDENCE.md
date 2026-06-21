@@ -2244,3 +2244,25 @@ is explicitly satisfied.
   not introduced here; verified across all conv2d/avg_pool2d/special-fn double-backward,
   hessian, and gradient-penalty tests). Per-clone cost reference: 4M f64 alloc+copy ~9.8 ms
   (kwarf A/B). Traffic-reduction → core-count-independent (wins in the rch ~10-core sandbox).
+
+## 2026-06-20i - apply_function forward input-clone vein COMPLETE (don't re-probe)
+
+- After mbitj (plain `apply_function`) and 20q7c (`apply_function_with_create_graph`), I
+  audited ALL custom-op entry points for the input-clone-on-forward pattern:
+  - `apply_function` — FIXED (mbitj, Cow-borrow).
+  - `apply_function_with_create_graph` — FIXED (20q7c, Cow-borrow).
+  - `apply_function_f64_borrowed_inputs` (8631) — ALREADY borrows (`contiguous_values()`).
+  - `apply_function_with_create_graph_borrowed_inputs` (8814) — ALREADY borrows.
+  - `apply_function_f32_output_borrowed_inputs` (8917) + the f32 create_graph variant (9015)
+    — read inputs as f32 via `contiguous_values_f32()` (borrow); f32->f64 conversion is
+    required for f32 ops (the `Cow::Owned` fallback), so no eliminable clone.
+  - `apply_complex_bridge` (8465) — caller supplies the output tensor; no input clone.
+- CONCLUSION: the forward input-clone vein is fully harvested — every f64-contiguous custom
+  op forward now borrows its input zero-copy; remaining clones are mandatory dtype
+  conversions (f32/f16/complex -> f64). Do NOT re-probe these variants for forward-borrow.
+- Remaining generic backward allocations are: (1) the persistent-grad LEAF `to_vec` clone
+  (post-pwjrs only leaves are cloned) — API-entangled (report + `persistent_grads` both own
+  the leaf grad; eliminating needs an Arc-share / report redesign), and (2) per-op
+  `save_for_backward` clones for ops whose backward needs the input (convertible to
+  borrowed_inputs per-op, kgs4.119/132 pattern, ft-api). Neither is a clean generic engine
+  lever. Parallelism levers remain dead in the rch ~10-core sandbox (2026-06-20b).
