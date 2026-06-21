@@ -4031,3 +4031,15 @@ out of scope). DEFERRED (bead ogu1e). NEXT: lstsq (qr-based, NO Option fragility
 LESSON: a kernel returning Option<result> (decline-to-fallback) breaks the batched-parallel pattern when the
 fallback is vendor/scalar-walled. ALWAYS verify the fast path FIRES (returns Some) with a NON-masking probe
 (never unwrap_or a sentinel) before claiming a win. Score: 0W/1L (1 regression caught + reverted pre-commit).
+
+## 2026-06-21bw - NEW WIN (16th): batched eigvals (non-symmetric/geev) = 9.96-10.55x vs PyTorch
+
+eigvals_batched_contiguous_f64 (par over planes -> [B*2k] interleaved [re,im]) + tensor_linalg_eigvals
+batched no-grad f64 path -> [...,k,2]. MEASURED (examples/batched_eigvals_h2h.rs, checksum sum(re)=trace):
+  [100000,4,4]  FT 15.3ms vs PyTorch 152.2ms = 9.96x FASTER (MATCH)
+  [20000,16,16] FT 38.2ms vs PyTorch 403.1ms = 10.55x (rel 2.2e-7, trace float sum-order)
+VERIFIED: eigvals_batched_matches_looping_2d_bit_exact + ft-api eigvals 6/0. CLEAN win (geev / Francis-QR,
+NO Option, NO svd-wall -- contrast pinv/lstsq which return Option->svd-walled fallback, NOT shipped 21bv).
+PyTorch loops LAPACK geev (157-484ms small k). Broader batched sweep this turn also: eig 223-753ms (full,
+returns eigenvectors too), logdet/matrix_power/cholesky_ex FAST (no win). 16 vs-PyTorch wins. NEXT (bead
+ogu1e): eig batched (full, U+complex evals) + svdvals f32 (new 2-D kernel) + svd (tiny-k).
