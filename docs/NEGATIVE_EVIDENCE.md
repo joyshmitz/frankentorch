@@ -3986,3 +3986,17 @@ peer complex-f32 WIP + a tolerance flake, NOT mine. My eigh/eigvalsh/qr area is 
 class: eigh(f64+f32), eigvalsh(f64+f32), svdvals(f64), qr(f64+f32). 14 vs-PyTorch wins. REMAINING (bead
 ogu1e): svdvals f32 (needs new svdvals_contiguous_f32 kernel) + svd (tiny-k). gotcha: `gen` is a reserved
 keyword now — use genm in test/example data vars.
+
+## 2026-06-21bu - NEW WIN (15th): batched matrix_exp = 3.4-9.4x vs PyTorch (f64+f32) + broader sweep finds pinv 56x
+
+matrix_exp_batched_contiguous_f64/f32 (par over planes) + tensor_matrix_exp batched no-grad fast paths
+(f64 + native f32; f32 fast path guarded to 2-D). MEASURED (examples/batched_matrix_exp_h2h.rs):
+  [100000,4,4]  FT 18.0ms vs PyTorch 61.1ms  = 3.40x (chk MATCH)
+  [20000,16,16] FT 23.0ms vs PyTorch 216.8ms = 9.41x (chk rel 2.7e-4 = scaling-squaring tolerance, large-norm)
+VERIFIED: matrix_exp_batched_matches_looping_2d_bit_exact (f64+f32 bit-exact vs FT 2-D) + ft-api matrix_exp 7/0.
+★ BROADER BATCHED SWEEP: PyTorch batched LAPACK-loop weaknesses beyond eigh/svd/qr: pinv 338-690ms
+(svd-based!), lstsq 101-150ms, matrix_exp 59-200ms. FT-parallel-batch MEASURED: matrix_exp 3.7-10.5x
+(SHIPPED); ★★pinv 43-56x (FT pinv is QR-based pinv_qr_contiguous_f64, PyTorch svd-based — FT 6ms vs torch
+338ms @ [100000,4]!) — ship NEXT (needs QR->svd rank-deficient fallback: pinv_qr returns Option, None=fall
+back per-plane to the 2-D svd-pinv). lu/solve/cholesky/inv/det/slogdet have batched kernels (fast, no win).
+15 vs-PyTorch wins. NEXT (bead ogu1e): pinv batched (56x!) + lstsq + svdvals f32 (needs new 2-D kernel).

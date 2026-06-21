@@ -16561,6 +16561,86 @@ pub fn cholesky_solve_contiguous_f32(
 /// 1. Scale A by 2^-s so ||A/2^s|| < 1
 /// 2. Compute Padé [6/6] approximant R66(A/2^s)
 /// 3. Square the result s times: exp(A) = R66^(2^s)
+/// Batched matrix exponential: input `[..., k, k]` -> `[B*k*k]` (same shape). Parallelizes the verified
+/// 2-D [`matrix_exp_contiguous_f64`] over the batch. PyTorch loops its scaling-squaring/Padé per plane
+/// (slow for small k); FT parallelizes. Bit-identical to looping the 2-D matrix_exp. (BlackThrush)
+pub fn matrix_exp_batched_contiguous_f64(
+    data: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    let nd = shape.len();
+    if nd < 2 || shape[nd - 1] != shape[nd - 2] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![nd],
+        });
+    }
+    let k = shape[nd - 1];
+    let bb: usize = shape[..nd - 2].iter().product();
+    let plane = k * k;
+    let offset = meta.storage_offset();
+    let data = &data[offset..offset + bb * plane];
+    let kmeta = TensorMeta::from_shape(vec![k, k], DType::F64, Device::Cpu);
+    let mut out = vec![0.0f64; bb * plane];
+    let first_err = std::sync::Mutex::new(None);
+    out.par_chunks_mut(plane)
+        .zip(data.par_chunks(plane))
+        .for_each(|(o, pl)| match matrix_exp_contiguous_f64(pl, &kmeta) {
+            Ok(r) => o.copy_from_slice(&r),
+            Err(e) => {
+                let mut g = first_err.lock().unwrap();
+                if g.is_none() {
+                    *g = Some(e);
+                }
+            }
+        });
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    Ok(out)
+}
+
+/// f32 mirror of [`matrix_exp_batched_contiguous_f64`]. (BlackThrush)
+pub fn matrix_exp_batched_contiguous_f32(
+    data: &[f32],
+    meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(data, meta)?;
+    let shape = meta.shape();
+    let nd = shape.len();
+    if nd < 2 || shape[nd - 1] != shape[nd - 2] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![nd],
+        });
+    }
+    let k = shape[nd - 1];
+    let bb: usize = shape[..nd - 2].iter().product();
+    let plane = k * k;
+    let offset = meta.storage_offset();
+    let data = &data[offset..offset + bb * plane];
+    let kmeta = TensorMeta::from_shape(vec![k, k], DType::F32, Device::Cpu);
+    let mut out = vec![0.0f32; bb * plane];
+    let first_err = std::sync::Mutex::new(None);
+    out.par_chunks_mut(plane)
+        .zip(data.par_chunks(plane))
+        .for_each(|(o, pl)| match matrix_exp_contiguous_f32(pl, &kmeta) {
+            Ok(r) => o.copy_from_slice(&r),
+            Err(e) => {
+                let mut g = first_err.lock().unwrap();
+                if g.is_none() {
+                    *g = Some(e);
+                }
+            }
+        });
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    Ok(out)
+}
+
 pub fn matrix_exp_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
     let shape = meta.shape();
@@ -30920,6 +31000,36 @@ mod tests {
             }
             for t in 0..k * k {
                 assert_eq!(evecs[b * k * k + t].to_bits(), r.eigenvectors[t].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn matrix_exp_batched_matches_looping_2d_bit_exact() {
+        let (bb, k) = (10usize, 5usize);
+        let data: Vec<f64> = (0..bb * k * k)
+            .map(|x| (((x * 2654435761usize) % 9973) as f64) * 0.0005 - 2.5)
+            .collect();
+        let meta = TensorMeta::from_shape(vec![bb, k, k], DType::F64, Device::Cpu);
+        let kmeta = TensorMeta::from_shape(vec![k, k], DType::F64, Device::Cpu);
+        let out = super::matrix_exp_batched_contiguous_f64(&data, &meta).unwrap();
+        assert_eq!(out.len(), bb * k * k);
+        for b in 0..bb {
+            let r = super::matrix_exp_contiguous_f64(&data[b * k * k..(b + 1) * k * k], &kmeta).unwrap();
+            for t in 0..k * k {
+                assert_eq!(out[b * k * k + t].to_bits(), r[t].to_bits());
+            }
+        }
+        // f32 mirror
+        let dataf: Vec<f32> = data.iter().map(|&v| v as f32).collect();
+        let metaf = TensorMeta::from_shape(vec![bb, k, k], DType::F32, Device::Cpu);
+        let kmetaf = TensorMeta::from_shape(vec![k, k], DType::F32, Device::Cpu);
+        let outf = super::matrix_exp_batched_contiguous_f32(&dataf, &metaf).unwrap();
+        for b in 0..bb {
+            let r =
+                super::matrix_exp_contiguous_f32(&dataf[b * k * k..(b + 1) * k * k], &kmetaf).unwrap();
+            for t in 0..k * k {
+                assert_eq!(outf[b * k * k + t].to_bits(), r[t].to_bits());
             }
         }
     }
