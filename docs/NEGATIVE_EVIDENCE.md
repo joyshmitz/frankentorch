@@ -4043,3 +4043,15 @@ NO Option, NO svd-wall -- contrast pinv/lstsq which return Option->svd-walled fa
 PyTorch loops LAPACK geev (157-484ms small k). Broader batched sweep this turn also: eig 223-753ms (full,
 returns eigenvectors too), logdet/matrix_power/cholesky_ex FAST (no win). 16 vs-PyTorch wins. NEXT (bead
 ogu1e): eig batched (full, U+complex evals) + svdvals f32 (new 2-D kernel) + svd (tiny-k).
+
+## 2026-06-21bx - NEW WIN (17th): batched eig (full non-symmetric/geev) = 8.9-10.2x vs PyTorch
+
+eig_batched_contiguous_f64 (par over planes -> eigenvalues [B*2k] interleaved [re,im] + eigenvectors
+[B*k*k]) + tensor_linalg_eig batched no-grad f64 path. MEASURED (examples/batched_eig_h2h.rs, checksum
+sum(re)=trace):
+  [100000,4,4]  FT 22.2ms vs PyTorch 226.4ms = 10.21x FASTER (MATCH)
+  [20000,16,16] FT 72.0ms vs PyTorch 640.6ms = 8.90x (rel 2.2e-7 trace sum-order)
+VERIFIED: eig_batched_matches_looping_2d_bit_exact (evals+evecs bit-exact vs FT 2-D) + ft-api linalg_eig
+1/0. CLEAN (geev/Francis-QR, no Option/svd-wall). geev family now COMPLETE (eigvals + eig). 17 vs-PyTorch
+wins. Batched-linalg class: eigh/eigvalsh/qr (f64+f32), svdvals (f64), matrix_exp (f64+f32), eigvals+eig
+(f64). REMAINING (bead ogu1e): svdvals f32 (new 2-D kernel) + svd tiny-k + f32 mirrors of eigvals/eig.
