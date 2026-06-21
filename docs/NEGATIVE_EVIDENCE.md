@@ -3435,3 +3435,18 @@ now spans unmasked (train ~2.1x + inference 1.13-1.34x), causal (1.24-2x), AND m
 same structural gap (PyTorch CPU has no fused f64 flash-attn; FT's flash avoids the score materialization).
 This corrects my prior "masked SDPA: both materialize -> no gap" assumption — FT could ADD flash-mask
 support to win, which PyTorch f64 cannot (its flash is f32-only).
+
+## 2026-06-21aq - masked f64 SDPA win EXTENDED to TRAINING (grad path) — both entry points + GQA
+
+Added ft_kernel_cpu::sdpa_backward_masked_f64 (recomputes P = softmax(scale*Q@Kᵀ + mask); dQ/dK/dV
+otherwise unchanged). Routed the f64 GRAD fast path in BOTH SDPA entry points for the additive-mask
+case (scaled_dot_product_attention save-based; tensor_scaled_dot_product_attention + GQA via the
+borrowed-inputs variant). Training with a padding/additive mask otherwise composed through bmm+softmax+
+bmm (materialized) like PyTorch's f64 path. Mask is a constant -> captured by value into both closures.
+VERIFIED: sdpa_masked_3d_is_differentiable (entry-2 masked grad), 17 sdpa + 4 gqa, ft-api 2335 pass
+(3 pre-existing peer reds), conformance 199/0 + sub-suites, ft-kernel-cpu 504/0. Head-to-head (no-grad
+inference, all paths, correctness rel-diff ~3e-14 vs torch on every path): primary 1.63x, tensor 1.70x,
+GQA correct+winning.
+=> The f64 SDPA win is now COMPLETE across {unmasked, causal, masked} x {inference, training} x {both
+entry points + GQA} — all the same structural gap (PyTorch CPU has no fused f64 flash-attn; FT's flash
+avoids the score materialization). Padding-mask attention training is ubiquitous in real transformers.

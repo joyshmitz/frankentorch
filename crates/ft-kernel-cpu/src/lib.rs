@@ -3987,6 +3987,88 @@ pub fn sdpa_backward_f64(
     (dq, dk, dv)
 }
 
+/// Backward of [`sdpa_forward_masked_f64`]. Identical to [`sdpa_backward_f64`] except the
+/// recomputed P is `softmax(scale·Q@Kᵀ + mask)` row-wise (the additive mask is constant, so
+/// it only shifts P; dQ/dK/dV are otherwise unchanged). `mask`/`mask_bh_stride` as in the
+/// forward. Returns (dq, dk, dv); the mask itself is treated as a constant (no grad).
+/// frankentorch-sdpamask.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn sdpa_backward_masked_f64(
+    q: &[f64],
+    k: &[f64],
+    v: &[f64],
+    dout: &[f64],
+    num_bh: usize,
+    seq_q: usize,
+    seq_k: usize,
+    d_k: usize,
+    d_v: usize,
+    scale: f64,
+    mask: &[f64],
+    mask_bh_stride: usize,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let mut dq = vec![0.0f64; num_bh * seq_q * d_k];
+    let mut dk = vec![0.0f64; num_bh * seq_k * d_k];
+    let mut dv = vec![0.0f64; num_bh * seq_k * d_v];
+    let qs = seq_q * d_k;
+    let ks = seq_k * d_k;
+    let vs = seq_k * d_v;
+    let os = seq_q * d_v;
+    dq.par_chunks_mut(qs)
+        .zip(dk.par_chunks_mut(ks))
+        .zip(dv.par_chunks_mut(vs))
+        .enumerate()
+        .for_each(|(bh, ((dq_bh, dk_bh), dv_bh))| {
+            let qh = &q[bh * qs..bh * qs + qs];
+            let kh = &k[bh * ks..bh * ks + ks];
+            let vh = &v[bh * vs..bh * vs + vs];
+            let doh = &dout[bh * os..bh * os + os];
+            let mask_base = bh * mask_bh_stride;
+            // P = softmax(scale·Q@Kᵀ + mask) row-wise.  [seq_q, seq_k]
+            let mut p = vec![0.0f64; seq_q * seq_k];
+            gemm::dgemm_bt(seq_q, d_k, seq_k, qh, kh, &mut p);
+            for i in 0..seq_q {
+                let mrow = &mask[mask_base + i * seq_k..mask_base + (i + 1) * seq_k];
+                let row = &mut p[i * seq_k..(i + 1) * seq_k];
+                let mut m = f64::NEG_INFINITY;
+                for (s, &mv) in row.iter_mut().zip(mrow.iter()) {
+                    *s = *s * scale + mv;
+                    if *s > m {
+                        m = *s;
+                    }
+                }
+                let mut sum = 0.0f64;
+                for s in row.iter_mut() {
+                    let e = (*s - m).exp();
+                    *s = e;
+                    sum += e;
+                }
+                for s in row.iter_mut() {
+                    *s /= sum;
+                }
+            }
+            // dP = dOut @ Vᵀ; dU = P ⊙ (dP − rowsum(P⊙dP)); dV/dQ/dK — same as unmasked.
+            let mut du = vec![0.0f64; seq_q * seq_k];
+            gemm::dgemm_bt(seq_q, d_v, seq_k, doh, vh, &mut du);
+            for i in 0..seq_q {
+                let pr = &p[i * seq_k..(i + 1) * seq_k];
+                let dr = &mut du[i * seq_k..(i + 1) * seq_k];
+                let mut dot = 0.0f64;
+                for j in 0..seq_k {
+                    dot += pr[j] * dr[j];
+                }
+                for j in 0..seq_k {
+                    dr[j] = pr[j] * (dr[j] - dot);
+                }
+            }
+            gemm::dgemm_tb(seq_k, seq_q, d_v, &p, doh, dv_bh);
+            gemm::dgemm_scaled(seq_q, seq_k, d_k, scale, &du, kh, dq_bh);
+            gemm::dgemm_tb_scaled(seq_k, seq_q, d_k, scale, &du, qh, dk_bh);
+        });
+    (dq, dk, dv)
+}
+
 /// f32 mirror of [`sdpa_backward_f64`] (sgemm). Used by the f32 SDPA grad fast
 /// path (frankentorch-48w0b) — f32 attention training, which otherwise composes
 /// through matmul+softmax+matmul with materialized intermediates.
