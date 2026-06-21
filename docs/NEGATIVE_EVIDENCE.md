@@ -2602,3 +2602,20 @@ structural, NOT from the frankentorch repo. Measured consumers:
   compiler (disk recovered) + full-workspace verify before merge.
 - PENDING-BENCH (unchanged, awaiting disk): cuqzu (14291513) + create_graph sparse skip (5fe70493) —
   verify ft-autograd/ft-api/conformance, revert any hunk that fails to compile. rdgt6 verified.
+
+## 2026-06-21k - frankentorch-05upk STAGED on branch + de-risked to SINGLE-FILE (disk-low, no cargo)
+
+- ★ KEY FINDING (corrects earlier turns): 05upk is ENTIRELY contained in ft-autograd/src/lib.rs.
+  The external `gradients()` callers only use `.len()` / `.is_some()` (ft-nn debug test) and
+  `assert_eq!` (ft-autograd tests) — all Arc-agnostic (Arc<Vec<f64>>: PartialEq by content). The
+  preserved-signature methods (`gradient()->&[f64]`, `tensor_gradients_iter`, `scaled_clone`,
+  `gradient_value`) need no caller changes. So there is NO ft-nn collision and NO cross-crate edit —
+  the prior "ft-nn-blocked" assumption was wrong.
+- Full single-file implementation staged (unverified, cargo paused) on branch
+  `blackthrush/05upk-arc-wip` (commit 19c8ba4c), built via git-plumbing (no worktree). All ~15
+  sites applied per the validated plan; create_graph persist rewritten as a `match` (the
+  entry/or_insert_with form would move/borrow-conflict on `vals`).
+- RESUME (disk recovered): `git fetch; git checkout blackthrush/05upk-arc-wip` (or cherry-pick
+  19c8ba4c), `cargo build/test -p ft-autograd && -p ft-api && -p ft-conformance` + clippy; fix any
+  compile slip (single file, contained); expect bit-exact; then merge to main. No ft-nn change needed.
+- Pending-bench also still open: cuqzu (14291513) + create_graph sparse skip (5fe70493) verify batch.
