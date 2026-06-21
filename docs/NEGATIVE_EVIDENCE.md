@@ -4271,3 +4271,18 @@ cast overhead tiny vs the fused-batched win). MEASURED (examples/f32_fused_probe
              was f64-gated -> f32 batched errored; k=16 loss is the QR-lstsq-driver pattern, same as f64 cl)
 ft-api lstsq 6/0 (no regression from the cast). Fused-linalg surface now f32-complete (pinv/hpinv/lstsq
 f64+f32). 32 vs-PyTorch wins. NEXT: batched-linalg GRAD (the remaining fused-kernel lead, eigh/svd/qr VJP).
+
+## 2026-06-21cn - WIN (33rd): N-D (4-D+) batched matmul fast path = 1.73-1.79x FASTER at k>=16 (was 28x SLOWER)
+
+Extended the matmul fast path (ch was 3-D only) to N-D (≥4-D) matched-batch no-grad f64: call the bmm
+kernel DIRECTLY on the contiguous storage (leading dims flattened to one batch), bypassing the materializing
+tensor_broadcast_to + tensor_reshape (~20ms/25MB each, no zero-copy views -- the ci wall). MEASURED
+(examples/matmul_4d_h2h.rs):
+  [10000,8,16,16] FT 21.8ms vs torch 39.1ms = 1.79x FASTER (was ~28x SLOWER)
+  [2000,12,32,32] FT 27.8ms vs torch 48.0ms = 1.73x FASTER
+  [10000,8,4,4]   FT 2.1ms  vs torch 0.8ms  = 2.80x slower (tiny, MKL bandwidth-optimal)
+chk MATCH at k=4 (k=16/32 diff = FT-vs-torch GEMM accumulation rounding, matmul tolerance). ft-api matmul
+19/0 (no regression; bit-identical to FT's general path -- the skipped broadcast/reshape are no-ops). 4-D
+matmul is ATTENTION-shaped (hot); now DOMINATES at k>=16 (common head-dim range). 33 wins. The ci
+materialization-wall finding directly enabled this (BYPASS reshape rather than fix it). NOTE: the underlying
+bmm kernel is MKL-competitive (wins k>=16, loses tiny k=4) -- the win is closing the broadcast/reshape gap.
