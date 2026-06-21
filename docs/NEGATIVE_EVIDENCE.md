@@ -3206,3 +3206,22 @@ head-to-head basis, so the 2W tally stands — but the win is config-dependent, 
 seq-scaling: NO clean monotonic trend (single-thread FT-relative peaks at seq=1024: 0.68/0.98/0.90).
 Clean MULTI-thread seq-scaling remains unobtainable — FT rayon persistently contended on the fleet
 (min-of-15 anchor FT seq=512 read 59.7ms vs clean ~23ms). No seq-scaling claim.
+
+## 2026-06-21ad - cdist p=1 f64 LOSS (3.1x) — win-hunting across op classes EXHAUSTED; PyTorch CPU is mature
+
+Probed a NEW op class (not attention) per the mechanism (FT wins where its parallel+fused f64 path
+beats PyTorch's): cdist p=1 (manhattan pairwise distance) f64 forward, [1024,128]x[1024,128]->[1024,1024]
+(examples/cdist_p1_headtohead.rs, no-grad, min-time):
+- FrankenTorch 25.2 ms vs PyTorch 8.14 ms = **FT ~3.1x SLOWER (LOSS)**. PyTorch's torch.cdist has a tuned
+  CPU kernel; FT's fused powf-elided cdist (a5kk8, ~3-5x INTERNAL) doesn't beat it. Hypothesis (PyTorch
+  materializes the [N,M,D] broadcast) REFUTED.
+
+★ CONCLUSION — win-hunting is EXHAUSTED. Probed op classes head-to-head this campaign: conv3d (LOSS 2.3x,
+oneDNN), max_pool3d (LOSS 2.6x), f32-sdpa (LOSS 2.1-2.3x, flash CPU), cdist-p1 (LOSS 3.1x). ALL losses
+except f64 SDPA (WIN, ±causal). PyTorch CPU is MATURE across op classes (MKL GEMM, oneDNN conv, Sleef
+transcendental, flash-attn f32/bf16/f16, tuned cdist/pool kernels). FT's UNIQUE win is f64 ATTENTION —
+the one spot PyTorch CPU has no fused/well-parallel path (f64 SDPA math fallback). Per-core FT is
+generally slower (matrixmultiply/libm vs MKL/Sleef); FT's only edges are (a) f64-attention parallelism
++ fusion, and (b) the caching-allocator lever (mimalloc, closes alloc-heavy losses to parity).
+Final perf picture: 2W (f64 sdpa ±causal) + allocator-parity on alloc-bound lanes + vendor-kernel walls
+everywhere else. No further pure-Rust win is plausible without an FT per-core kernel beating MKL/Sleef.
