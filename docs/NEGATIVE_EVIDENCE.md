@@ -2669,3 +2669,34 @@ structural, NOT from the frankentorch repo. Measured consumers:
   rdgt6+cuqzu+create_graph alloc-skips, 05upk Arc-share leaf grad. Directional (noisy PyTorch arm,
   contended box); robust signal is the FT-side absolute drop, which is allocation/bandwidth-bound
   and core-count-independent.
+
+## 2026-06-21o - CAPSTONE: autograd-allocation perf vein COMPLETE (9 shipped+verified levers)
+
+The autograd backward/forward allocation perf surface is fully harvested, shipped, verified, and
+measured. Shipped + on main (all bit-exact, can't-regress):
+1. cbe4t  — lazy grad slots (first-contribution materialization)
+2. 96e5d  — lazy Sum/Mean constant-contribution accumulate (no materialized Vec)
+3. 0w3ns  — avg_pool1d/max_pool1d forward input-borrow
+4. mbitj  — apply_function Cow-borrows contiguous-f64 inputs (generic)
+5. 20q7c  — apply_function_with_create_graph Cow-borrow (conv2d/avg_pool2d/special-fns)
+6. kwarf  — owned CustomFunction grad moved into lazy slot (no alloc+copy)
+7. pwjrs  — first-order backward persists .grad for leaf+retain_grad only
+8. rdgt6 + cuqzu + create_graph-skip — per-backward always-empty alloc skips (both backward paths)
+9. 05upk  — Arc-share leaf grad between report and persistent_grads (no leaf to_vec clone)
+
+Measured cumulative FT-side narrowing vs PyTorch (warm head-to-head, torch 2.12.0+cpu):
+- avg_pool1d [8,64,8192]: ~180-204 ms -> ~48 ms (~3.8x FT-side); gap 25.86x -> ~5.5x
+- max_pool1d [8,64,8192]: ~184 ms -> ~58 ms (~3.2x);                gap 12.31x -> ~3.5x  (pre-05upk; 05upk helps further via the same 4M leaf-clone removal)
+- avg_pool2d [8,64,64,64]: ~16.6 ms -> ~13.7 ms;                    gap 4.54x -> ~3.3x
+- linear [32,512]->2048:  ~22.8 ms -> ~9.2 ms;                      gap 2.45x -> ~1.46x (near parity)
+
+Robust signal = the FT-side absolute drops (allocation/bandwidth-bound, core-count-independent;
+hold in the rch ~10-core sandbox). PyTorch ratios are directional (noisy contended box). We do NOT
+win any lane (PyTorch's caching allocator + MKL remain ahead) but the losses are substantially closed.
+
+REMAINING (NOT autograd-alloc; need full cargo / new beads, currently disk-blocked):
+- GEMM-efficiency residual (SDPA ~1.29x, linear ~1.46x): matrixmultiply vs MKL — next lever is a
+  packed-panel Goto/BLIS GEMM (kgs4.46-class), large + needs cold benches.
+- Norm lanes (BatchNorm/GroupNorm/LayerNorm): peer swarm's active campaign.
+- save_for_backward -> borrowed_inputs per-op conversions: possible but per-op, no measured target
+  beyond the already-covered gauntlet lanes, and needs in-place-mutation-safety review.
