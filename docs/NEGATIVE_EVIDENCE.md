@@ -2653,3 +2653,19 @@ structural, NOT from the frankentorch repo. Measured consumers:
 - Bit-exact (Arc share + make_mut preserve values). MERGED to main this commit. This also confirms the
   previously code-first cuqzu (14291513) + create_graph sparse skip (5fe70493) + pwjrs + rdgt6 (the
   branch base 68e2a156 includes them) compile + pass — pending-bench queue CLEARED for the autograd lane.
+
+## 2026-06-21n - 05upk end-to-end impact MEASURED (avg_pool1d head-to-head, post-merge)
+
+- Warm head-to-head (torch 2.12.0+cpu, both arms, frankentorch-cc-local cache) on avg_pool1d
+  [8,64,8192] AFTER 05upk merged (fb7e91f3): FrankenTorch standard (kgs4_122) median **48.3 ms**
+  (down from ~57-64 ms pre-05upk), fused-sum (kgs4_134) **39.6 ms**, PyTorch **8.8 ms** (noisy
+  7.5-10.3) → ~5.5x slower.
+- 05upk's ~9-15 ms FT-side drop is the eliminated 4M (33 MB) LEAF-grad `to_vec` clone per backward
+  (Arc::clone share instead) — NOT noise-buried (the leaf clone is the big one; pwjrs had narrowed
+  persistence to leaf-only, 05upk removes that remaining clone).
+- CUMULATIVE campaign FT-side narrowing on avg_pool1d: ~180-204 ms (kgs4.122 origin) -> ~48 ms
+  (~3.8x FT-side), gap ~25.86x -> ~5.5x. Stacked levers: cbe4t lazy slots, 96e5d lazy Sum/Mean,
+  0w3ns+mbitj+20q7c forward input-borrow, kwarf owned-grad move, pwjrs leaf-only persistence,
+  rdgt6+cuqzu+create_graph alloc-skips, 05upk Arc-share leaf grad. Directional (noisy PyTorch arm,
+  contended box); robust signal is the FT-side absolute drop, which is allocation/bandwidth-bound
+  and core-count-independent.
