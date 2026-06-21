@@ -3837,3 +3837,17 @@ strided copy + 10 GB/s achievable; reality: already 64-tiled, and PyTorch's 3 GB
 3 GB/s is near-ceiling (an optimized lib can't exceed it). REFUTED, no headroom. Bead closed.
 => CONFIRMS: winnable safe-Rust CPU surface is comprehensively harvested. The transpose (last fresh
 candidate) is parity + hardware-ceiling-bound (FT competitive-or-slightly-winning). 7 scan wins stand.
+
+## 2026-06-21bl - linalg frontier CONFIRMED LAPACK-walled: FT eigh 2.4x / svd 189x slower (deep, not a single-turn lever)
+
+Measured the memory's noted "deep linalg = next real perf" frontier head-to-head (N=256, f64): FT eigh
+9.5ms vs PyTorch(LAPACK) 4.0ms = 2.4x SLOWER; FT svd 1874.6ms vs PyTorch 9.9ms = 189x SLOWER (N=512/1024
+timed out — FT svd is O(n³) far from LAPACK). eigh: the shipped deferred-Givens replay keeps it within
+~2.4x of LAPACK but the symmetric reduction (dsytrd) is the wall. svd: FT's Golub-Reinsch bidiagonalization
+is catastrophically slower than LAPACK's blocked bidiag. => linalg is VENDOR(LAPACK)-walled; the deep
+remainder (band-packed dsytrd, blocked bidiag, multishift-QR) is a multi-SESSION rewrite AND LAPACK is the
+gold standard (hard to beat even rewritten) — NOT a single-turn lever. This was the LAST unmeasured
+frontier; now measured + walled. Confirms the comprehensive-harvest conclusion: 7 scan-family wins are the
+durable harvest; everything else (dense/sort/selection/reduction/non-contig/grad/attention/transpose/
+logcumsumexp/LINALG) is vendor-, structure-, or ceiling-walled. Integrated origin verified GREEN this
+session (conformance 199/0, ft-kernel-cpu 511/0). Remaining perf needs parity-relaxation (SIMD-transcendental).
