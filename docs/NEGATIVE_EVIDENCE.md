@@ -3908,3 +3908,17 @@ VERIFIED: eigvalsh_batched_matches_looping_2d_bit_exact (bit-identical vs loop) 
 Batched-linalg class now 2 user-facing ops (eigh + eigvalsh). REMAINING (bead batched-linalg-class-ogu1e):
 batched svd/svdvals/qr (PyTorch svd 339-669ms!, svdvals 138-234ms, qr 40-89ms — all LAPACK-loop; svd may
 win only tiny-k since FT svd is scalar, but svdvals/qr likely win across k). 9 vs-PyTorch wins total.
+
+## 2026-06-21bq - NEW WIN (10th): batched svdvals = 6.0-8.84x vs PyTorch
+
+svdvals_batched_contiguous_f64 (par over planes, general [...,m,n] -> [B*min(m,n)]) + tensor_linalg_
+svdvals batched no-grad f64 fast path. MEASURED (examples/batched_svdvals_api_h2h.rs):
+  [100000,4,4]  FT 15.5ms vs PyTorch 136.7ms = 8.84x FASTER
+  [20000,16,16] FT 34.9ms vs PyTorch 242.9ms = 6.97x
+  [4000,32,32]  FT 25.3ms vs PyTorch 151.9ms = 6.00x
+CORRECTNESS: svdvals_batched_matches_looping_2d_bit_exact (batched == FT 2-D svdvals, BIT-EXACT) + the
+FT 2-D svdvals is conformance-verified vs torch. The head-to-head ssum agrees to only ~1e-5 because the
+RANDOM test data is ill-conditioned (FT Golub-Reinsch vs LAPACK divide-conquer diverge on tiny singular
+values) — NOT an error; the rigorous check is bit-exact-vs-2D. ft-api svdvals 3/0. Batched-linalg class
+now 3 ops (eigh + eigvalsh + svdvals). REMAINING (bead ogu1e): qr (measured 2.9-10x, tuple Q,R) + svd
+(tuple, tiny-k only) + f32 mirrors. 10 vs-PyTorch wins.

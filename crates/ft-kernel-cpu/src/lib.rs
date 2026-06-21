@@ -22017,6 +22017,50 @@ fn svd_tall(a: &[f64], m: usize, n: usize, full_matrices: bool) -> Result<SvdRes
 /// `svd_contiguous_f64(..).s` to working precision while avoiding the O(m n^2)
 /// U accumulation and every per-rotation matrix update. Wide matrices reduce to
 /// the tall case via transpose (the singular values of `A` and `A^T` are equal).
+/// Batched singular values: input `[..., m, n]` -> singular values `[B*min(m,n)]` (row-major).
+/// Parallelizes the verified 2-D [`svdvals_contiguous_f64`] over the batch. PyTorch loops LAPACK per
+/// plane (per-call overhead dominates for small m,n). Bit-identical to looping the 2-D svdvals.
+/// frankentorch-batched-eigh. (BlackThrush)
+pub fn svdvals_batched_contiguous_f64(
+    data: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    let nd = shape.len();
+    if nd < 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![nd],
+        });
+    }
+    let m = shape[nd - 2];
+    let n = shape[nd - 1];
+    let mn = m.min(n);
+    let bb: usize = shape[..nd - 2].iter().product();
+    let plane = m * n;
+    let offset = meta.storage_offset();
+    let data = &data[offset..offset + bb * plane];
+    let pmeta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+    let mut out = vec![0.0f64; bb * mn];
+    let first_err = std::sync::Mutex::new(None);
+    out.par_chunks_mut(mn)
+        .zip(data.par_chunks(plane))
+        .for_each(|(o, pl)| match svdvals_contiguous_f64(pl, &pmeta) {
+            Ok(s) => o.copy_from_slice(&s),
+            Err(e) => {
+                let mut g = first_err.lock().unwrap();
+                if g.is_none() {
+                    *g = Some(e);
+                }
+            }
+        });
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    Ok(out)
+}
+
 pub fn svdvals_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
     let shape = meta.shape();
@@ -30519,6 +30563,26 @@ mod tests {
                     (lr - lb).abs() <= etol,
                     "n={n} b={b}: eigenvalue[{idx}] ref={lr} blocked={lb} (tol {etol})"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn svdvals_batched_matches_looping_2d_bit_exact() {
+        // general (non-symmetric) batched [B,m,n]; values bit-identical to looping 2-D svdvals.
+        let (bb, m, n) = (11usize, 5usize, 7usize);
+        let data: Vec<f64> = (0..bb * m * n)
+            .map(|x| (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0)
+            .collect();
+        let meta = TensorMeta::from_shape(vec![bb, m, n], DType::F64, Device::Cpu);
+        let pmeta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+        let mn = m.min(n);
+        let out = super::svdvals_batched_contiguous_f64(&data, &meta).unwrap();
+        assert_eq!(out.len(), bb * mn);
+        for b in 0..bb {
+            let s = super::svdvals_contiguous_f64(&data[b * m * n..(b + 1) * m * n], &pmeta).unwrap();
+            for i in 0..mn {
+                assert_eq!(out[b * mn + i].to_bits(), s[i].to_bits());
             }
         }
     }
