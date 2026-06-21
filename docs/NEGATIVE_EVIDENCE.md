@@ -4300,3 +4300,18 @@ REVERTED the f32 extension (won't ship a 3x-PyTorch-loss path as a "win"). f64 N
 33 wins. LEAD: FT f32 batched GEMM is ~2.7x slower than its f64 — investigate sgemm / f32 storage (would
 unlock f32 attention matmul); deeper kernel work. LESSON: a win in f64 does NOT auto-mirror to f32 when
 the vendor (MKL) has a SIMD f32 advantage AND FT's f32 path is unoptimized.
+
+## 2026-06-21cp - NEGATIVE (lead closed): f32 batched matmul is MKL-walled (not the routing/tiny-path)
+
+Localized the co f32-matmul loss via kernel-direct measurement (bmm_tensor_contiguous_f32 vs _f64, no API):
+  [80000,16,16]  bmm_f32 63.6ms | bmm_f64 40.1ms  (f32 1.58x SLOWER, ~0.8µs/plane vs 0.5µs)
+  [100000,4,4]   bmm_f32 8.6ms  | bmm_f64 2.1ms   (f32 4.18x SLOWER -- sgemm per-call overhead, tiny)
+  [20000,16,16]  bmm_f32 6.3ms  | bmm_f64 9.5ms   (f32 0.66x -- here f32 WINS, as expected)
+INCONSISTENT f32/f64 ratio (0.66-4.18x) + non-linear slowdown at many planes -> FT's matrixmultiply SGEMM
+has higher per-call overhead than DGEMM. A tiny-inline f32 path (like the reverted f64 one) could cut the
+per-call overhead, BUT best-case ~parity with MKL's f32 SIMD GEMM (PyTorch f32 [10000,8,16,16]=18.8ms is
+the gold standard -- SIMD-vectorized). The f64 N-D win (cn 1.79x) does NOT mirror to f32 because: f64 GEMM
+has no MKL-SIMD edge (FT dgemm ~ MKL dgemm -> FT wins by closing the reshape gap), but f32 GEMM DOES (MKL
+sgemm SIMD >> FT matrixmultiply sgemm). => f32 matmul is MKL-walled (parity-at-best); NOT a winnable lever.
+LEAD CLOSED. f64 N-D matmul win (cn) stands. 33 wins. KEY BOUND: FT wins f64 batched matmul (dgemm ~ MKL)
+but loses f32 (MKL sgemm SIMD advantage) -- same dense-GEMM SIMD wall as the original campaign, surfacing in f32.
