@@ -1,0 +1,34 @@
+   Compiling ft-api v0.1.0 (/data/projects/.scratch/frankentorch-cod-a-bold-verify-20260621/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 42.55s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-a-local/release/deps/pytorch_gauntlet_bench-5f2ebc2fd9ddf042)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 5.3s or enable flat sampling.
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114: Collecting 10 samples in estimated 5.3081 s (55 iterations)
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114: Analyzing
+gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_114
+                        time:   [93.650 ms 94.656 ms 95.692 ms]
+                        change: [+6.3507% +9.0622% +12.218%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 4.7s or enable flat sampling.
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum: Collecting 10 samples in estimated 4.6599 s (55 iterations)
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum: Analyzing
+gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum
+                        time:   [84.504 ms 85.919 ms 87.523 ms]
+                        change: [-1.2535% +1.8304% +4.9827%] (p = 0.28 > 0.05)
+                        No change in performance detected.
+Benchmarking gauntlet_batch_norm2d_f32_grad/pytorch_2_12_cpu
+Benchmarking gauntlet_batch_norm2d_f32_grad/pytorch_2_12_cpu: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 14.5s.
+Benchmarking gauntlet_batch_norm2d_f32_grad/pytorch_2_12_cpu: Collecting 10 samples in estimated 14.477 s (10 iterations)
+Benchmarking gauntlet_batch_norm2d_f32_grad/pytorch_2_12_cpu: Analyzing
+gauntlet_batch_norm2d_f32_grad/pytorch_2_12_cpu
+                        time:   [7.6887 ms 8.6718 ms 9.6475 ms]
+                        change: [-13.722% +0.9830% +17.678%] (p = 0.91 > 0.05)
+                        No change in performance detected.

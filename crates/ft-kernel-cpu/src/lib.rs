@@ -10183,22 +10183,11 @@ pub fn batch_norm_backward_scalar_f32(
     spatial: usize,
     eps: f32,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let (dweight, dbias) = batch_norm_backward_scalar_f32_affine_grads(
+        upstream, x, mean, var, batch, channels, spatial, eps,
+    );
     let m = (batch * spatial) as f32;
     let inv_m = 1.0f32 / m;
-    let cs = channels * spatial;
-    let mut dweight = vec![0.0f32; channels];
-    dweight.par_iter_mut().enumerate().for_each(|(c, dwc)| {
-        let rstd = 1.0f32 / (var[c] + eps).sqrt();
-        let mut sw = 0.0f32;
-        for n in 0..batch {
-            let base = n * cs + c * spatial;
-            for s in 0..spatial {
-                sw += (x[base + s] - mean[c]) * rstd;
-            }
-        }
-        *dwc = upstream * sw;
-    });
-    let dbias = vec![upstream * m; channels];
     let mut dx = vec![0.0f32; x.len()];
     dx.par_chunks_mut(spatial)
         .with_min_len(BATCH_NORM_MIN_PAR_ROWS)
@@ -10217,6 +10206,41 @@ pub fn batch_norm_backward_scalar_f32(
             }
         });
     (dx, dweight, dbias)
+}
+
+/// Scalar-upstream f32 BatchNorm affine gradients for
+/// `sum(BatchNorm(...))`, intentionally omitting the mathematically zero input
+/// gradient. The autograd tape can represent that input edge as a lazy zero
+/// slot, avoiding a large `dx` allocation/fill while preserving public
+/// `.grad` materialization.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn batch_norm_backward_scalar_f32_affine_grads(
+    upstream: f32,
+    x: &[f32],
+    mean: &[f32],
+    var: &[f32],
+    batch: usize,
+    channels: usize,
+    spatial: usize,
+    eps: f32,
+) -> (Vec<f32>, Vec<f32>) {
+    let m = (batch * spatial) as f32;
+    let cs = channels * spatial;
+    let mut dweight = vec![0.0f32; channels];
+    dweight.par_iter_mut().enumerate().for_each(|(c, dwc)| {
+        let rstd = 1.0f32 / (var[c] + eps).sqrt();
+        let mut sw = 0.0f32;
+        for n in 0..batch {
+            let base = n * cs + c * spatial;
+            for s in 0..spatial {
+                sw += (x[base + s] - mean[c]) * rstd;
+            }
+        }
+        *dwc = upstream * sw;
+    });
+    let dbias = vec![upstream * m; channels];
+    (dweight, dbias)
 }
 
 pub fn linear_tensor_f64(

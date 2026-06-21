@@ -4,6 +4,96 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-21 - frankentorch-kgs4.145 - BatchNorm2d f32 API-only lazy-zero input gradient keep
+
+- Lever attempted: after `.144` rejected the broad autograd sentinel/report-cache
+  design, keep the zero-gradient representation narrower: the f32 BatchNorm2d
+  scalar-loss custom backward returns the existing autograd `None` lazy-zero edge
+  for input `dx` only, while preserving the old f32 `dweight`/`dbias` reduction
+  order through a new affine-gradient helper. This removes the large `dx`
+  allocation/fill without changing the public `.grad` materialization boundary
+  or introducing a new sentinel representation.
+- Workload: `pytorch_gauntlet_bench`
+  `gauntlet_batch_norm2d_f32_grad`, `[N,C,H,W]=[32,256,28,28]`, affine weight
+  and bias require gradients, scalar-sum loss and backward.
+- RCH routing evidence:
+  - First baseline on `vmi1264463` was canceled after stale progress with fresh
+    heartbeat; no benchmark result was counted.
+  - Second baseline on `vmi1153651`: ordinary automatic row `165.89 ms`,
+    explicit scalar-sum row `130.64 ms`; remote PyTorch failed because worker
+    `torch` is unavailable.
+  - Candidate after-run on `vmi1149989`: ordinary automatic row `46.262 ms`,
+    explicit scalar-sum row `47.163 ms`; remote PyTorch failed for the same
+    reason. The unchanged/native worker speed differed by `3.59x`, so this is
+    routing evidence only, not keep proof.
+- Same-machine local keep evidence:
+  - Patched lazy-zero run: ordinary automatic row `87.938 ms`, explicit
+    scalar-sum row `81.685 ms`, PyTorch `2.12.1+cpu` row `8.5874 ms`.
+    Ratios vs PyTorch: ordinary `10.24x` slower, explicit scalar `9.51x`
+    slower.
+  - Temporary dx-allocating API baseline in the same target dir: ordinary
+    automatic row `94.656 ms`, explicit scalar-sum row `85.919 ms`, PyTorch
+    row `8.6718 ms`. Ratios vs PyTorch: ordinary `10.92x` slower, explicit
+    scalar `9.91x` slower.
+  - Internal ordinary-row ratio is `94.656 / 87.938 = 1.076x` faster. Criterion
+    reported the temporary dx-allocating baseline as `+9.0622%` slower than the
+    patched run with `p = 0.00`, so this is a keep on the automatic/native row.
+  - Explicit scalar-sum ratio is `85.919 / 81.685 = 1.052x` faster, but
+    Criterion reported `p = 0.28` and "No change in performance detected"; this
+    row is recorded as neutral/no-count for internal keep proof.
+  - Win/loss/neutral vs PyTorch: ordinary `0W / 1L / 0N`; explicit scalar
+    `0W / 1L / 0N`. Both rows still lose to PyTorch despite the internal keep.
+- Correctness and quality gates:
+  - `rch exec -- cargo test -p ft-kernel-cpu
+    batch_norm_f32_scalar_backward_matches_unit_dy_bits --lib -- --nocapture`:
+    passed on `hz1`.
+  - `rch exec -- cargo test -p ft-api functional_batch_norm2d_f32_sum --lib
+    -- --nocapture`: passed on `vmi1149989`.
+  - Initial focused API run also passed before the unused local cleanup.
+  - `rch exec -- cargo check -p ft-kernel-cpu --lib`: passed on `hz1`.
+  - `rch exec -- cargo check -p ft-api --lib`: passed on `vmi1149989`.
+  - `rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings`: passed
+    on `hz1`.
+  - `rch exec -- cargo clippy -p ft-api --lib -- -D warnings`: passed on
+    `vmi1149989`.
+  - Post-rebase `rch exec -- cargo test -p ft-conformance --profile release`:
+    passed on `vmi1149989` with `ft-conformance` lib `199/0` plus binaries,
+    integration tests, smoke tests, and doctests green.
+  - `git diff --check`: passed after the final docs edit.
+  - Changed-file UBS including the two touched giant Rust source files ran
+    silently through repeated polls and was interrupted with exit `130`; UBS
+    emitted no findings before interruption. A docs/artifact-only UBS invocation
+    exited `0` and reported no recognizable languages.
+  - `cargo fmt --check` and touched-file `rustfmt --edition 2024 --check`
+    reported broad pre-existing rustfmt drift in ft-api examples/benches and
+    old hunks inside the giant touched files. No formatting rewrite was applied
+    in this perf commit.
+- Verdict: keep the API-only lazy-zero input-gradient representation for f32
+  BatchNorm2d scalar-loss paths because it gives a statistically significant
+  same-machine ordinary automatic-row win and avoids the broad sentinel design
+  rejected in `.144`. Record the explicit scalar-sum row as neutral.
+- Retry condition: do not repeat dx-only lazy-zero work. Remaining BatchNorm2d
+  f32 gap needs removal of report/persistent zero materialization, true forward
+  output deforestation, saved-stat/workspace reuse, tape/session arena
+  allocation, f32-native tape/storage, or generated shape-specialized
+  scalar-loss kernels.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.145/baseline_batch_norm2d_f32_gauntlet.log`
+  - `artifacts/perf/frankentorch-kgs4.145/baseline2_batch_norm2d_f32_gauntlet.log`
+  - `artifacts/perf/frankentorch-kgs4.145/after_batch_norm2d_f32_gauntlet.log`
+  - `artifacts/perf/frankentorch-kgs4.145/after_local_batch_norm2d_f32_gauntlet.log`
+  - `artifacts/perf/frankentorch-kgs4.145/baseline_local_dx_alloc_batch_norm2d_f32_gauntlet.log`
+  - `artifacts/perf/frankentorch-kgs4.145/baseline_local_pytorch_batch_norm2d_f32_5x40.log`
+  - `artifacts/perf/frankentorch-kgs4.145/test_ft_kernel_cpu_batch_norm_f32_scalar_after.log`
+  - `artifacts/perf/frankentorch-kgs4.145/test_ft_api_functional_batch_norm2d_f32_sum_after_clean.log`
+  - `artifacts/perf/frankentorch-kgs4.145/check_ft_kernel_cpu_lib.log`
+  - `artifacts/perf/frankentorch-kgs4.145/check_ft_api_lib.log`
+  - `artifacts/perf/frankentorch-kgs4.145/clippy_ft_kernel_cpu_lib.log`
+  - `artifacts/perf/frankentorch-kgs4.145/clippy_ft_api_lib.log`
+  - `artifacts/perf/frankentorch-kgs4.145/rustfmt_touched_files_check.log`
+  - `artifacts/perf/frankentorch-kgs4.145/ubs_changed_files_interrupted.md`
+  - `artifacts/perf/frankentorch-kgs4.145/summary.md`
+
 ## 2026-06-21 - frankentorch-kgs4.144 - BatchNorm2d f32 lazy-zero gradient representation no-ship
 
 - Lever attempted: introduce a lazy known-zero gradient representation in

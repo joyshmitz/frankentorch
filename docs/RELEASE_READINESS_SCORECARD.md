@@ -6,6 +6,7 @@ Updated: 2026-06-21
 
 | Bead | Workload | Result vs PyTorch | Before/after verdict | Release action |
 |---|---:|---:|---:|---|
+| `frankentorch-kgs4.145` | BatchNorm2d f32 API-only lazy-zero input grad for scalar-loss `[32,256,28,28]` NCHW | same-machine `10.24x` slower ordinary; `9.51x` slower explicit scalar-sum | internal keep on ordinary automatic row; same-machine dx-alloc baseline `94.656 ms` -> lazy-zero `87.938 ms` (`1.076x` faster, `p=0.00`); explicit scalar-sum `85.919 ms` -> `81.685 ms` was neutral (`p=0.28`) | kept; `.144` rejected the broad sentinel design, so this narrower API-only edge is the kept variant; route remaining gap to report/persistent zero materialization removal, true forward deforestation, saved-stat/workspace reuse, arena/tape allocation, f32-native storage/layout, and generated scalar-loss kernels |
 | `frankentorch-kgs4.144` | BatchNorm2d f32 lazy-zero scalar-loss representation `[32,256,28,28]` NCHW | mixed-location candidate `13.55x` slower ordinary; `8.84x` slower explicit scalar-sum | no-ship; baseline RCH `63.388 ms` ordinary / `58.024 ms` scalar-sum, candidate cross-worker `105.48 ms` ordinary / `68.775 ms` scalar-sum; focused candidate tests passed after temporary algebraic-zero contract update | rejected/reverted; do not retry lazy-zero custom-backward sentinel/report cache alone; route to true forward deforestation, saved-stat/workspace reuse, f32-native tape/storage, arena allocation, and generated scalar-loss kernels |
 | `frankentorch-kgs4.143` | BatchNorm2d f32 automatic `tensor_sum` shortcut `[32,256,28,28]` NCHW | mixed-location local-oracle `15.31x` slower ordinary; `13.41x` slower explicit scalar-sum | internal keep; same-worker `vmi1152480` ordinary disabled `166.77 ms` -> enabled `117.96 ms` (`1.41x` faster); explicit scalar-sum control stable `100.95 ms` -> `103.35 ms` | kept; route remaining gap to true forward deforestation, saved-stat/workspace reuse, arena/tape allocation, f32-native storage/layout, and generated scalar-loss kernels |
 | `frankentorch-kgs4.141` | BatchNorm2d f32 scalar-loss algebraic-zero backward `[32,256,28,28]` NCHW | same-host candidate `15.46x` slower | no gain; paired local scalar-sum `116.70 ms` -> `115.48 ms`, `p=0.40`, no change detected; RCH after-run rejected as cross-worker noise because unchanged materialized row drifted `2.94x` slower | rejected/reverted; route remaining gap to output deforestation, zero-gradient representation without large `dx` allocation/fill, saved-stat/workspace reuse, generated scalar-loss kernels, and tape/session arena allocation |
@@ -36,14 +37,50 @@ Updated: 2026-06-21
 | `frankentorch-kgs4.133` | conv2d f64 train step `[4,64,64,64]`, 64 3x3 filters | `1.91x` slower; candidate `1.86x` slower | no gain; same-worker rch `121.07 ms` -> `117.92 ms`, `p=0.38`, no change detected | rejected; removed dormant all-ones-dout branch |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `29/29` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 28L / 1N`; the RMSNorm scalar-sum comparator is neutral for
+Measured-discipline score: `30/30` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 29L / 1N`; the RMSNorm scalar-sum comparator is neutral for
 release scoring because the candidate was faster than local PyTorch by
 mixed-location ratio but failed the same-worker FrankenTorch keep gate.
 Correctness guards are green and the SDPA, MaxPool3d,
 Linear, LayerNorm, BatchNorm1d/2d, GroupNorm, and SmoothL1 levers include real
 internal speedups, but no measured workload is performance-dominant against
 PyTorch yet.
+
+### 2026-06-21 BatchNorm2d f32 API-only lazy-zero input gradient keep (`frankentorch-kgs4.145`)
+
+After `.144` rejected the broad autograd sentinel/report-cache design, the kept
+variant narrows the zero-gradient representation to the f32 BatchNorm2d
+scalar-loss API closure. The closure now returns the existing autograd `None`
+lazy-zero edge for input `dx` while preserving the old f32 `dweight`/`dbias`
+reduction order through a new affine-gradient helper. Public `.grad`
+materialization stays dense at the boundary.
+
+RCH produced useful routing evidence but not keep proof: a stale first baseline
+on `vmi1264463` was canceled, a second baseline on `vmi1153651` measured
+ordinary `165.89 ms` and explicit scalar `130.64 ms`, while the candidate
+after-run on `vmi1149989` measured ordinary `46.262 ms` and explicit scalar
+`47.163 ms`. The worker delta was too large to count, and remote PyTorch still
+failed because workers lack `torch`.
+
+The same-machine local gauntlet is the keep evidence. Patched lazy-zero measured
+ordinary `87.938 ms`, explicit scalar `81.685 ms`, and PyTorch `8.5874 ms`.
+The temporary dx-allocating API baseline in the same target dir measured
+ordinary `94.656 ms`, explicit scalar `85.919 ms`, and PyTorch `8.6718 ms`.
+That makes the ordinary automatic row `1.076x` faster with Criterion reporting
+the dx-alloc baseline `+9.0622%` slower (`p = 0.00`). The explicit scalar row
+was only `1.052x` faster and statistically neutral (`p = 0.28`). Final ratios
+remain losses against PyTorch: ordinary `10.24x` slower, explicit scalar
+`9.51x` slower.
+
+Focused `ft-kernel-cpu` and `ft-api` BatchNorm tests passed through RCH, as did
+`ft-kernel-cpu`/`ft-api` lib check and lib clippy with `-D warnings`.
+Post-rebase `ft-conformance --profile release` passed on `vmi1149989` (`199/0`
+lib tests plus binaries, integration tests, smoke tests, and doctests).
+Workspace and touched-file rustfmt checks still report broad pre-existing drift
+in ft-api examples/benches and old giant-file hunks, so no formatting churn was
+included. `git diff --check` passed. Changed-file UBS was interrupted after a
+long silent large-file scan with no findings emitted; the docs/artifact-only UBS
+pass exited `0` with no recognizable languages.
 
 ### 2026-06-21 BatchNorm2d f32 lazy-zero representation reject (`frankentorch-kgs4.144`)
 
