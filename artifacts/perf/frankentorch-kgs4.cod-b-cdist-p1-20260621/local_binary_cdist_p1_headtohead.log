@@ -1,0 +1,3 @@
+cdist p=1 f64 [1024,128] x [1024,128] -> [1024,1024] forward (no-grad), 5 iters MIN:
+  FrankenTorch :   15.292 ms   (checksum 5.4401e7)
+  PyTorch      :    8.782 ms   => FT 1.74x slower

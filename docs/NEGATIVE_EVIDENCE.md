@@ -3582,3 +3582,28 @@ NOT vs-PyTorch DOMINATE wins. Combined with the SDPA-3D-artifact correction (21a
 (Sleef/MKL/oneDNN), the honest net position is: FT is COMPETITIVE (~parity) with PyTorch on parallelizable
 non-transcendental ops, loses vendor-walled ops, and has NO clear "DOMINATE" win at representative shapes.
 That parity — for a from-scratch safe-Rust port — is the real achievement; "DOMINATE" was aspirational.
+
+
+## 2026-06-21aw - cdist p=1 f64 no-ship: fused Manhattan kernel is correct, but PyTorch is 1.74x faster
+
+Tested a non-attention fused-distance target after the SDPA/cumsum corrections: `cdist(x1, x2, p=1.0)`
+f64, no-grad, `[1024,128] x [1024,128] -> [1024,1024]`. This was a plausible pure-Rust win candidate
+because the FT path already avoids broadcast materialization and elides `powf(1.0)`, while the operation is
+not a vendor-transcendental case.
+
+Same-host measured ratio (`artifacts/perf/frankentorch-kgs4.cod-b-cdist-p1-20260621/`): FT 15.292ms vs
+PyTorch 8.782ms = **FT 1.74x SLOWER**. FT printed checksum `5.4401e7`; a separate PyTorch checksum check
+reported `5.440050439680e+07`, matching the rounded FT print. Scorecard: **0W / 1L / 0N**.
+
+RCH FT-only baseline on `ovh-a`: 19.288ms; PyTorch unavailable on the worker, and RCH rewrote
+`CARGO_TARGET_DIR` to a worker-scoped cold path, so this is routing evidence only. Tried a narrow
+slice/zip inner-loop indexing lever to reduce repeated base+index arithmetic while preserving left-to-right
+accumulation order. The candidate RCH FT-only run on `hz2` was 20.138ms, and the retrieved binary could not
+run locally because it required `GLIBC_2.43`; the hunk was reverted and no product source was kept.
+
+Conformance gate: `rch exec -- cargo test -p ft-conformance --profile release` passed on `vmi1153651`
+(199 `ft_conformance` lib tests plus conformance bins/integration/smoke/doctests all green).
+
+Retry predicate: do not retry p=1 `cdist` with indexing-only or iterator-shape micro-levers. A credible
+retry needs a deeper SIMD/tiled Manhattan kernel that can beat PyTorch's vectorized CPU path, with exact
+checksum reporting in the head-to-head harness before scoring.
