@@ -4000,3 +4000,19 @@ VERIFIED: matrix_exp_batched_matches_looping_2d_bit_exact (f64+f32 bit-exact vs 
 338ms @ [100000,4]!) — ship NEXT (needs QR->svd rank-deficient fallback: pinv_qr returns Option, None=fall
 back per-plane to the 2-D svd-pinv). lu/solve/cholesky/inv/det/slogdet have batched kernels (fast, no win).
 15 vs-PyTorch wins. NEXT (bead ogu1e): pinv batched (56x!) + lstsq + svdvals f32 (needs new 2-D kernel).
+
+## 2026-06-21bv - BOLD-VERIFY independent confirmation: f32 batched eigvalsh = 5.0-7.5x vs PyTorch
+
+Cod-b revalidated the native f32 batched eigvalsh fast path already present on `origin/main` (`fc3b2dcb`) with a separate harness and proof bundle, without taking over the peer-owned broader f32 QR lane. The target is contiguous no-grad `[..., k, k]` f32 values-only eigvalsh, using the f32 batched kernel instead of the old f32->f64->f32 fallback.
+
+Same-worker FrankenTorch A/B on RCH `hz2`:
+  [100000,4,4]  fallback 14.0ms -> native 6.9ms  = 2.03x faster
+  [20000,16,16] fallback 51.4ms -> native 13.3ms = 3.86x faster
+  [4000,32,32]  fallback 24.6ms -> native 14.1ms = 1.74x faster
+
+PyTorch comparator used the local CPU sidecar because RCH workers still lack torch (`/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python`, torch `2.12.1+cpu`, 8 threads):
+  [100000,4,4]  FT 6.9ms  vs PyTorch 50.496331ms = 7.32x FASTER
+  [20000,16,16] FT 13.3ms vs PyTorch 99.272275ms = 7.46x FASTER
+  [4000,32,32]  FT 14.1ms vs PyTorch 70.954784ms = 5.03x FASTER
+
+Score for this pass: `3W / 0L / 0N` vs PyTorch. Checksum sums match the expected f32 rounded totals (`1.7920e6`, `5.2736e6`, `4.1574e6`). Verification: focused `ft-kernel-cpu` bit-exact-vs-looping f32 test, focused `ft-api` shape/dtype test, and `ft-conformance --profile release` all passed through RCH. File-scoped rustfmt and the example compile check passed. Repo-wide fmt/clippy remain blocked by pre-existing unrelated drift (`ft-api` example/source formatting and `clippy::manual_memcpy` scan-helper warnings), recorded in the artifact bundle. Artifact: `artifacts/perf/frankentorch-kgs4.cod-b-batched-eigvalsh-f32-20260621/`.
