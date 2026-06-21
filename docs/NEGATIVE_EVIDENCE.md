@@ -4260,3 +4260,14 @@ to beat at larger k (FT svd-lstsq is svd-bound). NEW functionality (batched lsts
 gap filled, NOT a regression). The earlier QR-lstsq attempt failed on the Option trap; this fused svd-lstsq
 is clean + correct. Fused-kernel lever tally: matmul (ch) -> hermitian-pinv (cj 7-11x) + general pinv (ck
 7-12x) + lstsq (cl 5.3x small-k). 31 wins. NEXT: batched-linalg GRAD (eigh/svd/qr VJP fused).
+
+## 2026-06-21cm - WIN (32nd): f32 fused-linalg pinv/hermitian-pinv/lstsq via dtype-cast = 2.2-7.5x vs PyTorch
+
+The fused-kernel f64 wins mirror to f32 via the dtype-cast (f32 -> f64 -> fused batched kernel -> f32;
+cast overhead tiny vs the fused-batched win). MEASURED (examples/f32_fused_probe.rs, well-conditioned):
+  pinv f32   [100000,4,4] 7.46x | [20000,16,16] 4.63x  (FREE -- existing dt!=F64 cast)
+  hpinv f32  [100000,4,4] 4.56x | [20000,16,16] 2.18x  (FREE -- via general-pinv fallback cast)
+  lstsq f32  [100000,4,4] 4.31x | [20000,16,16] 1.31x SLOWER (added dt!=F64 cast to tensor_linalg_lstsq,
+             was f64-gated -> f32 batched errored; k=16 loss is the QR-lstsq-driver pattern, same as f64 cl)
+ft-api lstsq 6/0 (no regression from the cast). Fused-linalg surface now f32-complete (pinv/hpinv/lstsq
+f64+f32). 32 vs-PyTorch wins. NEXT: batched-linalg GRAD (the remaining fused-kernel lead, eigh/svd/qr VJP).
