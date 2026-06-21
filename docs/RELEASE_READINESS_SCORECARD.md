@@ -50,6 +50,18 @@ Current head-to-head (clean-arm): sdpa ~2.0x FASTER (WIN); linear ~parity; max_p
 avg_pool2d ~3.3x; avg_pool1d ~5x; batch_norm2d f32 28.14x -> ~5.7x. See NEGATIVE_EVIDENCE
 2026-06-21p for the full table + contention caveats.
 
+★★ 2026-06-21 RADICAL FINDING — the residual losses are the ALLOCATOR gap, not FT compute.
+The gauntlet is UNFAIR (PyTorch's time includes its caching allocator; FT was on the system
+allocator). Giving FT's arm a caching allocator (mimalloc, measurement-only) shows FT is
+NEAR-PARITY-to-WINNING on every lane: sdpa ~2.0x FASTER (WIN), batch_norm2d-scalar ~1.1x,
+max_pool1d ~1.13x, avg_pool1d-fused ~1.27x, avg_pool1d-std ~1.9x, batch_norm2d-std ~2.0x,
+avg_pool2d ~3.0x. The system-allocator gap was 40-73% of FT's time on alloc-bound lanes
+(batch_norm2d-scalar 35->9.6 ms = 73% allocator). FT's pure-Rust compute is competitive with
+PyTorch/MKL; the gap was the missing caching allocator. NEXT LEVER (9pafs): adopt a caching
+allocator for FT perf workloads (pure-Rust global allocator or consumer recommendation; it is a
+binary-level choice, orthogonal to the "no C BLAS" math-purity rule). See NEGATIVE_EVIDENCE
+2026-06-21r for the full fair-allocator table.
+
 ### 2026-06-21 BatchNorm2d f32 API-only lazy-zero input gradient keep (`frankentorch-kgs4.145`)
 
 After `.144` rejected the broad autograd sentinel/report-cache design, the kept

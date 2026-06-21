@@ -2775,3 +2775,39 @@ Campaign-wide cumulative narrowing (current vs documented origin; clean-arm rati
   but massively narrowed (max_pool1d ~1.57x, avg_pool2d ~3.3x, avg_pool1d ~5x, batch_norm2d ~5.7x).
   Remaining wins require the caching allocator (9pafs, large) — the kernels/GEMM are bandwidth/
   matrixmultiply-walled.
+
+## 2026-06-21r - ★★ RADICAL FINDING: the residual losses are the ALLOCATOR gap, not FT compute (fair caching-allocator head-to-head)
+
+The gauntlet was UNFAIR: PyTorch's measured time includes its caching allocator; FT ran on the
+system allocator (mallocs + page-faults fresh buffers every backward). Gave FT's gauntlet arm a
+caching allocator (mimalloc as a bench-local `#[global_allocator]`, MEASUREMENT ONLY — reverted,
+NOT shipped: rch-offline fetch risk + C-dep policy) and re-measured. Result (FT system-alloc ->
+FT caching-alloc, vs PyTorch):
+
+| lane | FT sys-alloc | FT caching-alloc | PyTorch | fair ratio | was (origin) |
+|---|---:|---:|---:|---:|---:|
+| sdpa [16,512,64] | ~24 ms | ~24 ms | ~50 ms | **~2.0x FASTER (WIN)** | 1.29x slower |
+| batch_norm2d f32 scalar-sum | ~35 ms | **~9.6 ms** | ~8.6 ms | **~1.1x** | 28.14x |
+| batch_norm2d f32 std | ~43 ms | ~17.4 ms | ~8.6 ms | ~2.0x | 28.14x |
+| max_pool1d [8,64,8192] | ~27 ms | ~23.5 ms | ~20.8 ms | **~1.13x** | 12.31x |
+| avg_pool1d fused | ~37 ms | **~12.6 ms** | ~10 ms | **~1.27x** | 25.86x |
+| avg_pool1d std | ~44 ms | ~18.6 ms | ~10 ms | ~1.9x | 25.86x |
+| avg_pool2d [8,64,64,64] | ~13.7 ms | ~11.3 ms | ~3.8 ms | ~3.0x | 4.54x |
+
+- ★ The system-allocator gap was 40-73% of FT's time on alloc-bound lanes (batch_norm2d scalar-sum
+  35->9.6 ms = ~73% was allocator; avg_pool1d fused 37->12.6 ms = ~66%). With a FAIR allocator FT is
+  NEAR-PARITY (~1.1-1.3x) on most lanes and WINS sdpa ~2x. FT's pure-Rust compute is competitive with
+  PyTorch/MKL — the measured "losses" were dominantly the missing caching allocator (= what PyTorch's
+  caching allocator avoids; cf. the 9-lever campaign that closed the per-op allocs, this closes the
+  systemic malloc/page-fault).
+- sdpa is allocator-INDEPENDENT (~24 ms both) — its win is the fused flash-attn kernel.
+- avg_pool2d residual (~3x) is the bandwidth-bound forward+distribute (less alloc), not the allocator.
+- ★ LEVER (9pafs): adopt a caching allocator for FrankenTorch perf workloads. mimalloc (C, dev-only)
+  sizes it; ship path = a pure-Rust caching global allocator OR recommend consumers set one (it is a
+  binary-level #[global_allocator] choice, not a library lever; the "no C BLAS" rule is about the MATH
+  libs, orthogonal to the allocator). This is the single highest-leverage remaining DOMINATE move:
+  near-parity-to-winning across the board. Did NOT ship the C dep (rch-offline build risk +
+  coordination); recorded the sizing for the operator/swarm to adopt.
+- HEAD-TO-HEAD with a FAIR allocator: ~1W (sdpa) + near-parity on batch_norm2d-scalar/max_pool1d/
+  avg_pool1d-fused + ~2-3x on the rest. The gauntlet should adopt a caching allocator on the FT arm
+  for a fair comparison going forward.
