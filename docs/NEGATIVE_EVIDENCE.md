@@ -3537,3 +3537,29 @@ standard [B,H,seq,d] layout real transformers use (PyTorch f64 4-D SDPA is fast;
 shape where FT "won" is unrepresentative). Also committed the prior probe tools the ledger
 references but were never committed (cdist_p1 / sdpa_f32 / sdpa_seqscale / serving_degradation /
 conv_serving_degradation / nograd_tape_degradation head-to-heads) so every ledger claim is reproducible.
+
+
+## 2026-06-21av - broadcast-H masked f64 SDPA no-ship: correct, but PyTorch faster on 4-D
+
+Follow-up to the 4-D SDPA correction: tested the specific broadcast-over-heads mask shape `[B,1,S,S]`
+that 2026-06-21as had expected to win via direct mask indexing. Same-host proof used the retrieved warm-target
+FrankenTorch release example binary plus local PyTorch CPU; RCH remote PyTorch was unavailable, so RCH is
+FT-only routing evidence rather than the ratio source.
+
+Same-host measured ratios (`artifacts/perf/frankentorch-kgs4.cod-b-broadcast4d-20260621/`):
+- primary masked f64 SDPA, 3-D: FT 7.868ms vs PyTorch 18.801ms = **2.39x FASTER**, rel-diff 3.29e-14.
+- tensor masked f64 SDPA, 3-D: FT 8.545ms vs PyTorch 19.360ms = **2.27x FASTER**, rel-diff 3.29e-14.
+- masked f64 GQA: FT 51.332ms vs PyTorch 5.435ms = **9.44x SLOWER**, rel-diff 3.19e-14.
+- broadcast-H masked f64 SDPA, 4-D: FT 7.518ms vs PyTorch 5.430ms = **1.38x SLOWER**, rel-diff 1.70e-14.
+
+Scorecard: **2W / 2L / 0N** overall for this proof bundle; **0W / 1L / 0N** for broadcast-H specifically.
+The mask-stride/broadcast-head lever is therefore a no-ship for this shape: it removes mask materialization
+but still loses to PyTorch's standard 4-D CPU path. The measurement-only example row was reverted; no product
+source was kept in this evidence commit.
+
+Conformance gate: `rch exec -- cargo test -p ft-conformance --profile release` passed on `vmi1153651`
+(199 `ft_conformance` lib tests plus conformance bins/integration/smoke/doctests all green).
+
+Retry predicate: skip broadcast-H as a PyTorch-performance target unless a future PyTorch version/shape
+falls back to math. The better open lever remains a direct grouped/GQA masked f64 kernel that indexes
+`kv_head = q_head / group` without expanding K/V heads, then reruns the same head-to-head scorecard.
