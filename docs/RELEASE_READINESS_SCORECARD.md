@@ -47,6 +47,14 @@ The default-off fair allocator gauntlet switch adds allocator-normalized avg_poo
 evidence (`2W / 1L / 1N` across two RCH workers), but it is not counted as a
 default product-speed win because the same-worker system-vs-fair A/B did not land.
 
+★ FULL-LANE fair-alloc head-to-head (BlackThrush, 2026-06-21, `--features fair-alloc`,
+all key lanes): **1 WIN (sdpa ~2.3x, FT 24.5ms vs PyTorch ~50-56ms) / 2 PARITY (max_pool1d
+23.5ms~25ms, linear 8.9ms~6-10ms) / 3 narrowed losses (avg_pool1d-fused ~1.5x, batch_norm2d-
+scalar ~1.7x, conv3d ~2.3x)** — from the original 0W / 12-28x losses. conv3d is the lone real
+wall (oneDNN direct conv; mimalloc doesn't help — GEMM/im2col-bound). See NEGATIVE_EVIDENCE
+2026-06-21y. Takeaway: FT's pure-Rust autograd is competitive-to-winning vs PyTorch once the
+allocator playing field is level.
+
 ★ 2026-06-21 re-measure (after the 9-lever autograd-allocation campaign landed): the
 GENERIC engine levers (cbe4t/96e5d/0w3ns/mbitj/20q7c/kwarf/pwjrs/rdgt6+cuqzu+create_graph/05upk)
 narrowed EVERY gauntlet lane massively — the per-bead ratios below (12-28x) are STALE.

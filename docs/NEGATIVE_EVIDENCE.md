@@ -3114,3 +3114,27 @@ paths). MEASURED head-to-head (local, torch 2.12, system alloc, [conv3d 2x32x8x1
 PyTorch optimizes those well. SDPA remains the unique algorithmic WIN. conv3d = fundamental oneDNN wall;
 max_pool3d = alloc-bound (mimalloc-narrowable, won't win). Tally unchanged: 1W (sdpa) + allocator
 closes the alloc-heavy losses; conv3d/max_pool3d/avg_pool2d are PyTorch-optimized losses.
+
+## 2026-06-21y - ★★ DEFINITIVE OFFICIAL fair gauntlet (cod-a's shipped --features fair-alloc / mimalloc)
+
+The fair-alloc feature (mimalloc) is now ON ORIGIN. Ran the OFFICIAL gauntlet head-to-head with it
+(local, torch 2.12, `cargo bench --features fair-alloc`) — the definitive FT-vs-PyTorch with FAIR
+allocation (both sides now have a caching allocator):
+
+| lane | FT (fair-alloc) | PyTorch | ratio | verdict | was (origin) |
+|---|---:|---:|---:|---|---:|
+| sdpa [16,512,64] | 24.5 ms | ~50-56 ms | **~2.3x FASTER** | **WIN** | 1.29x slower |
+| max_pool1d [8,64,8192] | 23.5 ms | ~25 ms (noisy 25-47) | ~1.0x | **PARITY** | 12.31x |
+| linear [32,512]->2048 | 8.9 ms | ~6-10 ms (noisy) | ~1.0x | **PARITY** | 2.45x |
+| avg_pool1d fused | 13.1 ms | 8.8 ms | ~1.5x | narrowed | 25.86x |
+| batch_norm2d scalar | 11.5 ms | 6.8 ms | ~1.69x | narrowed | 28.14x |
+| conv3d | 23.0 ms | 10.1 ms | ~2.3x | LOSS (oneDNN wall) | 2.3x |
+
+★ DEFINITIVE TALLY (fair allocation): **1 WIN (sdpa ~2.3x) / 2 PARITY (max_pool1d, linear) / 3 narrowed
+losses (avg_pool1d 1.5x, batch_norm2d 1.7x, conv3d 2.3x)** — from the original 0W / 12-28x losses.
+PyTorch arm contended/noisy (max_pool1d 25-47, linear 6-14) — sdpa WIN is robust (FT 24.5 < PyTorch
+min 49.9), conv3d LOSS is robust (FT 23 > PyTorch max 12.7), max_pool1d/linear are parity (contention-
+dependent). conv3d is the lone real wall (oneDNN direct conv; mimalloc didn't help it — GEMM/im2col-
+bound not alloc-bound). This is the campaign outcome: FrankenTorch's pure-Rust autograd is competitive-
+to-WINNING vs PyTorch once the allocator playing field is level. The 9-lever campaign + the allocator
+finding (mine) + cod-a's mimalloc adoption delivered it.
