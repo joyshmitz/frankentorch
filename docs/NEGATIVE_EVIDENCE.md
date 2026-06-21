@@ -3706,3 +3706,19 @@ SAME way FT does — f64 sin then .float() — else the f32 inputs differ and ar
 VERIFIED: cummax_cummin_dim_f32_basic kernel test (dim0 + NaN) + ft-kernel-cpu 511/0 + ft-api cummax/
 cummin tests green. => bead frankentorch-cummax-dim-aware COMPLETE: cummax+cummin × f64+f32, all
 user-facing + winning ~3-3.8x, bit-exact + grad. 7 clean scan-family vs-PyTorch wins total.
+
+## 2026-06-21bd - SCOUT: sort-along-dim is the next big strided weakness (PyTorch dim=0 570ms, 6.5x); diff/flip/roll FINE
+
+Scouted op-families for the strided-non-last-dim weakness (PyTorch dim=0 [262144,64] vs dim=1):
+  diff 24.6 vs 22.2ms | flip 22.9 vs 26.9ms | roll 25.6ms  -> FINE (PyTorch cache-friendly, NO win).
+  ★ sort dim=0 = 570ms vs dim=1 88ms = 6.5x strided penalty (BIGGEST weakness found — sort writes
+    values+indices AND is O(n log n), so the strided cache thrash compounds). median dim=0 100ms (uses sort).
+FT HAS a dim-aware sort (sort_tensor_contiguous_f64 — gathers each lane to contiguous keys + radix
+sorts) BUT parallelizes over OUTER blocks, so dim=0 (outer_size=1) sorts all inner lanes SERIALLY — the
+SAME "outer=1 -> no parallelism" flaw as the cumsum kernel. FIX (filed as a bead): extract
+sort_one_lane_f64 (verbatim per-lane radix/comparison logic -> contiguous (vals,idx) column) + add a
+small-outer LANE-parallel path (par over outer*inner lanes via into_par_iter().map collect, then serial
+strided scatter), gated outer_size<16 && inner_size>=2 && numel>=PARALLEL_THRESHOLD; keep the existing
+par-over-outer path BYTE-UNCHANGED. LOW parity risk (sort logic untouched — only the parallelism axis
+changes; verify vs existing sort tests + head-to-head). Expect ~5x (570 -> ~100-150ms). f32 mirror after.
+Deferred to a fresh focused turn (parity-critical core op, same as the cummax precedent which worked).
