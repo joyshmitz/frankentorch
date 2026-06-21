@@ -14,11 +14,15 @@ is explicitly satisfied.
   is niche (likely still a PyTorch loss on the trivial op), so this is KEPT as a small
   bit-exact CLEANUP (removes a dead clone + matches the borrowed pattern), not a headline win.
 - Value: confirms the refined heuristic quantitatively — a cheap op with a 16 MB/iter input
-  clone yields ~1.15x from elision (vs grid_sample's 0x where the heavy op dominated). The other
-  ungated cheap-elementwise save sites (special i0e/i1/i1e/log_ndtr, etc.) would give similar
-  ~1.1-1.2x sub-bar wins; not worth individual measure cycles — only convert opportunistically
-  as cleanups. The real perf bar (Score>=2.0) on the train frontier needs the structural
-  dense-grad/arena levers, not more clone-elision.
+  clone yields ~1.15x from elision (vs grid_sample's 0x where the heavy op dominated).
+  CORRECTION (verified at lib.rs ~14862): the special funcs i0e/i1/i1e/log_ndtr are NOT cheap —
+  they are COMPUTE-BOUND (Bessel continued-fraction/series per element, per the code's own
+  comment), so clone-elision there is ~0x (heavy op dominates, the grid_sample case), NOT the
+  ~1.1-1.2x first guessed. So converting them is pure churn with zero perf benefit — DO NOT.
+  The only positive cheap-op-large-save class is truly-trivial ops (rrelu = compare+mul, done);
+  common activations elu/silu are ft-autograd-delegated / create_graph (not borrow-convertible).
+  The borrowed-inputs/save-skip vein is therefore DEFINITIVELY closed. The real perf bar
+  (Score>=2.0) on the train frontier needs the structural dense-grad/arena levers, not clone-elision.
 
 ## 2026-06-21 - grid_sample no-grad save-skip - NO GAIN (reverted), refines the save-skip heuristic
 
