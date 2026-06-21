@@ -3528,3 +3528,12 @@ LESSON (humbling, the campaign's measure-don't-assume principle applied to my bi
 across REPRESENTATIVE shapes, not just the gauntlet's — the 3-D gauntlet shape hid that PyTorch f64 4-D
 SDPA is fast. The masked-broadcast detour (which "failed" to win) is what surfaced this. The gauntlet
 SDPA lane (kgs4.113, 3-D) should be re-examined by the swarm: it measures an unrepresentative layout.
+
+## 2026-06-21au - DIRECT confirmation: FT loses 4-D unmasked SDPA (the standard layout)
+
+4-D [2,8,512,64] f64 no-grad SDPA head-to-head (examples/sdpa_4d_headtohead.rs): FT 9.78ms vs
+PyTorch 6.20ms = FT 1.58x SLOWER. Direct unmasked confirmation of 2026-06-21at — FT loses the
+standard [B,H,seq,d] layout real transformers use (PyTorch f64 4-D SDPA is fast; the 3-D gauntlet
+shape where FT "won" is unrepresentative). Also committed the prior probe tools the ledger
+references but were never committed (cdist_p1 / sdpa_f32 / sdpa_seqscale / serving_degradation /
+conv_serving_degradation / nograd_tape_degradation head-to-heads) so every ledger claim is reproducible.
