@@ -12823,6 +12823,106 @@ fn cumsum_lane_block_f64(block: &[f64], out: &mut [f64], dim_size: usize, inner_
     }
 }
 
+/// Cumulative maximum along `dim`, returning `(values, indices)` (cache-friendly). PyTorch CPU runs
+/// this strided for a non-last dim (cummax dim=0 [262144,64] = 425ms — it writes BOTH values AND
+/// indices with a `dim`-stride); the d-outer/inner-inner walk over CONTIGUOUS inner runs avoids that.
+/// Semantics match torch 2.12 / FT's flattened `tensor_cummax`: tie keeps the LATEST max (`>=`), and
+/// NaN PROPAGATES (once a lane sees NaN the value stays NaN and the index freezes there). `indices`
+/// are the position ALONG `dim` (0..dim_size), returned as f64. Bit-exact per lane. (BlackThrush)
+pub fn cummax_dim_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<(Vec<f64>, Vec<f64>), KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let dim_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "cummax shape volume overflow")?;
+    let numel = checked_mul(
+        checked_mul(outer_size, dim_size, "cummax shape multiplication overflow")?,
+        inner_size,
+        "cummax shape multiplication overflow",
+    )?;
+    if numel == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let offset = meta.storage_offset();
+    let mut values = vec![0.0; numel];
+    let mut indices = vec![0.0; numel];
+    let data = &input[offset..];
+    let lane = dim_size * inner_size;
+    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+        values
+            .par_chunks_mut(lane)
+            .zip(indices.par_chunks_mut(lane))
+            .enumerate()
+            .for_each(|(outer, (val_chunk, idx_chunk))| {
+                let base = outer * lane;
+                cummax_dim_lane_block_f64(
+                    &data[base..base + lane],
+                    val_chunk,
+                    idx_chunk,
+                    dim_size,
+                    inner_size,
+                );
+            });
+    } else {
+        for outer in 0..outer_size {
+            let base = outer * lane;
+            cummax_dim_lane_block_f64(
+                &data[base..base + lane],
+                &mut values[base..base + lane],
+                &mut indices[base..base + lane],
+                dim_size,
+                inner_size,
+            );
+        }
+    }
+    Ok((values, indices))
+}
+
+/// Cummax one `[dim_size, inner_size]` contiguous block into `vals`/`idxs`. Cache-friendly
+/// d-outer/inner-inner walk with per-inner running max + argmax-index; tie `>=` keeps latest, NaN
+/// freezes the lane. Bit-exact per lane vs FT's flattened cummax / torch. (BlackThrush)
+#[inline]
+fn cummax_dim_lane_block_f64(
+    block: &[f64],
+    vals: &mut [f64],
+    idxs: &mut [f64],
+    dim_size: usize,
+    inner_size: usize,
+) {
+    let mut acc_max = vec![f64::NEG_INFINITY; inner_size];
+    let mut acc_idx = vec![0.0f64; inner_size];
+    let mut seen_nan = vec![false; inner_size];
+    for d in 0..dim_size {
+        let row = d * inner_size;
+        let src = &block[row..row + inner_size];
+        let vd = &mut vals[row..row + inner_size];
+        let id = &mut idxs[row..row + inner_size];
+        for inner in 0..inner_size {
+            let v = src[inner];
+            if !seen_nan[inner] {
+                if v.is_nan() {
+                    seen_nan[inner] = true;
+                    acc_max[inner] = v;
+                    acc_idx[inner] = d as f64;
+                } else if v >= acc_max[inner] {
+                    acc_max[inner] = v;
+                    acc_idx[inner] = d as f64;
+                }
+            }
+            vd[inner] = acc_max[inner];
+            id[inner] = acc_idx[inner];
+        }
+    }
+}
+
 /// Backward pass for cumsum: reverse cumulative sum.
 ///
 /// If forward is cumsum along dim, the gradient is a reverse cumsum along the same dim.
@@ -33391,6 +33491,76 @@ mod tests {
             super::cumsum_tensor_contiguous_f64(&input, &meta, 1).expect("cumsum should succeed");
         // dim1: accumulate within rows: [1,1+2,1+2+3] [4,4+5,4+5+6] = [1,3,6,4,9,15]
         assert_eq!(out, vec![1.0, 3.0, 6.0, 4.0, 9.0, 15.0]);
+    }
+
+    #[test]
+    fn cummax_dim0_basic() {
+        // [[1,5,2],[4,3,6]] cummax dim0: [1,5,2] idx[0,0,0] ; [4,5,6] idx[1,0,1]
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 5.0, 2.0, 4.0, 3.0, 6.0];
+        let (v, i) = super::cummax_dim_tensor_contiguous_f64(&input, &meta, 0).unwrap();
+        assert_eq!(v, vec![1.0, 5.0, 2.0, 4.0, 5.0, 6.0]);
+        assert_eq!(i, vec![0.0, 0.0, 0.0, 1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn cummax_dim1_basic() {
+        // [[1,3,2],[6,4,5]] cummax dim1: [1,3,3] idx[0,1,1] ; [6,6,6] idx[0,0,0]
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 3.0, 2.0, 6.0, 4.0, 5.0];
+        let (v, i) = super::cummax_dim_tensor_contiguous_f64(&input, &meta, 1).unwrap();
+        assert_eq!(v, vec![1.0, 3.0, 3.0, 6.0, 6.0, 6.0]);
+        assert_eq!(i, vec![0.0, 1.0, 1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn cummax_dim_tie_keeps_latest() {
+        // [5,5,5] dim0 -> indices [0,1,2] (torch keeps LATEST tied max via >=)
+        let meta = TensorMeta::from_shape(vec![3, 1], DType::F64, Device::Cpu);
+        let (v, i) = super::cummax_dim_tensor_contiguous_f64(&[5.0, 5.0, 5.0], &meta, 0).unwrap();
+        assert_eq!(v, vec![5.0, 5.0, 5.0]);
+        assert_eq!(i, vec![0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn cummax_dim_nan_propagates() {
+        // [1,nan,2] dim0 -> values [1,nan,nan], indices [0,1,1] (torch NaN-freeze)
+        let meta = TensorMeta::from_shape(vec![3, 1], DType::F64, Device::Cpu);
+        let (v, i) = super::cummax_dim_tensor_contiguous_f64(&[1.0, f64::NAN, 2.0], &meta, 0).unwrap();
+        assert_eq!(v[0], 1.0);
+        assert!(v[1].is_nan() && v[2].is_nan());
+        assert_eq!(i, vec![0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn cummax_dim_parallel_matches_serial() {
+        // Large outer (triggers the parallel path) vs a naive per-lane reference.
+        let (outer, dim_size, inner) = (40usize, 300usize, 16usize);
+        let meta = TensorMeta::from_shape(vec![outer, dim_size, inner], DType::F64, Device::Cpu);
+        let n = outer * dim_size * inner;
+        let input: Vec<f64> = (0..n).map(|k| ((k as f64) * 0.123).sin()).collect();
+        let (v, i) = super::cummax_dim_tensor_contiguous_f64(&input, &meta, 1).unwrap();
+        // naive reference
+        let lane = dim_size * inner;
+        let mut rv = vec![0.0; n];
+        let mut ri = vec![0.0; n];
+        for o in 0..outer {
+            for c in 0..inner {
+                let mut m = f64::NEG_INFINITY;
+                let mut mi = 0.0;
+                for d in 0..dim_size {
+                    let idx = o * lane + d * inner + c;
+                    if input[idx] >= m {
+                        m = input[idx];
+                        mi = d as f64;
+                    }
+                    rv[idx] = m;
+                    ri[idx] = mi;
+                }
+            }
+        }
+        assert_eq!(v, rv);
+        assert_eq!(i, ri);
     }
 
     #[test]

@@ -3653,3 +3653,17 @@ inner } with acc_max[inner]+acc_idx[inner], tie >= + NaN-freeze per existing ver
 semantics) + tensor_cummax_dim API + argmax-routing grad + parity tests (values+indices+tie+NaN vs
 torch). logcumsumexp = Sleef-walled (exp dominates). cumprod BACKWARD reorder = complex (division +
 O(dim²) zero-branch). Scan-FORWARD reorder vein (cumsum+cumprod, 21aw/21ax) is the clean harvest.
+
+## 2026-06-21az - ★ cummax-along-dim KERNEL = 3.32x vs PyTorch (dim=0, the biggest CPU weakness), bit-exact
+
+Implemented cummax_dim_tensor_contiguous_f64 (ft-kernel-cpu): cache-friendly d-outer/inner-inner walk
+with per-inner running max + argmax-index (cummax_dim_lane_block_f64), returning (values, indices); tie
+`>=` keeps latest + NaN-freeze, matching torch 2.12 / FT's verified flattened cummax. PyTorch cummax
+dim=0 [262144,64] = 462ms (it writes BOTH values AND indices with a dim-stride = heavy cache waste).
+MEASURED (examples/cummax_dim_headtohead.rs): FT 139ms vs PyTorch 462ms = 3.32x FASTER; values
+element-wise bit-exact (indices exact + identical input => values=input[argmax]) + indices MATCH.
+VERIFIED: 5 kernel tests (dim0/dim1 basic, tie [5,5,5]->idx[0,1,2], NaN [1,nan,2]->[1,nan,nan]/[0,1,1],
+parallel-matches-serial), full ft-kernel-cpu 509/0. Addresses the KERNEL half of bead
+frankentorch-cummax-dim-aware-yklin. REMAINING: ft-api tensor_cummax_dim wiring + argmax-routing grad +
+f32 mirror (follow-up). 3rd clean scan-family vs-PyTorch win (cumsum 2.83x / cumprod-fwd 2.65x /
+cummax-dim 3.32x) — all the same strided-non-last-dim cache lever PyTorch CPU lacks.
