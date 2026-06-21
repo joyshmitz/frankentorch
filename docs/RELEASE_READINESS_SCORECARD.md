@@ -1,11 +1,12 @@
 # FrankenTorch Release-Readiness Scorecard
 
-Updated: 2026-06-20
+Updated: 2026-06-21
 
 ## Performance Gauntlet
 
 | Bead | Workload | Result vs PyTorch | Before/after verdict | Release action |
 |---|---:|---:|---:|---|
+| `frankentorch-kgs4.144` | BatchNorm2d f32 lazy-zero scalar-loss representation `[32,256,28,28]` NCHW | mixed-location candidate `13.55x` slower ordinary; `8.84x` slower explicit scalar-sum | no-ship; baseline RCH `63.388 ms` ordinary / `58.024 ms` scalar-sum, candidate cross-worker `105.48 ms` ordinary / `68.775 ms` scalar-sum; focused candidate tests passed after temporary algebraic-zero contract update | rejected/reverted; do not retry lazy-zero custom-backward sentinel/report cache alone; route to true forward deforestation, saved-stat/workspace reuse, f32-native tape/storage, arena allocation, and generated scalar-loss kernels |
 | `frankentorch-kgs4.143` | BatchNorm2d f32 automatic `tensor_sum` shortcut `[32,256,28,28]` NCHW | mixed-location local-oracle `15.31x` slower ordinary; `13.41x` slower explicit scalar-sum | internal keep; same-worker `vmi1152480` ordinary disabled `166.77 ms` -> enabled `117.96 ms` (`1.41x` faster); explicit scalar-sum control stable `100.95 ms` -> `103.35 ms` | kept; route remaining gap to true forward deforestation, saved-stat/workspace reuse, arena/tape allocation, f32-native storage/layout, and generated scalar-loss kernels |
 | `frankentorch-kgs4.141` | BatchNorm2d f32 scalar-loss algebraic-zero backward `[32,256,28,28]` NCHW | same-host candidate `15.46x` slower | no gain; paired local scalar-sum `116.70 ms` -> `115.48 ms`, `p=0.40`, no change detected; RCH after-run rejected as cross-worker noise because unchanged materialized row drifted `2.94x` slower | rejected/reverted; route remaining gap to output deforestation, zero-gradient representation without large `dx` allocation/fill, saved-stat/workspace reuse, generated scalar-loss kernels, and tape/session arena allocation |
 | `frankentorch-kgs4.140` | BatchNorm1d f64 scalar-loss algebraic-zero backward `[16,128,256]` NCL | same-host `4.86x` slower native; `4.35x` slower scalar-sum | internal keep; same-worker `vmi1152480` native `5.6853 ms` -> `4.6475 ms` (`1.22x` faster), scalar-sum `5.8463 ms` -> `4.1630 ms` (`1.40x` faster) | kept; route remaining gap to output deforestation, generated fused scalar-loss kernels, saved-stat/workspace reuse, tape/session arena reuse, and f64-native storage/layout |
@@ -35,14 +36,40 @@ Updated: 2026-06-20
 | `frankentorch-kgs4.133` | conv2d f64 train step `[4,64,64,64]`, 64 3x3 filters | `1.91x` slower; candidate `1.86x` slower | no gain; same-worker rch `121.07 ms` -> `117.92 ms`, `p=0.38`, no change detected | rejected; removed dormant all-ones-dout branch |
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
-Measured-discipline score: `28/28` for the gauntlet lanes. PyTorch head-to-head
-score: `0W / 27L / 1N`; the RMSNorm scalar-sum comparator is neutral for
+Measured-discipline score: `29/29` for the gauntlet lanes. PyTorch head-to-head
+score: `0W / 28L / 1N`; the RMSNorm scalar-sum comparator is neutral for
 release scoring because the candidate was faster than local PyTorch by
 mixed-location ratio but failed the same-worker FrankenTorch keep gate.
 Correctness guards are green and the SDPA, MaxPool3d,
 Linear, LayerNorm, BatchNorm1d/2d, GroupNorm, and SmoothL1 levers include real
 internal speedups, but no measured workload is performance-dominant against
 PyTorch yet.
+
+### 2026-06-21 BatchNorm2d f32 lazy-zero representation reject (`frankentorch-kgs4.144`)
+
+The lazy-zero candidate added a known-zero gradient representation to
+`ft-autograd` and changed the f32 BatchNorm2d scalar-loss custom backward to
+return lazy-zero `dx` and `dweight` with dense `dbias`. This directly targeted
+the `.141` retry condition: remove the large zero-gradient allocation/fill
+instead of only replacing scalar backward math.
+
+Clean baseline RCH on `vmi1149989` measured ordinary `63.388 ms` and explicit
+scalar-sum `58.024 ms`; the remote PyTorch arm failed because the worker lacked
+torch. Local PyTorch `2.12.0+cpu` through
+`/data/projects/frankentorch/.venv/bin/python`, 32 threads, measured five
+40-iteration totals with median `0.311332728015 s`, or `7.783318 ms/iter`.
+That puts the clean baseline at `8.14x` slower ordinary and `7.46x` slower
+explicit scalar-sum.
+
+The candidate passed focused BatchNorm2d f32 tests after a temporary contract
+update that asserted algebraic-zero `dx`/`dweight` and bounded retained-fallback
+f32 residue. The gauntlet after-run on `vmi1153651` measured ordinary
+`105.48 ms` and explicit scalar-sum `68.775 ms`; PyTorch again failed remotely
+for lack of torch. The cross-worker comparison is not same-worker proof, but it
+is sufficient no-ship routing evidence: the targeted scalar row remained
+`8.84x` slower than local PyTorch and worsened versus the clean baseline. The
+source and temporary test-contract edits were manually reverted. Final
+reverted-tree `ft-conformance` passed on `vmi1152480`.
 
 ### 2026-06-20 BatchNorm2d f32 automatic tensor_sum shortcut keep (`frankentorch-kgs4.143`)
 
