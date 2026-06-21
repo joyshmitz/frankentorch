@@ -23413,6 +23413,59 @@ pub fn qr_contiguous_f32(
     }
 }
 
+/// Batched QR: input `[..., m, n]` -> `(Q [B*m*kq], R [B*kq*n])` row-major, kq = min(m,n) if reduced
+/// else m. Parallelizes the verified 2-D [`qr_contiguous_f64`] over the batch. PyTorch loops LAPACK per
+/// plane (per-call overhead dominates for small m,n). Bit-identical to looping the 2-D qr.
+/// frankentorch-batched-eigh. (BlackThrush)
+pub fn qr_batched_contiguous_f64(
+    data: &[f64],
+    meta: &TensorMeta,
+    reduced: bool,
+) -> Result<(Vec<f64>, Vec<f64>), KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    let nd = shape.len();
+    if nd < 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![nd],
+        });
+    }
+    let m = shape[nd - 2];
+    let n = shape[nd - 1];
+    let kq = if reduced { m.min(n) } else { m };
+    let bb: usize = shape[..nd - 2].iter().product();
+    let plane = m * n;
+    let qp = m * kq;
+    let rp = kq * n;
+    let offset = meta.storage_offset();
+    let data = &data[offset..offset + bb * plane];
+    let pmeta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+    let mut q_out = vec![0.0f64; bb * qp];
+    let mut r_out = vec![0.0f64; bb * rp];
+    let first_err = std::sync::Mutex::new(None);
+    q_out
+        .par_chunks_mut(qp)
+        .zip(r_out.par_chunks_mut(rp))
+        .zip(data.par_chunks(plane))
+        .for_each(|((qc, rc), pl)| match qr_contiguous_f64(pl, &pmeta, reduced) {
+            Ok(res) => {
+                qc.copy_from_slice(&res.q);
+                rc.copy_from_slice(&res.r);
+            }
+            Err(e) => {
+                let mut g = first_err.lock().unwrap();
+                if g.is_none() {
+                    *g = Some(e);
+                }
+            }
+        });
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    Ok((q_out, r_out))
+}
+
 pub fn qr_contiguous_f64(
     data: &[f64],
     meta: &TensorMeta,
@@ -30563,6 +30616,31 @@ mod tests {
                     (lr - lb).abs() <= etol,
                     "n={n} b={b}: eigenvalue[{idx}] ref={lr} blocked={lb} (tol {etol})"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn qr_batched_matches_looping_2d_bit_exact() {
+        // general batched [B,m,n]; Q and R bit-identical to looping the 2-D qr (reduced).
+        let (bb, m, n) = (8usize, 6usize, 4usize);
+        let data: Vec<f64> = (0..bb * m * n)
+            .map(|x| (((x * 2246822519usize) % 9941) as f64) * 0.002 - 9.0)
+            .collect();
+        let meta = TensorMeta::from_shape(vec![bb, m, n], DType::F64, Device::Cpu);
+        let pmeta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+        let kq = m.min(n);
+        let (q, r) = super::qr_batched_contiguous_f64(&data, &meta, true).unwrap();
+        assert_eq!(q.len(), bb * m * kq);
+        assert_eq!(r.len(), bb * kq * n);
+        for b in 0..bb {
+            let res =
+                super::qr_contiguous_f64(&data[b * m * n..(b + 1) * m * n], &pmeta, true).unwrap();
+            for t in 0..m * kq {
+                assert_eq!(q[b * m * kq + t].to_bits(), res.q[t].to_bits());
+            }
+            for t in 0..kq * n {
+                assert_eq!(r[b * kq * n + t].to_bits(), res.r[t].to_bits());
             }
         }
     }

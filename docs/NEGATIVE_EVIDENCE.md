@@ -3922,3 +3922,16 @@ RANDOM test data is ill-conditioned (FT Golub-Reinsch vs LAPACK divide-conquer d
 values) — NOT an error; the rigorous check is bit-exact-vs-2D. ft-api svdvals 3/0. Batched-linalg class
 now 3 ops (eigh + eigvalsh + svdvals). REMAINING (bead ogu1e): qr (measured 2.9-10x, tuple Q,R) + svd
 (tuple, tiny-k only) + f32 mirrors. 10 vs-PyTorch wins.
+
+## 2026-06-21br - NEW WIN (11th): batched qr = 4.4-6.5x vs PyTorch
+
+qr_batched_contiguous_f64 (par over planes -> Q [B*m*kq], R [B*kq*n], kq=min(m,n) reduced) +
+tensor_linalg_qr batched no-grad f64 fast path (f32 fast path guarded to 2-D). MEASURED
+(examples/batched_qr_api_h2h.rs, checksum sum(R^2) = ||A||_F^2 invariant):
+  [100000,4,4]  FT 6.2ms  vs PyTorch 40.2ms = 6.48x FASTER
+  [20000,16,16] FT 19.9ms vs PyTorch 88.3ms = 4.43x
+  [4000,32,32]  FT 17.1ms vs PyTorch 84.3ms = 4.94x
+rsq MATCH (k=4,16) / ~1e-9 sum-order diff (k=32, 4M-term R^2 sum). CORRECTNESS: qr_batched_matches_
+looping_2d_bit_exact (Q AND R bit-identical vs FT 2-D qr). ft-api linalg_qr 1/0. Batched-linalg class
+now 4 ops (eigh+eigvalsh+svdvals+qr). REMAINING (bead ogu1e): svd (tuple U,S,V — tiny-k, FT svd scalar)
++ f32 mirrors of eigh/eigvalsh. 11 vs-PyTorch wins (7 scan + eigh + eigvalsh + svdvals + qr).
