@@ -2484,3 +2484,21 @@ No new cargo build/bench/check was run this turn (disk-critical pause respected)
 - PENDING-BENCH (verify when disk recovers, one batch): cuqzu (14291513) + create_graph skip
   (5fe70493) — both code-first, unbuilt; ft-autograd/ft-api/ft-conformance; revert any hunk that
   fails to compile. rdgt6 already verified.
+
+## 2026-06-21i - DISK-CRITICAL ROOT CAUSE + operator reclaim targets (blocks all perf verification)
+
+The recurring DISK-CRITICAL (39G free / 98% of 1.9T) that has paused cargo for many turns is
+structural, NOT from the frankentorch repo. Measured consumers:
+- `/data/projects/.scratch` = **253 GB** across 39 agent A/B worktrees (each with its own build
+  artifacts); many are stale day-old baselines (June 13-15 timestamps, now June 21). `git worktree
+  prune` this turn removed 5 stale metadata refs but the directories' build artifacts remain.
+- `/data/projects/.rch-targets/*` = hundreds of GB of per-project build caches: frankenjax-cod-a
+  51G + frankenjax-cod-b 48G + frankenjax-cod-a-local 35G, frankenfs-cc 44G, frankentorch-cod-a
+  39G + frankentorch-cc 39G, frankenredis-cod-b 31G, frankenpandas-cc 27G, ...
+- AGENTS CANNOT reclaim these: `rm -rf` on `/data/projects/*` is dcg-blocked (rm-rf-root-home),
+  and the worktrees/caches are shared across agents+projects (unsafe to delete unilaterally).
+- OPERATOR ACTION needed to unblock: prune stale `.scratch` worktrees (biggest win, 253G; the
+  pre-June-18 baselines are almost certainly dead) and drop `.rch-targets` for completed/idle
+  projects (frankenjax/frankenfs/frankenredis/frankenpandas caches if those campaigns are done).
+- IMPACT: until disk recovers, frankentorch perf work cannot be compiled/verified. Pending-bench
+  queue (cuqzu 14291513 + create_graph skip 5fe70493) and the 05upk apply all wait on this.
