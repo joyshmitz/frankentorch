@@ -3225,3 +3225,24 @@ generally slower (matrixmultiply/libm vs MKL/Sleef); FT's only edges are (a) f64
 + fusion, and (b) the caching-allocator lever (mimalloc, closes alloc-heavy losses to parity).
 Final perf picture: 2W (f64 sdpa ±causal) + allocator-parity on alloc-bound lanes + vendor-kernel walls
 everywhere else. No further pure-Rust win is plausible without an FT per-core kernel beating MKL/Sleef.
+
+## 2026-06-21ae - no-grad f64 SDPA INFERENCE: kernel WINS but API-overhead-bound -> 1.2x LOSS (real lever identified)
+
+Probed no-grad f64 SDPA inference (serving/decode — the dominant attention use). examples/
+sdpa_inference_headtohead.rs ([16,512,64], min-time). Localized the cost with a RAW-kernel anchor:
+- RAW ft_kernel_cpu::sdpa_forward_f64 (no session): **7.85 ms** — would beat PyTorch ~2.5x.
+- Full session-API no-grad path: FT 24.7 ms (non-causal) / 23.4 ms (causal) vs PyTorch ~19.9 ms
+  => **FT ~1.2x SLOWER (LOSS)**.
+- => the loss is API-OVERHEAD-bound (~17 ms over the 7.85 ms kernel), NOT the kernel. The no-grad fast
+  path (lib.rs ~5133) DOES call the fast sdpa_forward_f64, but pays per-call autograd-API overhead:
+  3x tensor_values clones (12 MB) feeding the kernel + 4 node creations + fresh-session setup.
+
+★ KEY: FT pays ~the SAME (~24.7 ms) for inference as for the WINNING training step (24.6 ms) — FT does
+NOT get an inference discount, while PyTorch does (PyTorch inference ~20 ms << its training ~49 ms, no
+autograd graph). THAT is why FT wins f64 training (2.1x) but loses f64 inference (1.2x): FT's autograd-
+API per-call overhead caps inference; PyTorch's no_grad path is lean.
+LEVER (identified, not yet shipped): a lean no-grad SDPA path — borrow inputs into the kernel instead of
+3x tensor_values clones (mbitj-style), and/or amortize node/session cost (session reuse). Much of the
+~17 ms is fresh-session-per-call (a bench artifact; real serving reuses the session/graph -> kernel's
+7.85 ms dominates -> would WIN ~2.5x). MEASUREMENT NOTE: initial probe read 38 ms — a bug (regenerated
+inputs via sin() INSIDE the timed loop); fixed to clone pre-computed inputs (matches the gauntlet harness).
