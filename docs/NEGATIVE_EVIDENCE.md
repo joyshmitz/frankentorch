@@ -4,6 +4,48 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-21 - frankentorch-kgs4.151 - direct grouped masked flash SDPA (GQA) keep, PyTorch loss at 32t
+
+- Lever attempted: replace the `repeat_kv_heads` K/V expansion in
+  `tensor_scaled_dot_product_attention_gqa` (no-grad f64, additive
+  `[seq_q,seq_k]`/`[B*h_q,seq_q,seq_k]` mask, contiguous q/k/v) with a direct grouped
+  kernel `ft_kernel_cpu::sdpa_forward_masked_gqa_f64` that indexes K/V head
+  `hq / group` per Q head (no `B*h_q*S*D` expansion copy) and parallelises per
+  `(batch, q_head)` **plus** an inner split over the independent `BR`-row blocks so all
+  cores are used (GQA has only `B*h_q=16` heads). This is the exact lever IvoryDeer
+  specified at the close of `frankentorch-kgs4.cod-b-masked-gqa-20260621`.
+- Workload: Q `[B=2,h_q=8,S=512,D=64]`, K/V `[B=2,h_kv=2,S=512,D=64]` (group 4),
+  shared `[512,512]` additive mask, no-grad f64, `example sdpa_masked_headtohead` GQA lane.
+- Correctness gate (bit-exact): `ft-kernel-cpu` lib test
+  `sdpa_masked_gqa_f64_matches_expand_then_masked_bit_exact` (to_bits() equality vs
+  expand-then-`sdpa_forward_masked_f64`, shared + per-Q-head masks); `ft-api` lib test
+  `sdpa_gqa_masked_fastpath_matches_expanded`; example checksum `-6.194718e1`, rel-diff
+  `3.18e-14` vs torch `enable_gqa=True` (MATCH).
+- Conformance gate: `rch exec -- cargo test -p ft-conformance --release` green;
+  `ft-kernel-cpu --release --lib` 528 passed / 0 failed / 2 ignored;
+  `ft-api --release --lib sdpa_gqa` 5 passed / 0 failed.
+- Same-host evidence (FT release binary + local PyTorch `2.12.1+cpu`, 64-core host):
+  - baseline expand-then-flash, 8 torch threads: FT `33.7 ms`, PyTorch `4.63 ms` =
+    FT `7.29x` slower.
+  - this lever, 8 torch threads (example default): FT `4.04-4.19 ms`, PyTorch
+    `4.53-4.83 ms` = FT `1.08-1.19x` FASTER.
+  - this lever, **32 torch threads (release-scorecard convention)**: FT `4.0-5.7 ms`,
+    PyTorch `2.28-2.42 ms` = FT `1.8-2.5x` slower.
+  - Internal speedup vs the old GQA path: `~6-8x` (33.7 ms -> 4.0-5.7 ms), thread-count
+    independent (FT timing is taken before the PyTorch subprocess runs).
+- Why no 32t win: the FT flash kernel is softmax-`exp`-bound (`B*h_q*S*S = 524288` scalar
+  `libm::exp` per forward) and floors near `~4 ms`; PyTorch's GQA kernel vectorises `exp`
+  and scales to `~2.3 ms`. A vectorised `exp` would change rounding and is blocked by the
+  absolute-parity policy. So the 32t gap is the documented SIMD-transcendental wall, not a
+  fixable inefficiency.
+- Win/loss/neutral vs PyTorch (32t convention): `0W / 1L / 0N`.
+- Verdict: **KEEP** (not ship-as-win). The path is bit-exact and **strictly faster than
+  the prior code at every thread count**, so reverting would only restore a 7.29x (8t) /
+  ~14x (32t) pathology on a production LLM op (GQA = Llama-2/3, Mistral). Recorded as a
+  PyTorch loss at the official 32-thread convention; it is a marginal PyTorch win only at
+  the example's 8-thread default. Same "internal keep, PyTorch loss" disposition as
+  kgs4.147. Retry for an actual 32t win is blocked behind the SIMD-`exp` parity policy.
+
 ## 2026-06-21 - frankentorch-kgs4.147 - avg_pool2d scalar-loss backward keep, forward-deforestation reject
 
 - Lever attempted: specialize `sum(functional_avg_pool2d(...))` for f64 4D

@@ -3825,6 +3825,102 @@ pub fn sdpa_forward_masked_f64(
     out
 }
 
+/// Grouped-query (GQA / MQA) masked flash SDPA forward (f64), *without* materialising
+/// the repeated K/V heads. `q` is `[batch, h_q, seq_q, d_k]` row-major; `k`/`v` are
+/// `[batch, h_kv, seq_k, d_*]` with `h_q % h_kv == 0` and `group = h_q / h_kv`. Each Q
+/// head `hq` attends to K/V head `hq / group`. The kernel parallelises per `(batch, q_head)`
+/// — the same `batch * h_q` work-item count as the dense flash kernel, so core utilisation is
+/// unchanged — but reads the K/V *kv-head* directly instead of a `repeat_kv_heads` copy. This
+/// is what the old GQA path did via `repeat_kv_heads` + a B*h_q*S*D contiguous copy + dense
+/// flash; folding the broadcast into the index removes that copy entirely, and the `group` Q
+/// heads sharing a kv-head run concurrently and reuse the same hot K/V head out of cache.
+/// Bit-exact with the expand-then-`sdpa_forward_masked_f64` path: the per-row
+/// score/softmax/output reductions are identical and the expansion carried no arithmetic.
+/// `mask_bh_stride` is 0 for a
+/// `[seq_q, seq_k]` mask shared across all heads, or `seq_q*seq_k` for a per-Q-head
+/// `[batch*h_q, seq_q, seq_k]` mask. frankentorch-sdpamask-gqa.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn sdpa_forward_masked_gqa_f64(
+    q: &[f64],
+    k: &[f64],
+    v: &[f64],
+    batch: usize,
+    h_q: usize,
+    h_kv: usize,
+    seq_q: usize,
+    seq_k: usize,
+    d_k: usize,
+    d_v: usize,
+    scale: f64,
+    mask: &[f64],
+    mask_bh_stride: usize,
+) -> Vec<f64> {
+    const BR: usize = 64;
+    debug_assert!(h_kv > 0 && h_q % h_kv == 0);
+    let group = h_q / h_kv;
+    let q_stride = seq_q * d_k;
+    let k_head_stride = seq_k * d_k;
+    let v_head_stride = seq_k * d_v;
+    let o_stride = seq_q * d_v;
+    let mut out = vec![0.0f64; batch * h_q * o_stride];
+    // Parallelise per (batch, q_head) — same `batch*h_q` work-item count as the dense flash
+    // kernel, so core utilisation is unchanged — but index the K/V *kv-head* directly
+    // (kv_head = q_head / group) instead of reading a `repeat_kv_heads` copy. Group-mates
+    // (the `group` Q heads sharing a kv-head) run concurrently and reuse the same hot K/V
+    // head out of cache, and the B*h_q*S*D expansion copy is gone entirely.
+    out.par_chunks_mut(o_stride)
+        .enumerate()
+        .for_each(|(bh, o_chunk)| {
+            let b = bh / h_q;
+            let q_head = bh % h_q;
+            let kv_head = q_head / group;
+            let qh = &q[bh * q_stride..bh * q_stride + q_stride];
+            let kh_base = (b * h_kv + kv_head) * k_head_stride;
+            let kh = &k[kh_base..kh_base + k_head_stride];
+            let vh_base = (b * h_kv + kv_head) * v_head_stride;
+            let vh = &v[vh_base..vh_base + v_head_stride];
+            let mask_base = bh * mask_bh_stride;
+            // Intra-head block parallelism: each BR-row block is independent (own scores,
+            // own output rows, shared read-only K/V), so split the seq_q dimension across
+            // the pool too. With few heads but many cores (GQA has B*h_q heads, e.g. 16),
+            // per-head-only parallelism would leave most cores idle; this fills them.
+            o_chunk
+                .par_chunks_mut(BR * d_v)
+                .enumerate()
+                .for_each(|(blk, o_block)| {
+                    let q0 = blk * BR;
+                    let br = o_block.len() / d_v;
+                    let q_block = &qh[q0 * d_k..(q0 + br) * d_k];
+                    let mut sc = vec![0.0f64; br * seq_k];
+                    gemm::dgemm_bt(br, d_k, seq_k, q_block, kh, &mut sc);
+                    for r in 0..br {
+                        let qi = q0 + r;
+                        let mrow = &mask[mask_base + qi * seq_k..mask_base + (qi + 1) * seq_k];
+                        let row = &mut sc[r * seq_k..(r + 1) * seq_k];
+                        let mut m = f64::NEG_INFINITY;
+                        for (s, &mv) in row.iter_mut().zip(mrow.iter()) {
+                            *s = *s * scale + mv;
+                            if *s > m {
+                                m = *s;
+                            }
+                        }
+                        let mut sum = 0.0f64;
+                        for s in row.iter_mut() {
+                            let e = (*s - m).exp();
+                            *s = e;
+                            sum += e;
+                        }
+                        for s in row.iter_mut() {
+                            *s /= sum;
+                        }
+                    }
+                    gemm::dgemm(br, seq_k, d_v, &sc, vh, o_block);
+                });
+        });
+    out
+}
+
 /// f32 mirror of [`sdpa_forward_f64`] (the common transformer inference dtype):
 /// same block-row flash-attention pattern, using the `sgemm_bt`/`sgemm`
 /// microkernels and f32 softmax.
@@ -28349,6 +28445,61 @@ mod tests {
                         "{label}[{i}] causal={causal}: unit {got} vs dense {want}"
                     );
                 }
+            }
+        }
+    }
+
+    // The grouped (GQA) masked flash kernel must be BIT-EXACT with the reference path
+    // (materialise the `group`-repeated K/V heads, then run `sdpa_forward_masked_f64`),
+    // which is what `tensor_scaled_dot_product_attention_gqa` did before the direct path.
+    #[test]
+    fn sdpa_masked_gqa_f64_matches_expand_then_masked_bit_exact() {
+        let (batch, h_q, h_kv) = (2usize, 8usize, 2usize);
+        let (seq_q, seq_k, d_k, d_v) = (40usize, 40usize, 16usize, 16usize);
+        let group = h_q / h_kv;
+        let qn = batch * h_q * seq_q * d_k;
+        let kn = batch * h_kv * seq_k * d_k;
+        let vn = batch * h_kv * seq_k * d_v;
+        let q: Vec<f64> = (0..qn).map(|i| ((i as f64) * 0.017 + 0.3).sin() * 0.2).collect();
+        let k: Vec<f64> = (0..kn).map(|i| ((i as f64) * 0.013 + 1.1).sin() * 0.2).collect();
+        let v: Vec<f64> = (0..vn).map(|i| ((i as f64) * 0.011 + 2.2).cos() * 0.2).collect();
+        // shared [seq_q, seq_k] mask (stride 0) and a per-Q-head [B*h_q, seq_q, seq_k] mask.
+        let mask2d: Vec<f64> =
+            (0..seq_q * seq_k).map(|i| if i % 3 == 0 { -0.5 } else { 0.0 }).collect();
+        let mask3d: Vec<f64> = (0..batch * h_q * seq_q * seq_k)
+            .map(|i| if i % 5 == 0 { -0.7 } else { 0.0 })
+            .collect();
+        let scale = 1.0 / (d_k as f64).sqrt();
+
+        // reference: expand K/V heads `group` times along the head axis, then masked flash.
+        let mut k_rep = vec![0.0f64; batch * h_q * seq_k * d_k];
+        let mut v_rep = vec![0.0f64; batch * h_q * seq_k * d_v];
+        for b in 0..batch {
+            for hq in 0..h_q {
+                let kv = hq / group;
+                let ks = ((b * h_kv + kv) * seq_k * d_k)..((b * h_kv + kv + 1) * seq_k * d_k);
+                let kd = ((b * h_q + hq) * seq_k * d_k)..((b * h_q + hq + 1) * seq_k * d_k);
+                k_rep[kd].copy_from_slice(&k[ks]);
+                let vs = ((b * h_kv + kv) * seq_k * d_v)..((b * h_kv + kv + 1) * seq_k * d_v);
+                let vd = ((b * h_q + hq) * seq_k * d_v)..((b * h_q + hq + 1) * seq_k * d_v);
+                v_rep[vd].copy_from_slice(&v[vs]);
+            }
+        }
+        let bh = batch * h_q;
+        for (mask, mbs) in [(&mask2d, 0usize), (&mask3d, seq_q * seq_k)] {
+            let reference = super::sdpa_forward_masked_f64(
+                &q, &k_rep, &v_rep, bh, seq_q, seq_k, d_k, d_v, scale, mask, mbs,
+            );
+            let grouped = super::sdpa_forward_masked_gqa_f64(
+                &q, &k, &v, batch, h_q, h_kv, seq_q, seq_k, d_k, d_v, scale, mask, mbs,
+            );
+            assert_eq!(reference.len(), grouped.len());
+            for (i, (r, g)) in reference.iter().zip(grouped.iter()).enumerate() {
+                assert_eq!(
+                    r.to_bits(),
+                    g.to_bits(),
+                    "GQA masked flash differs from expand-then-flash at {i} (mbs={mbs}): {r} vs {g}"
+                );
             }
         }
     }
