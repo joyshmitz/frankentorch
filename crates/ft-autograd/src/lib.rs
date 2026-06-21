@@ -1170,7 +1170,9 @@ impl GradientValue {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TensorBackwardReport {
-    gradients: Vec<Option<Vec<f64>>>,
+    // frankentorch-05upk: Arc-shared with `persistent_grads` so a leaf grad is stored
+    // once (Arc::clone refcount bump) instead of cloned on first backward.
+    gradients: Vec<Option<Arc<Vec<f64>>>>,
     sparse_gradients: Vec<Option<SparseCOOTensor>>,
     gradient_nodes: Vec<Option<TensorNodeId>>,
     pub steps: Vec<TensorBackwardStep>,
@@ -1182,11 +1184,11 @@ impl TensorBackwardReport {
     pub fn gradient(&self, node: TensorNodeId) -> Option<&[f64]> {
         self.gradients
             .get(node.0)
-            .and_then(|entry| entry.as_deref())
+            .and_then(|entry| entry.as_ref().map(|a| a.as_slice()))
     }
 
     #[must_use]
-    pub fn gradients(&self) -> &[Option<Vec<f64>>] {
+    pub fn gradients(&self) -> &[Option<Arc<Vec<f64>>>] {
         &self.gradients
     }
 
@@ -1231,7 +1233,7 @@ impl TensorBackwardReport {
         self.gradients
             .iter()
             .enumerate()
-            .map(|(i, opt)| (i, opt.as_deref()))
+            .map(|(i, opt)| (i, opt.as_ref().map(|a| a.as_slice())))
     }
 
     /// Return a clone of this report with all gradients multiplied by `factor`.
@@ -1241,12 +1243,12 @@ impl TensorBackwardReport {
     /// (steps, telemetry) by clone but has independently scaled gradient buffers.
     #[must_use]
     pub fn scaled_clone(&self, factor: f64) -> Self {
-        let scaled_gradients: Vec<Option<Vec<f64>>> = self
+        let scaled_gradients: Vec<Option<Arc<Vec<f64>>>> = self
             .gradients
             .iter()
             .map(|opt| {
                 opt.as_ref()
-                    .map(|grad| grad.iter().map(|&g| g * factor).collect())
+                    .map(|grad| Arc::new(grad.iter().map(|&g| g * factor).collect::<Vec<f64>>()))
             })
             .collect();
         Self {
@@ -4213,7 +4215,9 @@ impl Tape {
 #[derive(Debug, Clone)]
 pub struct TensorTape {
     nodes: Vec<TensorNode>,
-    persistent_grads: BTreeMap<usize, Vec<f64>>,
+    // frankentorch-05upk: Arc so a leaf grad can be shared with the backward report
+    // (Arc::clone on first store, Arc::make_mut for cross-backward accumulation).
+    persistent_grads: BTreeMap<usize, Arc<Vec<f64>>>,
     tensor_hooks: BTreeMap<usize, Vec<TensorHookRegistration>>,
     next_tensor_hook_id: u64,
     consumed: bool,
@@ -4528,7 +4532,7 @@ impl TensorTape {
         node: TensorNodeId,
     ) -> Result<Option<&[f64]>, AutogradError> {
         self.node(node)?;
-        Ok(self.persistent_grads.get(&node.0).map(Vec::as_slice))
+        Ok(self.persistent_grads.get(&node.0).map(|a| a.as_slice()))
     }
 
     pub fn tensor_accumulated_gradient_values(
@@ -4545,7 +4549,7 @@ impl TensorTape {
         node: TensorNodeId,
     ) -> Result<Option<usize>, AutogradError> {
         self.node(node)?;
-        Ok(self.persistent_grads.get(&node.0).map(Vec::len))
+        Ok(self.persistent_grads.get(&node.0).map(|a| a.len()))
     }
 
     pub fn zero_tensor_accumulated_gradient(
@@ -4554,7 +4558,7 @@ impl TensorTape {
     ) -> Result<(), AutogradError> {
         self.node(node)?;
         if let Some(grad) = self.persistent_grads.get_mut(&node.0) {
-            grad.fill(0.0);
+            Arc::make_mut(grad).fill(0.0);
         }
         Ok(())
     }
@@ -4566,7 +4570,7 @@ impl TensorTape {
     ) -> Result<(), AutogradError> {
         let expected = self.node(node)?.tensor.meta().numel();
         Self::ensure_tensor_len(node, expected, gradient.len())?;
-        self.persistent_grads.insert(node.0, gradient);
+        self.persistent_grads.insert(node.0, Arc::new(gradient));
         Ok(())
     }
 
@@ -14460,7 +14464,7 @@ impl TensorTape {
 
         // Move completed gradient buffers into the report instead of cloning
         // every reachable gradient after the tape walk.
-        let gradients: Vec<Option<Vec<f64>>> = grads
+        let gradients: Vec<Option<Arc<Vec<f64>>>> = grads
             .into_iter()
             .enumerate()
             .map(|(idx, mut grad)| {
@@ -14468,7 +14472,7 @@ impl TensorTape {
                     if grad.values.is_empty() && grad.expected_len > 0 {
                         grad.values.resize(grad.expected_len, 0.0);
                     }
-                    Some(grad.values)
+                    Some(Arc::new(grad.values))
                 } else {
                     None
                 }
@@ -17233,7 +17237,7 @@ impl TensorTape {
         // a malformed gradient buffer must surface at the backward
         // boundary, never become a fake "missing" report entry.
         let num_original = orig_node_count;
-        let mut gradients: Vec<Option<Vec<f64>>> = Vec::with_capacity(num_original);
+        let mut gradients: Vec<Option<Arc<Vec<f64>>>> = Vec::with_capacity(num_original);
         for idx in 0..num_original {
             if self.nodes[idx].requires_grad && reachable[idx] {
                 if let Some(gid) = grad_nodes[idx] {
@@ -17241,7 +17245,7 @@ impl TensorTape {
                         .tensor
                         .contiguous_values_as_f64()
                         .map_err(AutogradError::DenseTensor)?;
-                    gradients.push(Some(vals));
+                    gradients.push(Some(Arc::new(vals)));
                 } else {
                     gradients.push(None);
                 }
@@ -17293,14 +17297,21 @@ impl TensorTape {
                     .tensor
                     .contiguous_values_as_f64()
                     .map_err(AutogradError::DenseTensor)?;
-                self.persistent_grads
-                    .entry(idx)
-                    .and_modify(|existing: &mut Vec<f64>| {
-                        for (e, v) in existing.iter_mut().zip(vals.iter()) {
+                // frankentorch-05upk: persistent_grads is now Arc<Vec<f64>>. A match
+                // (not entry().and_modify().or_insert_with(|| Arc::new(vals))) is required:
+                // the or_insert_with closure would MOVE `vals` while and_modify borrows it
+                // (`vals.iter()`) = move/borrow conflict.
+                match self.persistent_grads.get_mut(&idx) {
+                    Some(existing) => {
+                        let target = Arc::make_mut(existing);
+                        for (e, v) in target.iter_mut().zip(vals.iter()) {
                             *e += v;
                         }
-                    })
-                    .or_insert(vals);
+                    }
+                    None => {
+                        self.persistent_grads.insert(idx, Arc::new(vals));
+                    }
+                }
             }
         }
 
@@ -19811,10 +19822,10 @@ impl TensorTape {
 
     fn accumulate_persistent_gradients(
         &mut self,
-        gradients: &[Option<Vec<f64>>],
+        gradients: &[Option<Arc<Vec<f64>>>],
     ) -> Result<(), AutogradError> {
         for (idx, gradient) in gradients.iter().enumerate() {
-            let Some(gradient) = gradient.as_deref() else {
+            let Some(arc) = gradient.as_ref() else {
                 continue;
             };
             // Persist `.grad` ONLY for leaf tensors and those with retain_grad set —
@@ -19833,10 +19844,16 @@ impl TensorTape {
             let node = TensorNodeId(idx);
             match self.persistent_grads.get_mut(&idx) {
                 Some(existing) => {
-                    Self::accumulate_existing_tensor_gradient(node, existing, gradient)?;
+                    Self::accumulate_existing_tensor_gradient(
+                        node,
+                        Arc::make_mut(existing).as_mut_slice(),
+                        arc.as_slice(),
+                    )?;
                 }
                 None => {
-                    self.persistent_grads.insert(idx, gradient.to_vec());
+                    // frankentorch-05upk: share the report's leaf-grad buffer via
+                    // Arc::clone (refcount bump) instead of a numel `to_vec` clone.
+                    self.persistent_grads.insert(idx, Arc::clone(arc));
                 }
             }
         }
@@ -19910,7 +19927,7 @@ impl TensorTape {
         let param_len = node.tensor.contiguous_values()?.len();
         Self::ensure_tensor_len(id, param_len, gradient.len())?;
         node.tensor
-            .update_contiguous_values_with(|values| update(gradient, values))
+            .update_contiguous_values_with(|values| update(gradient.as_slice(), values))
             .map_err(AutogradError::DenseTensor)?;
         Ok(true)
     }

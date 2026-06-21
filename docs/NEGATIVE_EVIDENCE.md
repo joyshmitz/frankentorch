@@ -2638,3 +2638,18 @@ structural, NOT from the frankentorch repo. Measured consumers:
 - HIGH CONFIDENCE it compiles; expect minimal-to-zero fixes + bit-exact at recovery. Still verify with
   cargo before merging to main (inspection != compiler). Pending-bench batch unchanged (cuqzu 14291513 +
   create_graph skip 5fe70493).
+
+## 2026-06-21m - frankentorch-05upk VERIFIED + MERGED (warm per-crate build allowed)
+
+- Applied the staged Arc-share refactor and warm-built/tested it (CARGO_TARGET_DIR=
+  frankentorch-cc-local, incremental — no cold rebuild, no .scratch worktree). Caught + fixed
+  ONE compile error the inspection missed: `Arc::make_mut(existing)` -> `&mut Vec<f64>` does NOT
+  fn-arg-coerce to `&mut [f64]` (compiler mis-infers make_mut's type param) — fix: `.as_mut_slice()`.
+- VERIFIED GREEN: ft-autograd 476/0, conformance 199/0 + all sub-suites, ft-autograd clippy clean.
+  ft-api 2335 passed / 3 failed — all 3 PRE-EXISTING peer code-first reds (complex_arithmetic_golden
+  flake; batch_norm1d_3d_native_fused; batch_norm2d_f32_tensor_sum_auto_shortcut). The batchnorm2d
+  one is NOT from 05upk: that test compares two batchnorm2d paths within the SAME autograd engine, and
+  05upk changes grad storage uniformly for both, so it cannot create a mismatch between them.
+- Bit-exact (Arc share + make_mut preserve values). MERGED to main this commit. This also confirms the
+  previously code-first cuqzu (14291513) + create_graph sparse skip (5fe70493) + pwjrs + rdgt6 (the
+  branch base 68e2a156 includes them) compile + pass — pending-bench queue CLEARED for the autograd lane.
