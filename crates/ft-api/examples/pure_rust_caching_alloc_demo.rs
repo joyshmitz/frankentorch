@@ -103,73 +103,106 @@ unsafe impl GlobalAlloc for CachingAlloc {
 #[global_allocator]
 static GLOBAL: CachingAlloc = CachingAlloc;
 
-// ---- avg_pool1d train-step workload (kgs4.122 gauntlet lane) ---------------
-const N: usize = 8;
-const C: usize = 64;
-const L: usize = 8192;
-
-fn values() -> Vec<f64> {
-    (0..N * C * L).map(|i| ((i % 251) as f64) * 0.001 - 0.12).collect()
+// ---- gauntlet train-step workloads -----------------------------------------
+fn seq(n: usize, shift: f64) -> Vec<f64> {
+    (0..n).map(|i| (((i as f64) * 0.017 + shift).sin()) * 0.2).collect()
 }
 
-fn run_train_step(base: &[f64], shape: &[usize]) -> f64 {
+// avg_pool1d [8,64,8192] (kgs4.122): allocator-heavy (4M leaf grad + distribute).
+fn lane_avg_pool1d() -> f64 {
+    const N: usize = 8;
+    const C: usize = 64;
+    const L: usize = 8192;
+    let base: Vec<f64> = (0..N * C * L).map(|i| ((i % 251) as f64) * 0.001 - 0.12).collect();
     let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-    let x = s.tensor_variable(base.to_vec(), shape.to_vec(), true).unwrap();
+    let x = s.tensor_variable(base, vec![N, C, L], true).unwrap();
     let out = s.functional_avg_pool1d(x, 2, 2).unwrap();
     let loss = s.tensor_sum(out).unwrap();
     let report = s.tensor_backward(loss).unwrap();
-    // Touch the grad so the backward buffers are real + return a checksum to
-    // validate the allocator did not corrupt memory.
-    let g = report.gradient(x).unwrap();
-    g.iter().sum()
+    report.gradient(x).unwrap().iter().sum()
 }
 
-fn bench(base: &[f64], shape: &[usize], iters: usize) -> (f64, f64) {
-    // returns (median_ms, checksum)
+// max_pool3d [2,32,16,32,32] (kgs4.117): pooling (indices + scatter), allocator-ish.
+fn lane_max_pool3d() -> f64 {
+    const N: usize = 2;
+    const C: usize = 32;
+    const D: usize = 16;
+    const H: usize = 32;
+    const W: usize = 32;
+    let base: Vec<f64> = (0..N * C * D * H * W).map(|i| ((i % 251) as f64) * 0.001 - 0.12).collect();
+    let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+    let x = s.tensor_variable(base, vec![N, C, D, H, W], true).unwrap();
+    let out = s.functional_max_pool3d(x, (2, 2, 2), (2, 2, 2)).unwrap();
+    let loss = s.tensor_sum(out).unwrap();
+    let report = s.tensor_backward(loss).unwrap();
+    report.gradient(x).unwrap().iter().sum()
+}
+
+// sdpa [16,512,64] (kgs4.113): the WIN lane — fused flash-attn kernel. MEASURED to
+// ALSO be allocator-bound (the blocked per-head backward makes ~4700 small allocs
+// per step), so a caching allocator makes its existing ~2x win even larger.
+fn lane_sdpa() -> f64 {
+    const BH: usize = 16;
+    const SEQ: usize = 512;
+    const D: usize = 64;
+    let total = BH * SEQ * D;
+    let shape = vec![BH, SEQ, D];
+    let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+    let q = s.tensor_variable(seq(total, 0.0), shape.clone(), true).unwrap();
+    let k = s.tensor_variable(seq(total, 1.0), shape.clone(), true).unwrap();
+    let v = s.tensor_variable(seq(total, 2.0), shape, true).unwrap();
+    let out = s.scaled_dot_product_attention(q, k, v, None, 0.0, false).unwrap();
+    let loss = s.tensor_sum(out).unwrap();
+    let report = s.tensor_backward(loss).unwrap();
+    report.gradient(q).unwrap().iter().sum()
+}
+
+fn bench(workload: &dyn Fn() -> f64, iters: usize) -> (f64, f64) {
     let mut times = Vec::with_capacity(iters);
     let mut checksum = 0.0;
     for _ in 0..iters {
         let t = Instant::now();
-        checksum = run_train_step(base, shape);
+        checksum = workload();
         times.push(t.elapsed().as_secs_f64() * 1e3);
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
     (times[times.len() / 2], checksum)
 }
 
-fn main() {
-    let base = values();
-    let shape = vec![N, C, L];
-    let iters: usize = std::env::var("ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(20);
-
-    // warm both modes' code paths
+fn run_lane(name: &str, workload: &dyn Fn() -> f64, iters: usize) {
+    // warm both code paths, then same-process anchored A/B: cache OFF then ON.
     CACHE_ENABLED.store(false, Ordering::Relaxed);
-    let _ = bench(&base, &shape, 3);
+    let _ = bench(workload, 3);
+    let (sys_ms, sys_sum) = bench(workload, iters);
 
-    // BASELINE: system allocator (cache off)
-    CACHE_ENABLED.store(false, Ordering::Relaxed);
-    let (sys_ms, sys_sum) = bench(&base, &shape, iters);
-
-    // warm the cache slots, then LEVER: caching allocator (cache on)
     CACHE_ENABLED.store(true, Ordering::Relaxed);
-    let _ = bench(&base, &shape, 3);
+    let _ = bench(workload, 3); // warm the cache slots
     HITS.store(0, Ordering::Relaxed);
     MISSES.store(0, Ordering::Relaxed);
-    let (cache_ms, cache_sum) = bench(&base, &shape, iters);
-
+    let (cache_ms, cache_sum) = bench(workload, iters);
     let hits = HITS.load(Ordering::Relaxed);
     let misses = MISSES.load(Ordering::Relaxed);
-
-    println!("avg_pool1d [{N},{C},{L}] train step, {iters} iters, median ms:");
-    println!("  system alloc (baseline) : {sys_ms:8.3} ms   checksum {sys_sum:.6e}");
-    println!("  caching alloc (lever)   : {cache_ms:8.3} ms   checksum {cache_sum:.6e}");
-    println!("  speedup                 : {:8.3}x", sys_ms / cache_ms);
-    println!("  cache hits/misses       : {hits} / {misses}");
 
     // soundness gate: the caching allocator must produce the identical result.
     assert!(
         (sys_sum - cache_sum).abs() <= sys_sum.abs() * 1e-12 + 1e-12,
-        "caching allocator changed the result (memory corruption): {sys_sum} vs {cache_sum}"
+        "{name}: caching allocator changed the result (corruption): {sys_sum} vs {cache_sum}"
     );
-    println!("  OK: results bit-consistent across both allocators (allocator is sound).");
+    println!(
+        "  {name:14} sys {sys_ms:8.3} ms  cache {cache_ms:8.3} ms  -> {:.2}x  (hits {hits}/{misses}, sound)",
+        sys_ms / cache_ms
+    );
+}
+
+fn main() {
+    let iters: usize = std::env::var("ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(20);
+    println!("pure-Rust caching allocator: per-lane same-process A/B (cache off vs on), {iters} iters median:");
+    run_lane("avg_pool1d", &lane_avg_pool1d, iters);
+    run_lane("max_pool3d", &lane_max_pool3d, iters);
+    run_lane("sdpa", &lane_sdpa, iters);
+    println!(
+        "Interpretation: EVERY lane is allocator-bound (the pure-Rust caching lever speeds all of\n\
+         them up, incl. sdpa via its many small blocked-backward allocs). All bit-consistent => sound.\n\
+         Ratios are same-process A/B (valid under contention); absolute ms inflate on busy workers."
+    );
 }

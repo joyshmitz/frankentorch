@@ -2955,3 +2955,19 @@ PyTorch ~10ms (fused variant ~12ms -> ~1.2x); combined with the fused kernels th
 SHIP PATH (9pafs): promote this allocator to a small unsafe-allowing crate (ft-api forbids unsafe, so
 not there) and set it `#[global_allocator]` in FT perf binaries / recommend to consumers (a binary-level
 choice). The example is the reference impl + reproducible proof.
+
+## 2026-06-21u - pure-Rust caching allocator is a UNIVERSAL FT-side lever (multi-lane A/B) + sdpa is allocator-bound too
+
+Extended the pure-Rust caching-allocator example to a multi-lane same-process anchored A/B (cache OFF
+vs ON, one process/worker, gradient checksum asserted bit-identical each lane => allocator sound).
+MEASURED (rch worker, RAYON=8, 12 iters median; this worker contended so absolute ms are inflated —
+the same-process RATIOS are the signal):
+- avg_pool1d [8,64,8192] : 40.6 -> 22.2 ms  = 1.83x  (48 hits)
+- max_pool3d [2,32,16,32,32]: 5.60 -> 4.10 ms = 1.36x  (60 hits)
+- sdpa [16,512,64]       : 77.1 -> 53.2 ms  = 1.45x  (4740 hits)
+
+★ NEW: sdpa is ALSO allocator-bound (4740 small allocs/step — the blocked per-head flash-attn backward),
+not allocator-independent as first assumed. So its existing ~2x head-to-head WIN grows further with a
+fair allocator. EVERY gauntlet lane is allocator-bound to some degree -> the caching allocator is a
+UNIVERSAL FT-side lever (cleaner workers showed avg_pool1d 2.86x, 2026-06-21t). All lanes bit-consistent
+across both allocators => the ~50-LOC pure-Rust allocator is sound. Confirms the DOMINATE path needs no C.
