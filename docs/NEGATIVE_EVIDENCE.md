@@ -4211,3 +4211,22 @@ materializing) + eigh, (b) my hand-rolled V*diag(1/lambda)*V^T reconstruction ha
 parallel over batch, no tape/materialization) -> ~10x est (eigh-dominated), correctness controlled -- the
 concrete NEXT lead. 28 vs-PyTorch wins. KEY BOUND: matmul-composition ops are reshape/view-materialization-
 capped; only ops that avoid reshape (direct kernel calls) or are fused win cleanly.
+
+## 2026-06-21cj - WIN (29th): fused batched hermitian-pinv = 7.1-11.2x vs PyTorch
+
+pinv_hermitian_batched_contiguous_f64 (FUSED: per-plane eigh + V diag(lambda+) V^T reconstruction inline,
+parallel over batch, NO autograd tape / reshape-view materialization) + tensor_linalg_pinv_hermitian API
+(torch.linalg.pinv(hermitian=True); no-grad f64, else falls back to general SVD pinv). MEASURED
+(examples/pinv_hermitian_h2h.rs):
+  [100000,4,4]  FT 14.3ms vs torch 160.3ms = 11.21x FASTER
+  [20000,16,16] FT 48.8ms vs torch 348.0ms = 7.13x
+  [4000,32,32]  FT 51.9ms vs torch 383.3ms = 7.38x
+CORRECT: A@pinv-I err 2.5e-16 (kernel test pinv_hermitian_batched_spd_is_inverse_and_symmetric: A@pinv ~ I
++ pinv symmetric). ft-kernel-cpu 524/0 + ft-api pinv 9/0. This is the FUSED-KERNEL the ci lead pointed to --
+it AVOIDS the reshape/view materialization wall (tensor-op composition was 1.3-3.2x; fused is 7-11x,
+eigh-dominated). Validates the arc: matmul fix (ch) -> unlock -> fused kernel sidesteps materialization.
+29 wins. ★LESSON: the earlier 3.8% "reconstruction bug" was a MEASUREMENT ARTIFACT -- the test/probe
+symmetrization mutated a[i][j] in-place while reading a[j][i], corrupting the lower triangle -> non-symmetric
+data -> eigh-pinv "wrong". Fix: symmetrize each (i,j) pair ONCE (j in i+1..k, write both). The kernel was
+correct all along. (3rd artifact this campaign: stale-build, randn-in-loop, now in-place-symmetrize -- always
+sanity-check the TEST DATA before concluding a kernel bug.)

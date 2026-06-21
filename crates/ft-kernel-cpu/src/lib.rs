@@ -18350,6 +18350,76 @@ pub fn eigh_contiguous_f32(data: &[f32], meta: &TensorMeta) -> Result<EighResult
     })
 }
 
+/// Batched Hermitian (symmetric) pseudo-inverse: input `[..., k, k]` (symmetric) -> pinv `[B*k*k]`
+/// where each plane's pinv = `V diag(λ⁺) Vᵀ`, λ⁺_i = 1/λ_i if |λ_i| > tol else 0 (tol = k·eps·max|λ|,
+/// matching torch.linalg.pinv(hermitian=True)'s default rtol on |eigenvalues|). FUSED: each plane's
+/// eigh + reconstruction run in ONE parallel pass — no autograd tape, no reshape/view materialization
+/// (which would otherwise dominate). PyTorch loops LAPACK eigh per plane (~164-360ms small k).
+/// frankentorch-batched-eigh. (BlackThrush)
+pub fn pinv_hermitian_batched_contiguous_f64(
+    data: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    let nd = shape.len();
+    if nd < 2 || shape[nd - 1] != shape[nd - 2] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![nd],
+        });
+    }
+    let k = shape[nd - 1];
+    let bb: usize = shape[..nd - 2].iter().product();
+    let plane = k * k;
+    let offset = meta.storage_offset();
+    let data = &data[offset..offset + bb * plane];
+    let kmeta = TensorMeta::from_shape(vec![k, k], DType::F64, Device::Cpu);
+    let mut out = vec![0.0f64; bb * plane];
+    let first_err = std::sync::Mutex::new(None);
+    out.par_chunks_mut(plane)
+        .zip(data.par_chunks(plane))
+        .for_each(|(o, pl)| match eigh_contiguous_f64(pl, &kmeta) {
+            Ok(r) => {
+                let evals = &r.eigenvalues;
+                let evec = &r.eigenvectors; // columns of V (k×k row-major): evec[a*k+i] = V[a][i]
+                let maxabs = evals.iter().fold(0.0f64, |m, &x| m.max(x.abs()));
+                let tol = (k as f64) * f64::EPSILON * maxabs;
+                // λ⁺ (filtered reciprocal).
+                let mut lamp = vec![0.0f64; k];
+                for i in 0..k {
+                    if evals[i].abs() > tol {
+                        lamp[i] = 1.0 / evals[i];
+                    }
+                }
+                // pinv[a][b] = Σ_i V[a][i]·λ⁺_i·V[b][i].  Hoist sa[i] = V[a][i]·λ⁺_i per row a.
+                let mut sa = vec![0.0f64; k];
+                for a in 0..k {
+                    for i in 0..k {
+                        sa[i] = evec[a * k + i] * lamp[i];
+                    }
+                    for b in 0..k {
+                        let mut s = 0.0;
+                        for i in 0..k {
+                            s += sa[i] * evec[b * k + i];
+                        }
+                        o[a * k + b] = s;
+                    }
+                }
+            }
+            Err(e) => {
+                let mut g = first_err.lock().unwrap();
+                if g.is_none() {
+                    *g = Some(e);
+                }
+            }
+        });
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    Ok(out)
+}
+
 /// Batched symmetric eigendecomposition: input `[..., k, k]` (B = product of leading dims).
 /// Computes each k×k plane's eigh in PARALLEL over the batch (reusing [`eigh_contiguous_f64`]),
 /// returning `(eigenvalues [B*k], eigenvectors [B*k*k])` row-major. PyTorch's batched eigh loops
@@ -31259,6 +31329,52 @@ mod tests {
                 super::matrix_exp_contiguous_f32(&dataf[b * k * k..(b + 1) * k * k], &kmetaf).unwrap();
             for t in 0..k * k {
                 assert_eq!(outf[b * k * k + t].to_bits(), r[t].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn pinv_hermitian_batched_spd_is_inverse_and_symmetric() {
+        // For SPD planes, pinv == inverse: A @ pinv ≈ I (and pinv symmetric).
+        let (bb, k) = (7usize, 5usize);
+        let mut data = vec![0.0f64; bb * k * k];
+        for x in 0..bb * k * k {
+            data[x] = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
+        }
+        for b in 0..bb {
+            for i in 0..k {
+                for j in (i + 1)..k {
+                    let s = (data[b * k * k + i * k + j] + data[b * k * k + j * k + i]) * 0.5;
+                    data[b * k * k + i * k + j] = s;
+                    data[b * k * k + j * k + i] = s;
+                }
+            }
+            for i in 0..k {
+                data[b * k * k + i * k + i] += (k + 10) as f64;
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![bb, k, k], DType::F64, Device::Cpu);
+        let pinv = super::pinv_hermitian_batched_contiguous_f64(&data, &meta).unwrap();
+        assert_eq!(pinv.len(), bb * k * k);
+        for b in 0..bb {
+            let a = &data[b * k * k..(b + 1) * k * k];
+            let p = &pinv[b * k * k..(b + 1) * k * k];
+            // symmetry
+            for i in 0..k {
+                for j in 0..k {
+                    assert!((p[i * k + j] - p[j * k + i]).abs() < 1e-9, "pinv not symmetric");
+                }
+            }
+            // A @ pinv ≈ I
+            for i in 0..k {
+                for j in 0..k {
+                    let mut s = 0.0;
+                    for t in 0..k {
+                        s += a[i * k + t] * p[t * k + j];
+                    }
+                    let want = if i == j { 1.0 } else { 0.0 };
+                    assert!((s - want).abs() < 1e-9, "A@pinv != I at ({i},{j}): {s}");
+                }
             }
         }
     }
