@@ -3945,3 +3945,28 @@ eigenvalue-sum exact MATCH): [100000,4,4] FT 10.1ms vs PyTorch 121.5ms = 12.07x 
 eigh_batched_f32_matches_looping_2d_bit_exact + ft-api eigh 44/0. Batched-linalg class: eigh(f64+f32),
 eigvalsh, svdvals, qr. 12 vs-PyTorch wins. REMAINING (bead ogu1e): f32 mirrors for eigvalsh/svdvals/qr
 (same pattern) + svd (tiny-k only).
+
+## 2026-06-21bt - no-ship: cumprod backward no-zero row-contiguous scan lacked keep proof
+
+Tried a no-zero fast path for `cumprod_backward_tensor_contiguous_f64`: detect lanes with no values
+near zero, run a row-contiguous reverse accumulation that preserves the old per-lane reverse order, and
+fall back to the generic path if any input has `abs() <= f64::EPSILON`. This was the radical scan lever
+suggested by the remaining dim0 backward loss: make cumprod backward look like the already-harvested
+cache-friendly scan family while keeping exactness for the no-zero case.
+
+Baseline route from the stale shared checkout on RCH `hz2` measured `cumsum` fwd+bwd dim0 at 659.333 ms
+and `cumprod` fwd+bwd dim0 at 965.653 ms for `[262144,64]` f64, 12-iteration min. Remote PyTorch was
+unavailable on the worker (`No module named 'torch'`), so the comparator came from the local PyTorch CPU
+venv: `cumsum` 495.924797 ms and `cumprod` 545.352066 ms. That makes FT 1.33x slower on cumsum and
+1.77x slower on cumprod, but only as mixed-location routing evidence.
+
+The candidate run moved to RCH `vmi1153651`; the unchanged cumsum control row measured 1323.053 ms and
+the targeted cumprod row measured 2135.452 ms, with remote PyTorch still unavailable. RCH then returned
+`RCH-E309` because artifact retrieval failed after the successful remote run. Since the control row moved
+roughly 2x slower on a different worker and there was no same-worker candidate proof, this is not a keep.
+The temporary source hunk was reverted; product source is unchanged. Current-origin `ft-conformance`
+release-profile passed after the revert on RCH `ovh-a`.
+
+Score for this pass: `0W / 2L / 0N` as routing evidence only. Retry only from current `origin/main` with
+same-worker baseline/candidate proof and a PyTorch-capable comparator, or if a future profile isolates
+cumprod backward as a current-origin loss after the scan and batched-linalg wins.
