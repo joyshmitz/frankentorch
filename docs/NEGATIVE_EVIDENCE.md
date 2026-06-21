@@ -3864,3 +3864,21 @@ is gold-standard so FT svd won't BEAT it; the value is fixing the catastrophic 1
 eigh's 2.4x is the same scalar-reduction wall (dsytrd). => linalg deep frontier characterized: scalar
 reductions vs LAPACK blocked; deep + non-winning. No vs-PyTorch lever. Perf surface remains comprehensively
 harvested (7 scan wins; all other frontiers measured-walled, ledger 21be-21bl). Integrated origin GREEN.
+
+## 2026-06-21bn - ★ NEW WIN (8th): batched-small eigh = 5.7-10.7x vs PyTorch (parallel-over-batch beats LAPACK-loop overhead)
+
+FRESH LEVER (persistence found it beyond "harvested"): PyTorch's batched eigh LOOPS LAPACK per plane ->
+per-call overhead dominates for small k. FT's eigh was 2-D only (feature gap). Added
+eigh_batched_contiguous_f64 (ft-kernel-cpu): parallelizes the EXISTING verified 2-D eigh over the batch
+(par_chunks_mut over disjoint output planes; error-propagating via Mutex). MEASURED
+(examples/batched_eigh_probe.rs), bit-exact vs looping the 2-D eigh (MATCH):
+  [100000,4,4]  FT 14.1ms vs PyTorch 150.7ms = 10.7x FASTER
+  [20000,16,16] FT 52.5ms vs PyTorch 299.9ms = 5.7x
+  [4000,32,32]  FT 57.9ms vs PyTorch 362.4ms = 6.3x
+VERIFIED: eigh_batched_matches_looping_2d_bit_exact (bit-identical evals+evecs vs loop) + ft-kernel-cpu
+512/0. eigenvalues bit-exact to FT's conformance-verified 2-D eigh; vectors tolerance-parity (qgce4).
+=> Opens a FRESH lever CLASS: BATCHED-SMALL LINALG — PyTorch loops LAPACK (per-call overhead) for batched
+small matrices; FT parallel-over-batch wins. Batched eigendecomposition is real in ML (per-sample
+covariance, etc.). REMAINING: ft-api tensor_linalg_eigh batched no-grad fast path (route [...,k,k] ->
+kernel + leaf outputs) for user-facing; + f32/eigvalsh; + check batched svd/inv/det/qr/cholesky for the
+same win. Corrects the "harvested" conclusion — the batched regime was unprobed.
