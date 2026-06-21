@@ -4,6 +4,25 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-21 - frankentorch-kgs4.156 - embedding_bag save-skip (dead full-weight clone) keep, PyTorch loss 4.1x
+
+- Lever: `tensor_embedding_bag` f64 grad path cloned the ENTIRE `[num_embeddings, embedding_dim]`
+  weight into ctx via `save_for_backward` every forward, but only "max" backward needs it
+  ("sum"/"mean" use only indices/offsets/grad). Gated the save on `mode=="max"` — removes a
+  dead clone of the whole embedding table per step for the common modes. Bit-exact (identical
+  grad checksum `3.932160e5` A/B; ft-api `--lib embedding_bag` 2/0; conformance green).
+- Measurement (f64 sum train, vocab50000 dim128 bags256, 32t, fixed-iter harness
+  `embedding_bag_retention_ab`): always-save `~75 ms/step` -> save-skip `~45 ms/step` =
+  **1.68x faster, bit-exact**; PyTorch `11.0 ms/step` so FT goes 6.8x -> 4.1x slower.
+- Win/loss/neutral vs PyTorch (32t): `0W / 1L / 0N`.
+- Verdict: KEEP (internal 1.68x, PyTorch loss). Residual gap = the dense `grad_weight` buffer
+  (FT zeroes a full num_embeddings*embedding_dim 51 MB dense grad/step; PyTorch returns SPARSE).
+  Closing it needs a sparse embedding-grad representation — a separate bigger lever, the exact
+  "per-step dense-buffer allocation" the cross-cutting diagnosis names. Same internal-keep
+  disposition as kgs4.138-145. (Contrast kgs4.155 SDPA: there the saved value was a LARGE input
+  needed by backward, so borrowed-inputs flipped it to a WIN; here the saved value was simply
+  DEAD for sum/mean, so save-skip is a pure internal win but the dense-grad floor remains.)
+
 ## 2026-06-21 - CROSS-CUTTING DIAGNOSIS (cc) - the remaining train-step losses share ONE root cause: autograd memory traffic
 
 Synthesis across the ~20 documented PyTorch losses kgs4.112-145 (BatchNorm1d/2d, GroupNorm,
