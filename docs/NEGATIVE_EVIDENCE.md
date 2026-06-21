@@ -3563,3 +3563,22 @@ Conformance gate: `rch exec -- cargo test -p ft-conformance --profile release` p
 Retry predicate: skip broadcast-H as a PyTorch-performance target unless a future PyTorch version/shape
 falls back to math. The better open lever remains a direct grouped/GQA masked f64 kernel that indexes
 `kv_head = q_head / group` without expanding K/V heads, then reruns the same head-to-head scorecard.
+
+## 2026-06-21av - cumsum f64 vs PyTorch = PARITY; FT-internal parallel "wins" reach parity, NOT domination
+
+Tested whether the FT-internal cumsum parallel win (2.16x vs FT serial, the scan vein) is a vs-PyTorch
+win. MEASURED op-only (15 iters MIN, f64, examples/cumsum_headtohead.rs), all bit-exact (MATCH ~1e-13):
+  - [4194304] 1-D     : FT 17.0ms  vs PyTorch 19.7ms = FT 1.16x FASTER (marginal real win)
+  - [64,262144] dim=1 : FT 13.4ms  vs PyTorch 13.7ms = 1.03x (parity)
+  - [2048,2048] dim=1 : FT  3.29ms vs PyTorch  3.15ms = 1.04x slower (parity)
+  - [262144,64] dim=0 : FT  267ms  vs PyTorch  214ms  = 1.25x slower (strided scan)
+=> FT cumsum ~= PyTorch PARITY. The FT-internal 2.16x parallel win brought FT from ~2x-behind-its-serial-
+self to PARITY with PyTorch — necessary to be COMPETITIVE, not to dominate. CAVEAT: with the practical
+value-extraction (tensor_values clone, up to 128MB) included, FT's effective cumsum is 1.2-1.7x slower
+(session round-trip overhead PyTorch doesn't pay in eager).
+META (important for the campaign's honest record): the many FT-internal parallelization "wins" (scan /
+optim / permute / reduction veins, all measured serial->parallel same-process A/B) are PARITY-reaching,
+NOT vs-PyTorch DOMINATE wins. Combined with the SDPA-3D-artifact correction (21at) and the vendor walls
+(Sleef/MKL/oneDNN), the honest net position is: FT is COMPETITIVE (~parity) with PyTorch on parallelizable
+non-transcendental ops, loses vendor-walled ops, and has NO clear "DOMINATE" win at representative shapes.
+That parity — for a from-scratch safe-Rust port — is the real achievement; "DOMINATE" was aspirational.
