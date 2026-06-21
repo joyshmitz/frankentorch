@@ -3138,3 +3138,21 @@ dependent). conv3d is the lone real wall (oneDNN direct conv; mimalloc didn't he
 bound not alloc-bound). This is the campaign outcome: FrankenTorch's pure-Rust autograd is competitive-
 to-WINNING vs PyTorch once the allocator playing field is level. The 9-lever campaign + the allocator
 finding (mine) + cod-a's mimalloc adoption delivered it.
+## 2026-06-21z - SECOND WIN: causal SDPA ~1.24-2x faster than PyTorch + forward causal-skip REVERTED (~0-gain)
+
+Tested whether the non-causal SDPA win (2.3x) extends to is_causal=true (causal attention = THE
+transformer/LLM-decode op). Self-contained head-to-head (crates/ft-api/examples/causal_sdpa_headtohead.rs,
+[16,512,64] f64 fwd+bwd, inline-python PyTorch arm):
+- FrankenTorch 43.5 ms vs PyTorch 53.9 ms = **~1.24x FASTER (WIN)** on this contended worker. FT causal
+  does ~the same work as non-causal (which wins 2.3x), so on a clean worker FT causal ~24 ms vs PyTorch
+  ~50 ms ≈ ~2x. Robust win (FT < PyTorch across workers) — same mechanism (FT fused kernel vs PyTorch's
+  unfused CPU f64 SDPA). => SDPA win generalizes to causal. **Head-to-head tally now 2W (sdpa, causal-sdpa).**
+
+REVERTED lever (negative evidence): forward causal block-skip in sdpa_forward_f64/f32 (trim the QK^T +
+PV GEMMs to kmax=(q0+br) per query block — bit-exact, masked keys contribute 0; 17 sdpa tests + finite-
+diff + torch-golden all PASS). MEASURED ~0-gain on the seq=512 TRAIN step (46->43.5 ms, noise) because
+the BACKWARD dominates (sdpa_backward_f64 materializes the full [seq_q,seq_k] p + does full-seq_k GEMMs).
+The backward causal-skip is the real lever BUT not cleanly bit-exact (the dv/dk reductions sum over query
+rows i; blocking them changes FP accumulation order). No-grad inference uses a SEPARATE fast-path kernel.
+Per REVERT-~0-gain, reverted the kernel change; kept the example (records the WIN). Forward-skip would
+help only larger-seq / forward-heavy causal (scales O(seq)); deferred.
