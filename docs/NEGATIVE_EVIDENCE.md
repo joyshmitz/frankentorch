@@ -3851,3 +3851,16 @@ frontier; now measured + walled. Confirms the comprehensive-harvest conclusion: 
 durable harvest; everything else (dense/sort/selection/reduction/non-contig/grad/attention/transpose/
 logcumsumexp/LINALG) is vendor-, structure-, or ceiling-walled. Integrated origin verified GREEN this
 session (conformance 199/0, ft-kernel-cpu 511/0). Remaining perf needs parity-relaxation (SIMD-transcendental).
+
+## 2026-06-21bm - svd 189x CONFIRMED fundamental (scalar Golub-Reinsch, not a pathology) — filed deep-bidiag bead r7jdo
+
+Dug into the svd 189x (last turn's measurement) by READING the impl (golub_reinsch_svd_impl, ft-kernel-cpu
+~20424): it is the textbook SCALAR Numerical-Recipes Golub-Reinsch — Householder reduction to bidiagonal
+form column-by-column (scalar, with a parallel bidiag_col_reflector_apply gate for large panels) + scalar
+QR-iteration. So the 189x is NOT a quick-fixable pathology; it is the fundamental scalar-vs-LAPACK-blocked
+(dgebrd BLAS-3) bidiag gap (~10-50x) compounded across phases. Fix = blocked bidiagonalization (deep,
+multi-session) — filed bead frankentorch-svd-blocked-bidiag-r7jdo (P3, no-win: even fully blocked, LAPACK
+is gold-standard so FT svd won't BEAT it; the value is fixing the catastrophic 189x → unusable at N>=512).
+eigh's 2.4x is the same scalar-reduction wall (dsytrd). => linalg deep frontier characterized: scalar
+reductions vs LAPACK blocked; deep + non-winning. No vs-PyTorch lever. Perf surface remains comprehensively
+harvested (7 scan wins; all other frontiers measured-walled, ledger 21be-21bl). Integrated origin GREEN.
