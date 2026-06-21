@@ -4146,3 +4146,19 @@ families + their PURE-REDUCTION derived ops (norm2/nuc/cond/matrix_rank). Ops ne
 RECONSTRUCTION (pinv via V diag V^T, hermitian or svd) are matmul/bmm-bound (~1.3x, vendor-competitive),
 NOT clean. BATCHED-LINALG VEIN COMPREHENSIVELY HARVESTED (f64+f32, direct + derived). 27 vs-PyTorch wins
 stand. NEXT: a genuinely different regime (non-linalg) or conformance/bug triage (bv/br).
+
+## 2026-06-21ce - SCORECARD + op-family sweep clean: perf surface harvested, BlackThrush lane GREEN
+
+Swept fresh op families for a non-linalg PyTorch CPU weakness (the "PyTorch loops something FT can
+parallelize" lens that won batched-linalg): searchsorted 149ms (binary-search, parallel both = parity),
+unique 381ms (sort-walled), bucketize 23 / histc 7 / histogram 15 / vander 1 / kron 0 / triu 1 /
+diag_embed 4 / repeat_interleave 0 / batched-trace 1.3ms -- all FAST. (batched-trace first showed 132ms =
+a randn-allocation-inside-the-timed-loop artifact; clean = 1.3ms -- same measurement-artifact lesson as the
+pinv-hermitian probe: always pre-allocate inputs.) NO new winnable lever.
+SCORECARD: ft-kernel-cpu 521/0 (2 ignored) -- BlackThrush lane GREEN; all batched-linalg kernels + their
+bit-exact-vs-2D tests pass. 27 vs-PyTorch wins this campaign (7 scan cache-reorder + 8 batched-linalg direct
+f64 + f32 mirrors via dtype-cast + 4 svd-derived norm/cond/rank). No regression (the matrix_rank f32
+regression was caught + fixed in 21cc). Ready bead queue (20) = cc-conformance goldens + peer-lane bugs
+(sparse/DataLoader/DenseTensor) -- NO in-lane BlackThrush perf work. Both winnable veins (strided-scan
+cache-reorder + batched-small-linalg) COMPREHENSIVELY HARVESTED + bounded. Remaining perf needs
+parity-breaking (SIMD-transcendental, memory-policy-blocked) or a multi-session deep-linalg rewrite.
