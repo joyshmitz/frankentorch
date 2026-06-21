@@ -3682,3 +3682,14 @@ ft-api 2336 pass (3 pre-existing peer reds: complex_arithmetic + 2 batch_norm, u
 head 3.11x correct (examples/cummax_dim_api_headtohead.rs). cummax-dim is now USER-FACING + winning.
 REMAINING (bead cummax-dim-aware): cummin_dim + f32 fast kernels (f32 correct via gather today). 4th
 clean scan-family vs-PyTorch win (cumsum 2.83x / cumprod-fwd 2.65x / cummax-kernel 3.32x / cummax-API 3.11x).
+
+## 2026-06-21bb - cummin_dim (sister of cummax) SHIPPED = 2.96x vs PyTorch end-to-end, bit-exact + grad
+
+Mirror of cummax_dim (21az/ba): cummin_dim_tensor_contiguous_f64 kernel (cache-friendly d-outer/inner-
+inner, `<=` keeps latest + NaN-freeze, +inf init) + tensor_cummin_dim API (no-grad f64 fast borrow+move;
+grad/non-f64 gather along dim). PyTorch cummin dim=0 [262144,64] = 427ms.
+VERIFIED: cummin_dim_basic_tie_nan kernel test (dim0/dim1/tie [5,5,5]->[0,1,2]/NaN) + ft-kernel-cpu
+510/0; ft-api cummin_dim_values_indices_and_grad (values+indices + grad-scatter [2,1,2,0,1,0]); head-to-
+head FT 144ms vs PyTorch 427ms = 2.96x, bit-exact (examples/cummin_dim_api_headtohead.rs). 5th clean
+scan-family vs-PyTorch win. cummax + cummin dim-aware now BOTH user-facing + winning ~3x; the bead's f64
+scope is DONE (remaining = f32 fast kernels — f32 correct via gather today, not yet the fast path).
