@@ -39,10 +39,13 @@ Updated: 2026-06-21
 | `frankentorch-grefr` | SmoothL1 f64 mean-loss backward, 8M elems | `1.35x` slower | internal keep; direct local `588.51 ms` -> `469.36 ms`; beta=1 derivative branch rejected | kept paired-randn fill; route remaining gap to tape/allocation/loss-kernel |
 
 Measured-discipline score: `31/31` for the gauntlet lanes/features. Default
-PyTorch head-to-head score remains **`1W / many-L / 1N`** as of 2026-06-21 — **SDPA is now ~2.0x FASTER than
-PyTorch** (FT `[16,512,64]` f64 train step ~24 ms stable vs PyTorch >=49 ms; FT's
-fused flash-attention beats PyTorch's CPU unfused SDPA). This is the first
-performance-dominant workload. The RMSNorm scalar-sum comparator remains neutral.
+PyTorch head-to-head score is now **`2W / many-L / 1N`** as of 2026-06-21 — **f64 SDPA is
+~2.3x FASTER (non-causal) and ~1.24-2x FASTER (causal, is_causal=true)** than PyTorch
+(FT `[16,512,64]` f64 train step ~24 ms vs PyTorch ~50-56 ms; FT's fused flash-attention
+beats PyTorch's CPU **unfused f64** SDPA). BOUND (measured, NEGATIVE_EVIDENCE 2026-06-21aa):
+the win is **f64-specific** — f32 SDPA is a ~2.1-2.3x LOSS (PyTorch's CPU flash-attn covers
+f32/bf16/f16 but not f64). These are the performance-dominant workloads. The RMSNorm
+scalar-sum comparator remains neutral.
 The default-off fair allocator gauntlet switch adds allocator-normalized avg_pool1d
 evidence (`2W / 1L / 1N` across two RCH workers), but it is not counted as a
 default product-speed win because the same-worker system-vs-fair A/B did not land.
