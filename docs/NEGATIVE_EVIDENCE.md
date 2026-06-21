@@ -3323,3 +3323,22 @@ layer (~25 ms). So the MHA loss is FUNDAMENTAL: (a) matmul-vs-MKL wall (can't be
 per-op-overhead accumulation across the layer (architectural — op-fusion / lighter nodes; not a quick lever).
 Confirms 2026-06-21ai: raw SDPA wins, the composed transformer block loses, and the loss is not clone-
 elidable (unlike SDPA — matmul's kernel itself is MKL-walled, so eliding its clones wouldn't flip it).
+
+## 2026-06-21ak - matmul clone-elision hypothesis REFUTED (tape ops already borrow) — clone lever was SDPA-API-specific
+
+Reconsidered whether matmul (the most common op; [2048,512]@[512,512] = 7.4ms, ~2.4x MKL) has the SDPA-
+style clone-elision lever (a BROAD win — matmul is everywhere). INSPECTION (no measurement needed):
+tensor_matmul -> tensor_tape.matmul -> binary(BinaryOp::MatMul) -> dispatch_scalar_binary(op, mode,
+&lhs_node.tensor, &rhs_node.tensor, ...) — it passes BORROWED &DenseTensor refs (no to_vec clone). So
+matmul is NOT clone-elidable; its ~2.4x-MKL gap is GEMM-perf (matrixmultiply vs MKL) + node/dispatch
+overhead — the vendor wall, not dead clones.
+
+=> The clone-elision lever was an API-LAYER-FAST-PATH anomaly: SDPA's fast path (lib.rs 5043/18947)
+read inputs via self.tensor_values() (clone) before the kernel, whereas the general TAPE ops
+(binary/matmul/reductions) already borrow via typed_storage/&tensor. SDPA was the unique high-value
+clone-elision (a fast kernel fronted by an API-layer clone). No broad matmul clone lever exists.
+CONCLUSION (reaffirmed, now via op-dispatch inspection): FT's only vs-PyTorch perf win is the isolated
+f64 SDPA op (harvested: training+inference, both entry points, GQA, f64/f32 clone-free); matmul + all
+tape ops already borrow and are GEMM/Sleef/oneDNN-walled; composed MHA is matmul-wall + per-op
+accumulation. The vs-PyTorch perf surface is exhaustively mapped — no further pure-Rust win without an
+op-dispatch/per-op-overhead architectural rewrite (which wouldn't flip the matmul-walled ops anyway).
