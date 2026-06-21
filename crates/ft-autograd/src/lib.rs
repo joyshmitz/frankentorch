@@ -17316,7 +17316,13 @@ impl TensorTape {
         };
 
         Ok(TensorBackwardReport {
-            sparse_gradients: vec![None; gradients.len()],
+            // create_graph (double-backward) has no sparse-gradient surfacing path — that
+            // is first-order IndexSelect only — so this is always all-None. Leave it empty
+            // instead of allocating `vec![None; gradients.len()]`; `sparse_gradient` /
+            // `is_sparse_gradient` read via `.get(node.0)`, which returns None for an empty
+            // vec, so behavior is identical. Mirrors the first-order skip (rdgt6).
+            // frankentorch-rdgt6.
+            sparse_gradients: Vec::new(),
             gradients,
             gradient_nodes: gradient_node_results,
             steps,

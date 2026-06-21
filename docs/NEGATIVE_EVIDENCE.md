@@ -2452,3 +2452,17 @@ complex_arithmetic_golden_matches_torch (worker-skew golden flake) and
 functional_batch_norm1d_3d_native_fused_matches_fold_reference_bits (peer kgs4.138 in-flight).
 
 No new cargo build/bench/check was run this turn (disk-critical pause respected).
+
+## 2026-06-21g - frankentorch-rdgt6 (extension) - CODE-FIRST (disk-critical, no cargo): gate create_graph always-empty sparse_gradients
+
+- The first-order backward already skips the always-empty sparse_gradients vec (rdgt6). The
+  create_graph (double-backward) report ALSO allocated `sparse_gradients: vec![None; gradients.len()]`
+  unconditionally — but create_graph has NO sparse-gradient surfacing path (sparse is first-order
+  IndexSelect only), so it is always all-None. Set it to `Vec::new()` (sparse_gradient/
+  is_sparse_gradient read via `.get` → None for empty; behavior-identical). Skips an always-None
+  per-double-backward allocation; same verified-green change shape as rdgt6's gradient_nodes.
+- One-line, inspection-confident, bit-exact, can't-regress. CODE-FIRST (cargo fully paused,
+  disk-critical 39G — not compiled this turn). ADD TO PENDING-BENCH QUEUE (2026-06-21f): verify
+  with the same ft-autograd/ft-api/ft-conformance run as cuqzu when disk recovers; revert this
+  hunk if it fails to compile (it is a trivial `Vec::new()` for the same field type, so expected
+  green). Exercised by the double-backward / gradient-penalty / WGAN-GP / hessian tests.
