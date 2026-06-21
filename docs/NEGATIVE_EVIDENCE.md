@@ -4070,3 +4070,16 @@ cheap, so batched-parallel beats PyTorch's gesdd-loop. The earlier "svd tiny-k o
 WRONG. 18 vs-PyTorch wins. Batched-linalg class: eigh/eigvalsh/qr (f64+f32), svdvals (f64), matrix_exp
 (f64+f32), eigvals/eig (f64), svd (f64). REMAINING (bead ogu1e): f32 mirrors (need NEW f32 geev/svd/svdvals
 2-D kernels -- bigger lift). geev + svd + sym-eig families all batched-complete in f64.
+
+## 2026-06-21bz - NEW WIN (19th): batched matrix_norm (spectral/nuclear, ord 2/-2/nuc) = 6.0-9.2x vs PyTorch
+
+tensor_matrix_norm batched no-grad fast path for the singular-value norms: route [...,m,n] through the
+(shipped) batched svdvals + a per-plane reduction over the last dim (sum=nuc, max=ord2, min=ord-2) via the
+autograd-aware tensor_sum_dim / tensor_max_dim / tensor_min_dim. NO new kernel -- pure ft-api composition
+reusing batched svdvals. MEASURED (examples/batched_matnorm_h2h.rs):
+  nuc  [100000,4,4]  FT 15.6ms vs 142.8ms = 9.15x | ord2 8.71x (chk MATCH, shape [100000] MATCH)
+  nuc  [20000,16,16] FT 35.1ms vs 212.7ms = 6.05x | ord2 6.46x (chk rel ~1e-5 svd tol, shape MATCH)
+ft-api matrix_norm 7/0 + nuclear 2/0 (no regression). ★ svd-DERIVED ops unlocked by the batched svd/svdvals
+wins: PyTorch loops svd for cond/matrix_rank/norm2/nuc (137-251ms) -> FT routes batched input through batched
+svdvals + reduce. 19 vs-PyTorch wins. NEXT (bead ogu1e): matrix_rank + cond (same batched-svdvals+reduce
+pattern; matrix_rank=count(sv>tol), cond=max/min sv) + f32 geev/svd 2-D kernels.
