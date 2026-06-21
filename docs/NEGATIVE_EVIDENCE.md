@@ -4498,3 +4498,40 @@ hit mixed-rustc artifacts in the warm target directory. Score vs PyTorch for thi
 small keep, but not a domination claim. NEXT: the remaining PyTorch gap needs a deeper CPU attention
 primitive: online softmax plus fused V accumulation in backward, vectorized exp/softmax within
 tolerance, or a BLAS/SIMD-class f32 matmul tile change.
+
+## 2026-06-21cw - WIN: f32 batched svdvals streaming upcast = 24.68-39.13x vs PyTorch
+
+Targeted the remaining f32 `svdvals` cast overhead from the batched-linalg class. The previous path
+materialized the whole f32 input batch as an f64 tensor before calling the batched f64 SVD-values kernel,
+then cast the output back to f32. The kept lever streams each f32 plane directly into the f64 work buffer
+used by the existing Golub-Reinsch values recurrence, so the numerical core and ordering stay identical
+while the whole-batch f64 input allocation disappears. This is the alien-graveyard/vectorized execution
+lever for this pass: keep the proven recurrence, but collapse the dtype-conversion staging boundary.
+
+MEASURED current cast path on RCH `vmi1153651` with
+`AGENT_NAME=IvoryDeer RCH_WORKER=vmi1153651
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo run --release -p ft-api --example batched_svdvals_f32_h2h`:
+  [100000,8,4]  FT 37.030ms
+  [20000,16,8]  FT 30.989ms
+  [8000,32,16]  FT 56.525ms
+
+MEASURED candidate on the same RCH worker/target command:
+  [100000,8,4]  FT 24.626ms = `1.50x` faster than current
+  [20000,16,8]  FT 20.037ms = `1.55x` faster than current
+  [8000,32,16]  FT 33.687ms = `1.68x` faster than current
+
+RCH workers lacked torch, so the PyTorch sidecar used the retrieved release binary and a tmpfs CPU torch
+install (`PYTHONPATH=/dev/shm/frankentorch-torch-cpu-20260621-ivorydeer`, torch `2.12.1+cpu`, 8 threads):
+  [100000,8,4]  FT 3.818ms vs PyTorch 149.411ms = `39.13x` FASTER, rel checksum `4.076e-10`
+  [20000,16,8]  FT 2.861ms vs PyTorch 82.526ms = `28.84x` FASTER, rel checksum `1.829e-9`
+  [8000,32,16]  FT 4.698ms vs PyTorch 115.962ms = `24.68x` FASTER, rel checksum `9.274e-9`
+
+VERIFIED: `svdvals_batched_f32_upcast_matches_casted_looping_2d_bit_exact` passed in `ft-kernel-cpu`;
+`tensor_linalg_svdvals_batched_f32_matches_casted_f64_path_bit_exact` passed in `ft-api`; release-profile
+`ft-conformance` passed on RCH `vmi1153651` (lib 199/0 plus bins, integration tests, smoke, and doctests).
+`cargo fmt --check --all` passed on the live checkout after formatting, but the landed commit was staged from
+clean origin-based blobs to avoid unrelated rustfmt churn; UBS on the three touched code files was stopped
+after ~2 minutes with no findings emitted. Score vs PyTorch for this pass: `3W / 0L / 0N`.
+Source disposition: keep. NEXT: remaining batched-linalg gaps are tiny-k `svd`, f32 eig/eigvals native
+storage mirrors only if the cast path becomes allocation-bound, and batched grad coverage for QR/eig.

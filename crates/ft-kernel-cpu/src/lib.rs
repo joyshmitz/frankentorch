@@ -22808,6 +22808,60 @@ pub fn svdvals_batched_contiguous_f64(
     Ok(out)
 }
 
+/// Batched f32 singular values using the f64 SVD recurrence without materializing
+/// the entire input batch as f64 first.
+pub fn svdvals_batched_contiguous_f32_upcast(
+    data: &[f32],
+    meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(data, meta)?;
+    let shape = meta.shape();
+    let nd = shape.len();
+    if nd < 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![nd],
+        });
+    }
+    let m = shape[nd - 2];
+    let n = shape[nd - 1];
+    let mn = m.min(n);
+    if mn == 0 {
+        return Ok(Vec::new());
+    }
+    let bb: usize = shape[..nd - 2].iter().product();
+    let plane = m * n;
+    let offset = meta.storage_offset();
+    let data = &data[offset..offset + bb * plane];
+    let mut out = vec![0.0f32; bb * mn];
+    let first_err = std::sync::Mutex::new(None);
+    out.par_chunks_mut(mn)
+        .zip(data.par_chunks(plane))
+        .for_each(|(o, pl)| {
+            let mut a = vec![0.0f64; plane];
+            for (dst, &src) in a.iter_mut().zip(pl.iter()) {
+                *dst = f64::from(src);
+            }
+            match svdvals_from_row_major_f64(a, m, n) {
+                Ok(s) => {
+                    for (dst, src) in o.iter_mut().zip(s.iter()) {
+                        *dst = *src as f32;
+                    }
+                }
+                Err(e) => {
+                    let mut g = first_err.lock().unwrap();
+                    if g.is_none() {
+                        *g = Some(e);
+                    }
+                }
+            }
+        });
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    Ok(out)
+}
+
 pub fn svdvals_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
     let shape = meta.shape();
@@ -22830,6 +22884,13 @@ pub fn svdvals_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64
         }
     }
 
+    svdvals_from_row_major_f64(a, m, n)
+}
+
+fn svdvals_from_row_major_f64(mut a: Vec<f64>, m: usize, n: usize) -> Result<Vec<f64>, KernelError> {
+    if m == 0 || n == 0 {
+        return Ok(Vec::new());
+    }
     let mut s = if m >= n {
         golub_reinsch_singular_values(&mut a, m, n)?
     } else {
@@ -31584,6 +31645,30 @@ mod tests {
             let s = super::svdvals_contiguous_f64(&data[b * m * n..(b + 1) * m * n], &pmeta).unwrap();
             for i in 0..mn {
                 assert_eq!(out[b * mn + i].to_bits(), s[i].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn svdvals_batched_f32_upcast_matches_casted_looping_2d_bit_exact() {
+        let (bb, m, n) = (13usize, 6usize, 4usize);
+        let data: Vec<f32> = (0..bb * m * n)
+            .map(|x| (((x * 1103515245usize + 12345) % 8191) as f32) * 0.0007 - 2.0)
+            .collect();
+        let meta = TensorMeta::from_shape(vec![bb, m, n], DType::F32, Device::Cpu);
+        let pmeta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+        let mn = m.min(n);
+        let out = super::svdvals_batched_contiguous_f32_upcast(&data, &meta).unwrap();
+        assert_eq!(out.len(), bb * mn);
+        for b in 0..bb {
+            let start = b * m * n;
+            let casted: Vec<f64> = data[start..start + m * n]
+                .iter()
+                .map(|&value| f64::from(value))
+                .collect();
+            let s = super::svdvals_contiguous_f64(&casted, &pmeta).unwrap();
+            for i in 0..mn {
+                assert_eq!(out[b * mn + i].to_bits(), (s[i] as f32).to_bits());
             }
         }
     }
