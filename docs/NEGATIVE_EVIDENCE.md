@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-21 - rrelu borrowed-inputs - small confirm of the heuristic (1.15x, kept as cleanup)
+
+- Lever: `tensor_rrelu` (eval, deterministic midpoint slope = a trivially cheap leaky-relu)
+  cloned its full input into ctx every forward; the backward only needs sign(x) (an input leaf).
+  Converted to `tensor_apply_function_f64_borrowed_inputs` (re-reads x from the live leaf).
+- Result: bit-exact (identical checksum `8.207746e5`), no-grad inference [2048x1024]
+  clone `12.4 ms` -> borrowed `10.5 ms` = `1.15-1.18x`. BELOW the Score>=2.0 perf bar and rrelu
+  is niche (likely still a PyTorch loss on the trivial op), so this is KEPT as a small
+  bit-exact CLEANUP (removes a dead clone + matches the borrowed pattern), not a headline win.
+- Value: confirms the refined heuristic quantitatively — a cheap op with a 16 MB/iter input
+  clone yields ~1.15x from elision (vs grid_sample's 0x where the heavy op dominated). The other
+  ungated cheap-elementwise save sites (special i0e/i1/i1e/log_ndtr, etc.) would give similar
+  ~1.1-1.2x sub-bar wins; not worth individual measure cycles — only convert opportunistically
+  as cleanups. The real perf bar (Score>=2.0) on the train frontier needs the structural
+  dense-grad/arena levers, not more clone-elision.
+
 ## 2026-06-21 - grid_sample no-grad save-skip - NO GAIN (reverted), refines the save-skip heuristic
 
 - Lever tried: gate the two `save_for_backward` clones (input NCHW + grid) in `tensor_grid_sample`
