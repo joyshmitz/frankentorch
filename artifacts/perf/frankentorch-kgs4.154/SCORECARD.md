@@ -35,11 +35,25 @@ PyTorch's f32 CPU SDPA by 3.3–4.2x** at this shape.
 
 ## Caveat (honest scope)
 
-This is a RAW-kernel comparison (FT excludes session/API overhead; PyTorch is the full op).
-The no-grad f32 *session* path (`scaled_dot_product_attention`, requires_grad=false) currently
-returns `DenseTensor(UnsupportedDType(F32))` — a pre-existing API gap filed as
-**frankentorch-y5ubx** (the RAW kernel and the f32 *grad* path are fine). Once y5ubx is fixed,
-this kernel win surfaces end-to-end for f32 serving.
+The headline table is a RAW-kernel comparison (FT excludes session/API overhead; PyTorch is
+the full op).
+
+CORRECTION (2026-06-21, cc): the earlier claim that the no-grad f32 *session* path returns
+`UnsupportedDType(F32)` was WRONG — **frankentorch-y5ubx closed as NOT-A-BUG**. The f32
+no-grad `scaled_dot_product_attention` works end-to-end; the error came from reading the F32
+output with the f64 `tensor_values` instead of `tensor_values_f32`. The example now measures
+the full through-session path. End-to-end (32 torch threads, `tensor_values_f32` read):
+
+| Lane | FT through-session | PyTorch f32 | verdict |
+| --- | ---: | ---: | --- |
+| non-causal | `6.9–7.2 ms` | `6.9–7.3 ms` | ~tie (1.0–1.06x) |
+| causal | `3.1–4.3 ms` | `6.4–6.9 ms` | FT 1.5–2.1x faster |
+
+The RAW kernel is `~1.6 ms` but the no-grad inference **session overhead (~5 ms:
+3× `tensor_variable_f32` input materialization + `tensor_values_f32` output copy) dominates**
+and caps the end-to-end win. So the kernel lever (this card) is real and stands; the next
+f32-serving lever is the **session/API overhead**, not the kernel (same pattern the f64
+`sdpa_inference_headtohead` PHASES row shows: tensor_variable ~4.6 ms + read ~2.4 ms ≫ kernel).
 
 ## Win/loss/neutral vs PyTorch (32t): `2W / 0N` (kernel-level; widens an existing win)
 

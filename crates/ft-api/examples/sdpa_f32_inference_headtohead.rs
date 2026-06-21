@@ -1,13 +1,18 @@
 //! f32 SDPA INFERENCE (no-grad forward) head-to-head vs PyTorch (cc).
 //! f32 mirror of `sdpa_inference_headtohead` — the dominant production dtype for serving /
-//! autoregressive decode. FT's no-grad f32 fast-path flash kernel (`sdpa_forward_f32`) vs
-//! PyTorch f32 CPU SDPA. Non-causal + causal. Reports the RAW kernel and the full no-grad
-//! API path; also prints the FT/PyTorch output-sum relative diff as a correctness check.
+//! autoregressive decode. FT's no-grad f32 fast-path flash kernel (`sdpa_forward_f32`,
+//! reached via `scaled_dot_product_attention` with requires_grad=false) vs PyTorch f32 CPU
+//! SDPA. Non-causal + causal. Measures the full through-session no-grad API path and prints
+//! the FT/PyTorch output-sum relative diff as a correctness check. (NOTE: read the f32 output
+//! with `tensor_values_f32`, not the f64 `tensor_values`, which rejects an F32 tensor.)
 //!
 //! Run: PYTORCH_PYTHON=/path/to/python cargo run --release -p ft-api --example sdpa_f32_inference_headtohead
 
 use std::process::Command;
 use std::time::Instant;
+
+use ft_api::FrankenTorchSession;
+use ft_core::ExecutionMode;
 
 const BH: usize = 16;
 const SEQ: usize = 512;
@@ -17,16 +22,16 @@ fn seq_f32(n: usize, shift: f32) -> Vec<f32> {
     (0..n).map(|i| (((i as f32) * 0.017 + shift).sin()) * 0.2).collect()
 }
 
-// NOTE: the no-grad f32 SDPA *session* path (`scaled_dot_product_attention` with
-// requires_grad=false) currently returns `DenseTensor(UnsupportedDType(F32))` — a
-// pre-existing API gap, filed separately. This example therefore benchmarks the RAW
-// `sdpa_forward_f32` flash kernel (the thing the no-grad/grad f32 fast paths call) directly
-// vs PyTorch's f32 SDPA, which is the kernel-level comparison this perf lever targets.
-fn ft_kernel(qb: &[f32], kb: &[f32], vb: &[f32], causal: bool) -> (Vec<f32>, f64) {
-    let scale = 1.0 / (D as f32).sqrt();
-    let out = ft_kernel_cpu::sdpa_forward_f32(qb, kb, vb, BH, SEQ, SEQ, D, D, scale, causal);
-    let sum = out.iter().map(|x| x.abs() as f64).sum();
-    (out, sum)
+// Full no-grad f32 SDPA through the public session API (requires_grad=false -> no tape,
+// f32 fast-path flash kernel `sdpa_forward_f32`). The dominant serving path.
+fn ft_infer(qb: &[f32], kb: &[f32], vb: &[f32], causal: bool) -> f64 {
+    let shape = vec![BH, SEQ, D];
+    let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+    let q = s.tensor_variable_f32(qb.to_vec(), shape.clone(), false).unwrap();
+    let k = s.tensor_variable_f32(kb.to_vec(), shape.clone(), false).unwrap();
+    let v = s.tensor_variable_f32(vb.to_vec(), shape, false).unwrap();
+    let out = s.scaled_dot_product_attention(q, k, v, None, 0.0, causal).unwrap();
+    s.tensor_values_f32(out).unwrap().iter().map(|x| x.abs() as f64).sum()
 }
 
 const PY: &str = r#"
@@ -57,15 +62,13 @@ print("CHECKSUM", chk)
 
 fn bench_ft(qb: &[f32], kb: &[f32], vb: &[f32], causal: bool, iters: usize) -> (f64, f64) {
     for _ in 0..3 {
-        let _ = ft_kernel(qb, kb, vb, causal);
+        let _ = ft_infer(qb, kb, vb, causal);
     }
     let mut times = Vec::with_capacity(iters);
     let mut sum = 0.0;
     for _ in 0..iters {
         let t = Instant::now();
-        let (o, s) = ft_kernel(qb, kb, vb, causal);
-        std::hint::black_box(&o);
-        sum = s;
+        sum = ft_infer(qb, kb, vb, causal);
         times.push(t.elapsed().as_secs_f64() * 1e3);
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -106,11 +109,25 @@ fn report(qb: &[f32], kb: &[f32], vb: &[f32], label: &str, causal: bool, iters: 
 
 fn main() {
     let iters: usize = std::env::var("ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(20);
-    println!("f32 SDPA forward (RAW sdpa_forward_f32 kernel) [{BH},{SEQ},{D}], {iters} iters MIN:");
+    println!("f32 SDPA INFERENCE (no-grad, through-session) [{BH},{SEQ},{D}], {iters} iters MIN:");
     let total = BH * SEQ * D;
     let q = seq_f32(total, 0.0);
     let k = seq_f32(total, 1.0);
     let v = seq_f32(total, 2.0);
+    // RAW kernel row (no session/API overhead) to localize the kernel vs full-path cost.
+    let scale = 1.0 / (D as f32).sqrt();
+    for _ in 0..3 {
+        let _ = ft_kernel_cpu::sdpa_forward_f32(&q, &k, &v, BH, SEQ, SEQ, D, D, scale, false);
+    }
+    let mut kt = Vec::new();
+    for _ in 0..iters {
+        let t = Instant::now();
+        let o = ft_kernel_cpu::sdpa_forward_f32(&q, &k, &v, BH, SEQ, SEQ, D, D, scale, false);
+        std::hint::black_box(&o);
+        kt.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    kt.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!("  RAW sdpa_forward_f32 kernel only: {:8.3} ms (min)", kt[0]);
     report(&q, &k, &v, "non-causal", false, iters);
     report(&q, &k, &v, "causal", true, iters);
 }
