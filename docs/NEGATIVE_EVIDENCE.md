@@ -3882,3 +3882,16 @@ small matrices; FT parallel-over-batch wins. Batched eigendecomposition is real 
 covariance, etc.). REMAINING: ft-api tensor_linalg_eigh batched no-grad fast path (route [...,k,k] ->
 kernel + leaf outputs) for user-facing; + f32/eigvalsh; + check batched svd/inv/det/qr/cholesky for the
 same win. Corrects the "harvested" conclusion — the batched regime was unprobed.
+
+## 2026-06-21bo - batched eigh USER-FACING: tensor_linalg_eigh batched = 7.7-9.7x vs PyTorch end-to-end
+
+Wired tensor_linalg_eigh batched no-grad f64 fast path: route [...,k,k] (nd>=3, square trailing,
+contiguous) -> eigh_batched_contiguous_f64 (borrow input, leaf outputs evals [...,k] / evecs [...,k,k]).
+Guarded the f32 fast path to 2-D so batched f32 routes via the f64 cast. MEASURED
+(examples/batched_eigh_api_h2h.rs, eigenvalue-sum = trace, EXACT MATCH vs torch):
+  [100000,4,4]  FT 13.5ms vs PyTorch 130.3ms = 9.67x FASTER
+  [20000,16,16] FT 41.9ms vs PyTorch 323.8ms = 7.74x
+  [4000,32,32]  FT 43.3ms vs PyTorch 355.4ms = 8.21x
+VERIFIED: ft-api eigh 44/0 (no regression from the batched path + f32 2-D guard). The 8th vs-PyTorch win
+is now USER-FACING. REMAINING (bead batched-linalg-class-ogu1e): f32 batched eigh + eigvalsh + check
+batched svd/inv/det/qr/cholesky for the same LAPACK-loop-overhead win.
