@@ -2334,3 +2334,19 @@ so the swarm does not re-probe what is already harvested or proven-locked:
   Parallelism levers remain dead in the rch ~10-core sandbox (2026-06-20b). No further
   safe code-first perf lever exists right now; next real progress needs ft-nn to land
   (unblock 05upk) or an unclaimed perf bead.
+
+## 2026-06-21d - frankentorch-cuqzu - CODE-FIRST (disk-low 47G, no builds): lazy sparse_grad_requested (BTreeSet)
+
+- rdgt6 gated the sparse_gradients OUTPUT vec, but `sparse_grad_requested` itself was still
+  `vec![false; nodes.len()]` allocated on EVERY backward (written only in the rare IndexSelect
+  sparse arm). Converted to a lazily-grown `BTreeSet<usize>` (empty for the common dense
+  backward): init `BTreeSet::new()`, IndexSelect arm `.insert(input.0)`, sparse loop now
+  `for &idx in &sparse_grad_requested`. Skips the per-backward `vec![false; nodes.len()]`
+  allocation entirely on the universal dense path.
+- Behavior-preserving + bit-exact (same nodes surface sparse grads; same sparse_gradients
+  output; no arithmetic). Inspection-verified (3 sites only: init/insert/iterate; BTreeSet
+  already in scope via retains_grad; borrow-clean; idx:usize indexes gradients/nodes/
+  sparse_gradients as before). Strict can't-regress alloc reduction (node-count, not numel).
+- STATUS: code-first (build PAUSED, disk-low). VERIFY when disk recovers: ft-autograd +
+  ft-api (IndexSelect sparse path) + conformance. Expected bit-exact. Bead cuqzu in_progress
+  until green.

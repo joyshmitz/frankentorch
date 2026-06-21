@@ -11068,7 +11068,11 @@ impl TensorTape {
         // Tracks IndexSelect inputs that requested a sparse-gradient surfacing.
         // Populated at the end with a SparseCOOTensor extracted from the
         // dense gradient (sparse_dim=1, dim=0).
-        let mut sparse_grad_requested: Vec<bool> = vec![false; self.nodes.len()];
+        // Set of input nodes that requested sparse-gradient surfacing (IndexSelect
+        // sparse path — rare). Lazily grown: empty for the common dense backward, so we
+        // skip the per-backward `vec![false; nodes.len()]` allocation entirely.
+        // frankentorch-cuqzu.
+        let mut sparse_grad_requested: BTreeSet<usize> = BTreeSet::new();
 
         let mut queue = TensorReadyQueue::with_capacity(self.nodes.len().max(1));
         queue.push(root);
@@ -13657,7 +13661,7 @@ impl TensorTape {
                     }
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     if sparse && dim == 0 {
-                        sparse_grad_requested[input.0] = true;
+                        sparse_grad_requested.insert(input.0);
                     }
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -14519,16 +14523,13 @@ impl TensorTape {
         // it via `.get(node.0)`, which returns None for an empty vec, so behavior is
         // identical without the per-backward `vec![None; gradients.len()]` allocation.
         // frankentorch-rdgt6.
-        let any_sparse_requested = sparse_grad_requested.iter().any(|&r| r);
-        let mut sparse_gradients: Vec<Option<SparseCOOTensor>> = if any_sparse_requested {
-            vec![None; gradients.len()]
-        } else {
-            Vec::new()
-        };
-        for idx in 0..sparse_gradients.len() {
-            if !sparse_grad_requested[idx] {
-                continue;
-            }
+        let mut sparse_gradients: Vec<Option<SparseCOOTensor>> =
+            if sparse_grad_requested.is_empty() {
+                Vec::new()
+            } else {
+                vec![None; gradients.len()]
+            };
+        for &idx in &sparse_grad_requested {
             let Some(dense_grad) = gradients[idx].as_deref() else {
                 continue;
             };
