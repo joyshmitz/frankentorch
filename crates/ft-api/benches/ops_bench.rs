@@ -683,7 +683,9 @@ fn bench_layer_norm(c: &mut Criterion) {
             let x = session
                 .tensor_variable(xd.clone(), vec![rows, hidden], true)
                 .unwrap();
-            let w = session.tensor_variable(wd.clone(), vec![hidden], true).unwrap();
+            let w = session
+                .tensor_variable(wd.clone(), vec![hidden], true)
+                .unwrap();
             let bias = session
                 .tensor_variable(bd.clone(), vec![hidden], true)
                 .unwrap();
@@ -995,11 +997,15 @@ fn bench_batch_norm(c: &mut Criterion) {
             let x = session
                 .tensor_variable(xd.clone(), vec![n, ch, h, w], true)
                 .unwrap();
-            let rm = session.tensor_variable(rmd.clone(), vec![ch], false).unwrap();
+            let rm = session
+                .tensor_variable(rmd.clone(), vec![ch], false)
+                .unwrap();
             let rv = session
                 .tensor_variable(vec![1.0; ch], vec![ch], false)
                 .unwrap();
-            let wt = session.tensor_variable(wtd.clone(), vec![ch], true).unwrap();
+            let wt = session
+                .tensor_variable(wtd.clone(), vec![ch], true)
+                .unwrap();
             let bias = session.tensor_variable(bd.clone(), vec![ch], true).unwrap();
             let (out, _, _) = session
                 .functional_batch_norm2d(
@@ -1101,8 +1107,12 @@ fn bench_group_norm(c: &mut Criterion) {
             let x = session
                 .tensor_variable_f32(xv.clone(), vec![n, ch, h, w], true)
                 .unwrap();
-            let wt = session.tensor_variable_f32(wv.clone(), vec![ch], true).unwrap();
-            let bias = session.tensor_variable_f32(bv.clone(), vec![ch], true).unwrap();
+            let wt = session
+                .tensor_variable_f32(wv.clone(), vec![ch], true)
+                .unwrap();
+            let bias = session
+                .tensor_variable_f32(bv.clone(), vec![ch], true)
+                .unwrap();
             let out = session
                 .functional_group_norm(x, groups, Some(wt), Some(bias), 1e-5)
                 .unwrap();
@@ -1122,8 +1132,12 @@ fn bench_group_norm(c: &mut Criterion) {
             let x = session
                 .tensor_variable_f32(xv.clone(), vec![n, ch, h, w], true)
                 .unwrap();
-            let wt = session.tensor_variable_f32(wv.clone(), vec![ch], true).unwrap();
-            let bias = session.tensor_variable_f32(bv.clone(), vec![ch], true).unwrap();
+            let wt = session
+                .tensor_variable_f32(wv.clone(), vec![ch], true)
+                .unwrap();
+            let bias = session
+                .tensor_variable_f32(bv.clone(), vec![ch], true)
+                .unwrap();
             let loss = session
                 .functional_group_norm_sum(x, groups, Some(wt), Some(bias), 1e-5)
                 .unwrap();
@@ -1282,7 +1296,9 @@ fn bench_rms_norm(c: &mut Criterion) {
             let x = session
                 .tensor_variable(xd.clone(), vec![rows, hidden], true)
                 .unwrap();
-            let w = session.tensor_variable(wd.clone(), vec![hidden], true).unwrap();
+            let w = session
+                .tensor_variable(wd.clone(), vec![hidden], true)
+                .unwrap();
             let out = session
                 .functional_rms_norm(x, vec![hidden], Some(w), 1e-6)
                 .unwrap();

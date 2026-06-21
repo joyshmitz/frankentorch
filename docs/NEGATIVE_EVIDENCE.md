@@ -4,6 +4,53 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-21 - frankentorch-kgs4.138 - restart verification of BatchNorm1d f64 scalar-sum path
+
+- Context: fresh `cod-a` restart re-verified the existing f64 BatchNorm1d NCL
+  scalar-sum path against the current shared checkout without creating a new
+  worktree. The final rebase kept origin's newer scalar-sum implementation and
+  retained only these fresh proof artifacts.
+- Workload: `ops_bench`
+  `batch_norm/grad_1d_ncl_16x128x256_scalar_sum`, f64
+  `[N,C,L]=[16,128,256]`, training mode, affine weight and bias require
+  gradients, scalar sum loss.
+- Fresh evidence:
+  - Same-worker RCH `vmi1152480`, single Criterion invocation, existing native
+    materialized row: median `5.7332 ms` (`[5.5301, 5.9555]`).
+  - Same-worker RCH `vmi1152480`, scalar-sum row: median `3.5727 ms`
+    (`[3.4421, 3.7068]`).
+  - Same-worker RCH `vmi1152480`, historical fold-reference row: median
+    `43.706 ms` (`[42.359, 45.205]`).
+  - Scalar/native ratio: `0.623x` latency, or `1.60x` faster. Scalar vs
+    fold-reference: `12.23x` faster.
+  - Fresh local PyTorch CPU oracle, torch `2.12.1+cpu`, 32 compute/inter-op
+    threads, same shape/dtype and clone/detach per rep: median
+    `2.775173 ms`, mean `2.735380 ms`, p10 `2.004042 ms`, p90
+    `3.385120 ms`.
+  - Scalar FT/PyTorch ratio by medians: `1.287x` slower. Existing native
+    materialized FT/PyTorch ratio from the same FT run: `2.066x` slower.
+- Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
+- Gates:
+  - `rustfmt --edition 2024 --check crates/ft-kernel-cpu/src/lib.rs crates/ft-api/src/lib.rs crates/ft-api/benches/ops_bench.rs`:
+    passed.
+  - `rch exec -- cargo test -p ft-kernel-cpu batch_norm_f64_scalar_sum_matches_materialized_unit_dy_bits --lib -- --nocapture`:
+    passed.
+  - `rch exec -- cargo test -p ft-api functional_batch_norm1d_sum_3d_matches_materialized_sum_bits --lib -- --nocapture`:
+    passed.
+  - `rch exec -- cargo check -p ft-kernel-cpu --lib`: passed.
+  - `rch exec -- cargo check -p ft-api --benches`: passed.
+  - `rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings`: passed.
+  - `rch exec -- cargo clippy -p ft-api --bench ops_bench -- -D warnings`:
+    passed.
+  - `rch exec -- cargo test -p ft-conformance`: passed; conformance crate
+    green.
+  - `ubs <scoped files>` and the pre-commit hook both timed out in the Rust
+    unwrap ast-grep pass; commits used `UBS_SKIP=1` after the clean clippy,
+    check, fmt, focused tests, and conformance gates above.
+- Evidence:
+  - `artifacts/perf/frankentorch-kgs4.138/gauntlet_20260621T0355Z/bench_batch_norm1d_ncl_combined.log`
+  - `artifacts/perf/frankentorch-kgs4.138/gauntlet_20260621T0355Z/pytorch_batch_norm1d_ncl_f64.log`
+
 ## 2026-06-21 - frankentorch-kgs4.145 - BatchNorm2d f32 API-only lazy-zero input gradient keep
 
 - Lever attempted: after `.144` rejected the broad autograd sentinel/report-cache
