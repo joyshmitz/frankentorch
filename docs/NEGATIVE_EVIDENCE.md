@@ -3273,3 +3273,15 @@ tensor_values clone feeding sdpa_forward_f64. Applied the identical contiguous_v
 (bit-exact). VERIFIED: 17 sdpa + 4 gqa tests pass (incl sdpa_gqa_matches_torch, sdpa_gqa_grad_flows).
 => the no-grad f64 SDPA inference win now also covers GQA + this entry point. Both SDPA entry points'
 no-grad f64 fast paths are now clone-free.
+
+## 2026-06-21ah - f32 SDPA no-grad clone-elision (consistency completion; both entry points, both dtypes now clone-free)
+
+Completed the SDPA borrow-elision lever for the f32 no-grad fast paths in BOTH entry points
+(scaled_dot_product_attention + tensor_scaled_dot_product_attention): tensor_values_f32 (clone) ->
+DenseTensor::contiguous_values_f32() borrow (ft-core:1407, -> &[f32]; bit-exact, scoped). Mirrors the
+f64 fix (af/ag). f32 clones are 3x ~2MB = 6MB (half the f64 case), so the FT-side no-grad-inference
+saving is ~half the f64 ~7ms. VERIFIED bit-exact: 17 sdpa tests pass (incl f32 paths, gqa, finite-diff).
+NOTE: f32 SDPA still LOSES to PyTorch overall (PyTorch CPU flash-attn f32 is tuned AVX, ~2x; 2026-06-21aa)
+— this elision narrows the FT-side, does NOT flip the verdict. Shipped for consistency (no half-done
+lever: all 4 SDPA no-grad fast-path branches — 2 entry points x {f64,f32} — are now clone-free) + a real
+(if modest) FT-side gain on the common f32 inference dtype.
