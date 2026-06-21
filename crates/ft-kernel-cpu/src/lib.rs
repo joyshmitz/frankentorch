@@ -3889,60 +3889,68 @@ pub fn sdpa_forward_masked_gqa_f64(
     let v_head_stride = seq_k * d_v;
     let o_stride = seq_q * d_v;
     let mut out = vec![0.0f64; batch * h_q * o_stride];
-    // Parallelise per (batch, q_head) — same `batch*h_q` work-item count as the dense flash
-    // kernel, so core utilisation is unchanged — but index the K/V *kv-head* directly
-    // (kv_head = q_head / group) instead of reading a `repeat_kv_heads` copy. Group-mates
-    // (the `group` Q heads sharing a kv-head) run concurrently and reuse the same hot K/V
-    // head out of cache, and the B*h_q*S*D expansion copy is gone entirely.
-    out.par_chunks_mut(o_stride)
-        .enumerate()
-        .for_each(|(bh, o_chunk)| {
-            let b = bh / h_q;
-            let q_head = bh % h_q;
-            let kv_head = q_head / group;
-            let qh = &q[bh * q_stride..bh * q_stride + q_stride];
-            let kh_base = (b * h_kv + kv_head) * k_head_stride;
-            let kh = &k[kh_base..kh_base + k_head_stride];
-            let vh_base = (b * h_kv + kv_head) * v_head_stride;
-            let vh = &v[vh_base..vh_base + v_head_stride];
-            let mask_base = bh * mask_bh_stride;
-            // Intra-head block parallelism: each BR-row block is independent (own scores,
-            // own output rows, shared read-only K/V), so split the seq_q dimension across
-            // the pool too. With few heads but many cores (GQA has B*h_q heads, e.g. 16),
-            // per-head-only parallelism would leave most cores idle; this fills them.
+    let num_bh = batch * h_q;
+    // One independent BR-row block of Q head `bh` (= batch*h_q index): index the K/V *kv-head*
+    // directly (kv_head = (bh % h_q) / group) instead of reading a `repeat_kv_heads` copy, so
+    // the B*h_q*S*D expansion is gone and group-mates reuse the same hot K/V head from cache.
+    let block = |bh: usize, q0: usize, o_block: &mut [f64]| {
+        let b = bh / h_q;
+        let kv_head = (bh % h_q) / group;
+        let br = o_block.len() / d_v;
+        let qh = &q[bh * q_stride..bh * q_stride + q_stride];
+        let kh_base = (b * h_kv + kv_head) * k_head_stride;
+        let kh = &k[kh_base..kh_base + k_head_stride];
+        let vh_base = (b * h_kv + kv_head) * v_head_stride;
+        let vh = &v[vh_base..vh_base + v_head_stride];
+        let mask_base = bh * mask_bh_stride;
+        let mut sc = vec![0.0f64; br * seq_k];
+        let q_block = &qh[q0 * d_k..(q0 + br) * d_k];
+        gemm::dgemm_bt(br, d_k, seq_k, q_block, kh, &mut sc);
+        for r in 0..br {
+            let qi = q0 + r;
+            let mrow = &mask[mask_base + qi * seq_k..mask_base + (qi + 1) * seq_k];
+            let row = &mut sc[r * seq_k..(r + 1) * seq_k];
+            let mut m = f64::NEG_INFINITY;
+            for (s, &mv) in row.iter_mut().zip(mrow.iter()) {
+                *s = *s * scale + mv;
+                if *s > m {
+                    m = *s;
+                }
+            }
+            let mut sum = 0.0f64;
+            for s in row.iter_mut() {
+                let e = (*s - m).exp();
+                *s = e;
+                sum += e;
+            }
+            for s in row.iter_mut() {
+                *s /= sum;
+            }
+        }
+        gemm::dgemm(br, seq_k, d_v, &sc, vh, o_block);
+    };
+    // GQA has few heads (B*h_q) but the host has many cores, so by default also split each
+    // head's independent BR-row blocks across the pool. Head-heavy inputs (B*h_q >= threads)
+    // already saturate the outer split, so they keep the cheaper serial inner loop (one
+    // scores alloc per block either way; no extra task overhead). Same guard as the dense
+    // f64/f32 flash kernels.
+    if num_bh < rayon::current_num_threads() && seq_q > BR {
+        out.par_chunks_mut(o_stride).enumerate().for_each(|(bh, o_chunk)| {
             o_chunk
                 .par_chunks_mut(BR * d_v)
                 .enumerate()
-                .for_each(|(blk, o_block)| {
-                    let q0 = blk * BR;
-                    let br = o_block.len() / d_v;
-                    let q_block = &qh[q0 * d_k..(q0 + br) * d_k];
-                    let mut sc = vec![0.0f64; br * seq_k];
-                    gemm::dgemm_bt(br, d_k, seq_k, q_block, kh, &mut sc);
-                    for r in 0..br {
-                        let qi = q0 + r;
-                        let mrow = &mask[mask_base + qi * seq_k..mask_base + (qi + 1) * seq_k];
-                        let row = &mut sc[r * seq_k..(r + 1) * seq_k];
-                        let mut m = f64::NEG_INFINITY;
-                        for (s, &mv) in row.iter_mut().zip(mrow.iter()) {
-                            *s = *s * scale + mv;
-                            if *s > m {
-                                m = *s;
-                            }
-                        }
-                        let mut sum = 0.0f64;
-                        for s in row.iter_mut() {
-                            let e = (*s - m).exp();
-                            *s = e;
-                            sum += e;
-                        }
-                        for s in row.iter_mut() {
-                            *s /= sum;
-                        }
-                    }
-                    gemm::dgemm(br, seq_k, d_v, &sc, vh, o_block);
-                });
+                .for_each(|(blk, o_block)| block(bh, blk * BR, o_block));
         });
+    } else {
+        out.par_chunks_mut(o_stride).enumerate().for_each(|(bh, o_chunk)| {
+            let mut q0 = 0;
+            while q0 < seq_q {
+                let br = (q0 + BR).min(seq_q) - q0;
+                block(bh, q0, &mut o_chunk[q0 * d_v..(q0 + br) * d_v]);
+                q0 += br;
+            }
+        });
+    }
     out
 }
 
