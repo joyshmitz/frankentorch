@@ -4,6 +4,35 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-21 - CROSS-CUTTING DIAGNOSIS (cc) - the remaining train-step losses share ONE root cause: autograd memory traffic
+
+Synthesis across the ~20 documented PyTorch losses kgs4.112-145 (BatchNorm1d/2d, GroupNorm,
+LayerNorm, RMSNorm, avg_pool1d/2d, max_pool3d, linear, SDPA train steps): they are ALL
+**training** (forward+backward through the session tape), and every one's "route remaining gap
+to" note converges on the SAME remedy list — *tape/session arena allocation, workspace reuse,
+saved-stat reuse, scalar-loss fusion, output deforestation*. That is not a coincidence; it is
+the diagnosis:
+
+- The compute KERNELS are competitive (many of these have a kept "internal keep" microlever
+  that already made FT 1.2-2.3x faster than its own prior code). The residual gap vs PyTorch
+  is **autograd memory traffic**, not arithmetic: each train step allocates fresh dense
+  gradient buffers (`vec![0; numel]` per node), materializes a full `dx` even for scalar-sum
+  losses, recomputes saved stats, and never reuses workspace across steps (the documented
+  gmuml tape-retention behavior — the session tape never frees nodes).
+- This is why the per-op attempts (kgs4.138-145 etc.) keep landing "internal keep, PyTorch
+  loss": a per-op microlever cannot fix a cross-cutting allocator/tape problem. PyTorch's
+  autograd reuses buffers and fuses; FT's allocates per step.
+
+THE single highest-value remaining perf lever for the train-step frontier is therefore a
+**structural ft-autograd change**: a session/tape arena (bump/reuse grad + workspace buffers
+across steps) + algebraic zero-`dx` (don't materialize a dense gradient that is provably zero)
++ saved-stat/workspace reuse. This is a multi-session RAII-handle rewrite, NOT a small
+per-crate lever — which is exactly why it keeps being deferred. Until it lands, the train-step
+losses above are floored by allocation, and further per-op microlevers there will keep
+returning "internal keep, PyTorch loss". (The INFERENCE/no-grad frontier, by contrast, is in
+good shape — SDPA fwd kgs4.151-154 + fair-harness shows f32 2.1-2.65x and f64 2.95x/3.1x wins;
+the no-grad fast paths already borrow inputs and skip the tape.)
+
 ## 2026-06-21 - frankentorch-kgs4.151 - direct grouped masked flash SDPA (GQA) keep, PyTorch loss at 32t
 
 - FAIR-HARNESS CONFIRMATION (2026-06-21, cc): re-measured with PyTorch's exact harness
