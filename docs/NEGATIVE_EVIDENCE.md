@@ -3778,3 +3778,20 @@ only reach ~parity, NOT a win). FT kthvalue is FLATTENED (feature gap) but moot 
   - TRANSCENDENTAL -> Sleef-walled. GRAD path -> autograd-walled (21bf).
 STOP probing the strided-dim vein — exhausted. FT topk dim=0 serial is a low-priority DEFENSIVE
 (loss->parity) fix, not a DOMINATE win. NEXT requires a genuinely different lever class.
+
+## 2026-06-21bh - SCOUT (negative): PyTorch handles non-contiguous inputs efficiently — winnable CPU surface COMPREHENSIVELY harvested
+
+Probed a different axis (memory LAYOUT, not dim): PyTorch ops on a TRANSPOSED (non-contiguous)
+[4096,4096] f64 view vs contiguous (ms): exp 25.4/26.2, add 25.0/24.3, mul 22.9/23.9, relu 21.8/24.3,
+sqrt 51.2/49.5, sum_all 1.7/1.9, sum_d0 3.8/2.7 — non-contiguous ~= contiguous (PyTorch's TensorIterator
+strides efficiently). NO weakness. (x.contiguous() on the transpose = 84.6ms is just the materialize.)
+=> COMPREHENSIVE CONCLUSION of the perf-scout campaign: PyTorch CPU is well-optimized across EVERY axis
+probed — dense ops (MKL/Sleef/oneDNN), strided dims (cache-friendly except write-all scans), NON-CONTIGUOUS
+(TensorIterator), selection (topk fast), reductions (cache-friendly), grad (well-amortized). The ONE
+structural gap FT could exploit in safe Rust = cache-hostile strided WRITE-ALL SCANS (cumsum/cumprod/
+cummax/cummin) -> 7 shipped bit-exact vs-PyTorch wins (2.6-3.8x) + the dim-aware cummax/cummin feature.
+The winnable safe-Rust CPU surface is COMPREHENSIVELY HARVESTED. Remaining perf needs parity-BREAKING
+changes (SIMD-transcendental under a tolerance policy) — blocked by parity-absolute. Probed walls (do
+NOT re-probe): sort/gather (bandwidth), selection/topk (PyTorch-fast), reductions (cache-friendly),
+non-contiguous (TensorIterator), grad-path (autograd-amortized), dense (vendor), attention-4D (PyTorch
+flash/fast; the 3-D "win" was a gauntlet-shape artifact).
