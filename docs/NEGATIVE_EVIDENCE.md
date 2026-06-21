@@ -3402,3 +3402,18 @@ pathology (the conv-pad retained intermediate + conv's alloc pattern), NOT a gen
 problem. FT serving is generally competitive (flat). POSITIVE for the win: SDPA dominance is robust to
 serving (not just a single-shot benchmark artifact). No new vs-PyTorch lever; confirms the surface is
 exhausted (the serving axis, too, has no gap — except for the conv-specific gmuml case, already mitigated).
+
+## 2026-06-21ao - conv2d serving FLAT too — gmuml is TAMED; FT serving broadly competitive (serving axis CLOSED)
+
+Completed the serving-axis sweep: conv2d was the suspected last gmuml-degradation case (memory: "conv
+reshape nodes still leak"). Probe (examples/conv_serving_degradation.rs): 100 no-grad conv2d
+[8,32->32,64,64,k3] inferences in ONE session (~1.6GB retained):
+- iter[0..10] avg 15.71ms, iter[90..100] avg 12.62ms -> **0.80x (FLAT, faster late = warmup; no degradation)**.
+
+=> conv2d serving does NOT degrade either. gmuml is EFFECTIVELY TAMED: the original conv1d-L4096
+degradation was FIXED by the shipped conv-pad mitigation (b7a5540e, 2.5x), and retention ALONE doesn't
+degrade up to ~2GB (SDPA 2.4GB flat, conv2d 1.6GB flat, relu 80MB flat). FT reused-session SERVING is
+FLAT/competitive across SDPA + conv2d + relu => NO vs-PyTorch serving-degradation gap on ANY op measured.
+SERVING AXIS CLOSED (positive: FT serving holds up; the SDPA win is robust to long-running serving).
+This + the gauntlet/non-gauntlet/composed/serving sweeps => the vs-PyTorch perf surface is exhaustively
+measured on every axis. Lone win = f64 SDPA (harvested, robust); all else vendor-walled; gmuml tamed.
