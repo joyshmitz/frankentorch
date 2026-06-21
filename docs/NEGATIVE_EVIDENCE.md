@@ -3187,3 +3187,22 @@ subprocess is scheduled apart). Per anchored-A/B discipline (a failed anchor fla
 DISCARDED. Under *uniform* contention the trend hinted FT's relative position improves with seq (ratio
 0.60->1.05->1.10 at the confounded BH=8 run) — plausible (both O(seq^2); FT flash constant better) but
 NOT cleanly measurable on the current contended fleet. Needs an uncontended worker. No claim made.
+
+## 2026-06-21ac - SDPA win MECHANISM = parallelism (not per-core); config-dependent. seq-scaling no clean trend
+
+Isolated the f64 SDPA win's mechanism with a SINGLE-THREAD A/B (RAYON_NUM_THREADS=1 + FT_TORCH_THREADS=1
+— both 1 core, fair + contention-free; examples/sdpa_seqscale_headtohead.rs, min-time):
+- single-thread BH=4: FT 0.68x (seq512) / 0.98x (1024) / 0.90x (2048) — FT is per-core SLOWER-to-parity
+  vs PyTorch's f64 math path.
+- multi-thread BH=16 (clean, 2026-06-21ab): FT ~2.1x WIN.
+
+=> The f64 SDPA win is PARALLELISM-driven: FT parallelizes attention over the BH heads (par_chunks_mut
+over num_bh) and scales 1->8 threads ~3x better than PyTorch's poorly-parallel f64 math/unfused path.
+It is NOT per-core kernel superiority (FT per-core is slower) nor purely flash-materialization-avoidance.
+IMPLICATION (honest bound): the win needs enough heads (BH high, e.g. 16) AND multiple cores. At low BH
+or single-thread FT LOSES. The gauntlet config (BH=16, 8+ cores) is favorable — and is the standard
+head-to-head basis, so the 2W tally stands — but the win is config-dependent, not universal.
+
+seq-scaling: NO clean monotonic trend (single-thread FT-relative peaks at seq=1024: 0.68/0.98/0.90).
+Clean MULTI-thread seq-scaling remains unobtainable — FT rayon persistently contended on the fleet
+(min-of-15 anchor FT seq=512 read 59.7ms vs clean ~23ms). No seq-scaling claim.
