@@ -2756,3 +2756,22 @@ Campaign-wide cumulative narrowing (current vs documented origin; clean-arm rati
   (linear 7-68 ms, sdpa 50-113 ms); FT (in-process) arms stable. Ratios use PyTorch's MIN/clean
   value (conservative for FT). The SDPA win holds even at PyTorch's cleanest. Head-to-head score
   is now **1W / many-L / 0N** (was 0W).
+
+## 2026-06-21q - honest win/loss/neutral refinement + avg_pool1d profiling (contention-careful)
+
+- LINEAR = NEUTRAL (~parity), NOT a win. 4 runs: FT median ~5.9-7.2ms (stable), PyTorch
+  median 8-15ms BUT PyTorch clean-MIN ~5.4ms (run3) — which BEATS FT's ~6.5ms median. The
+  apparent "FT faster" at median is PyTorch-subprocess CONTENTION noise; at PyTorch's true
+  (min) speed it's ~parity-to-slightly-ahead-of-FT. Do NOT claim a linear win. (FT did drop
+  22.8ms->~6.5ms via the campaign — a real ~3.5x FT-side gain — but it lands at parity, not a win.)
+- avg_pool1d PROFILE (phase probe, post-all-levers): forward now ~1.6ms (was ~20ms — borrow+lazy
+  worked), backward ~60ms (contended worker; RAW avg_pool1d_backward_f64 kernel alone ~32ms
+  contended). The residual is the BANDWIDTH-bound distribute kernel (avg writes din to ALL 4M
+  inputs vs max_pool1d's 2M argmax-scatter — that's WHY avg_pool1d ~44ms > max_pool1d ~27ms;
+  inherent, not a bug) + the per-backward allocation (caching-allocator residual). No avg_pool1d-
+  specific lever; closing it needs the caching allocator (9pafs) for the alloc part (the kernel
+  is bandwidth-walled, <2x per the bandwidth-frontier note).
+- HEAD-TO-HEAD TALLY (current, honest): 1W (SDPA ~2x, robust) / linear ≈N (parity) / the rest L
+  but massively narrowed (max_pool1d ~1.57x, avg_pool2d ~3.3x, avg_pool1d ~5x, batch_norm2d ~5.7x).
+  Remaining wins require the caching allocator (9pafs, large) — the kernels/GEMM are bandwidth/
+  matrixmultiply-walled.
