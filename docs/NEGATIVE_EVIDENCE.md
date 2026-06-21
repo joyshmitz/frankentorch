@@ -3342,3 +3342,32 @@ f64 SDPA op (harvested: training+inference, both entry points, GQA, f64/f32 clon
 tape ops already borrow and are GEMM/Sleef/oneDNN-walled; composed MHA is matmul-wall + per-op
 accumulation. The vs-PyTorch perf surface is exhaustively mapped — no further pure-Rust win without an
 op-dispatch/per-op-overhead architectural rewrite (which wouldn't flip the matmul-walled ops anyway).
+
+## 2026-06-21al - ★ CAPSTONE: the complete vs-PyTorch perf map (BlackThrush campaign, exhaustively measured)
+
+THE ONE WIN — isolated f64 SDPA. Structural gap: PyTorch CPU has no fused f64 flash-attn (f64 -> unfused
+math fallback) and that path parallelizes poorly. FT's fused flash kernel + head-parallelism beats it.
+FULLY HARVESTED: training ~2.1x (both entry points, +-causal); inference 1.13-1.34x (flipped from a loss
+by eliding the API-fast-path's dead q/k/v clones, commits 0f9ad25c/45567de6/80bcda15 — all 4 no-grad
+branches clone-free: {scaled_dot_product_attention, tensor_scaled_dot_product_attention} x {f64,f32});
+GQA inherits it. Mechanism: PARALLELISM, config-dependent (needs high BH + multicore); per-core FT is slower.
+
+EVERYTHING ELSE IS VENDOR-WALLED (all MEASURED head-to-head):
+- MHA composed transformer block: 5.77x slower — matmul-MKL-wall (4 matmuls) + ~18-op per-op accumulation.
+- conv3d 2.3x (oneDNN direct conv), max_pool3d 2.6x, avg_pool2d ~3x (bandwidth), cdist-p1 3.1x (tuned).
+- f32 SDPA 2.1-2.3x (PyTorch CPU flash-attn covers f32/bf16/f16, not f64 — that's the whole win).
+- matmul ~2.4x (matrixmultiply vs MKL); tape ops (binary/matmul/reductions) ALREADY BORROW (op-dispatch
+  inspection) -> NOT clone-fixable; the gap is GEMM-perf. transcendental = Sleef-walled.
+
+THE ALLOCATOR LEVER (separate axis): the residual alloc-bound losses were PyTorch's caching-allocator
+advantage; mimalloc (my finding, cod-a shipped --features fair-alloc) -> alloc-heavy lanes to parity.
+
+REMAINING LEVER (NOT pursued, architectural): per-op no-grad API overhead / op-fusion (gmuml-class) for
+composed inference. Large, and would NOT flip the matmul/vendor-walled ops anyway. No further pure-Rust
+vs-PyTorch WIN is possible without beating MKL/Sleef/oneDNN per-core (impossible in safe Rust).
+
+METHODOLOGY LESSONS (for future perf work on this contended fleet): (1) anchored A/B mandatory — a known-
+clean anchor (e.g. FT gauntlet sdpa ~23ms) flags FT-rayon contention; (2) RAW-kernel anchor localizes
+kernel-vs-API overhead; (3) measure, don't assume (every "PyTorch materializes -> FT wins" hypothesis was
+refuted by measurement: conv3d/max_pool3d/cdist/f32-sdpa); (4) op-dispatch inspection beats measuring for
+borrow-vs-clone questions; (5) GOTCHA caught twice — never regenerate inputs via sin() inside the timed loop.
