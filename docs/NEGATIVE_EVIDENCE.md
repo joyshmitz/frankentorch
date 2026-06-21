@@ -2428,3 +2428,27 @@ so the swarm does not re-probe what is already harvested or proven-locked:
   cuqzu took the per-backward node-count Vecs; telemetry allocs are contract-locked per
   2026-06-21c). 05upk is the only substantive lever left and it is compiler-gated, so the
   honest code-only deliverable this turn is the exact implementation plan, not a blind core edit.
+
+## 2026-06-21f - PENDING-BENCH/VERIFY QUEUE (disk-critical 39G — cargo fully paused, incl compile-checks)
+
+Operational checklist for the FIRST actions when disk recovers (run via rch on a worker, or
+locally with CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cc-local if the rch
+daemon is down and the shared target is worker-built). Do these BEFORE new perf work:
+
+1. cuqzu (commit 14291513, BTreeSet sparse_grad_requested) — CODE-FIRST, NOT YET COMPILED.
+   VERIFY: cargo test -p ft-autograd && -p ft-api && -p ft-conformance; clippy -p ft-autograd.
+   Expect bit-exact (no arithmetic; behavior-preserving). Close bead cuqzu if green; if it
+   fails to COMPILE/test, `git revert 14291513`. (3-site BTreeSet change — low risk, but unbuilt.)
+
+2. rdgt6 (commits 6ad66065/34c084e5) — already VERIFIED green earlier; no action.
+
+3. 05upk (Arc-share leaf grad) — NOT applied to source. Apply the exact plan in
+   artifacts/perf/frankentorch-05upk/arc_refactor_plan.md ONLY when ft-nn has landed (its WIP
+   collides with the 2 gradients() test callers), then full-workspace verify + clippy before
+   merge. Core-public-type change — never merge without a green compile+test.
+
+Standing pre-existing reds on origin/main (NOT regressions — expect them in ft-api runs):
+complex_arithmetic_golden_matches_torch (worker-skew golden flake) and
+functional_batch_norm1d_3d_native_fused_matches_fold_reference_bits (peer kgs4.138 in-flight).
+
+No new cargo build/bench/check was run this turn (disk-critical pause respected).
