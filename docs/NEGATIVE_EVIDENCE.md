@@ -3285,3 +3285,23 @@ NOTE: f32 SDPA still LOSES to PyTorch overall (PyTorch CPU flash-attn f32 is tun
 — this elision narrows the FT-side, does NOT flip the verdict. Shipped for consistency (no half-done
 lever: all 4 SDPA no-grad fast-path branches — 2 entry points x {f64,f32} — are now clone-free) + a real
 (if modest) FT-side gain on the common f32 inference dtype.
+
+## 2026-06-21ai - MHA f64 inference LOSS 5.77x — the SDPA win does NOT survive the composed transformer block
+
+Tested whether the SDPA f64 win extends to the practical transformer block (multi-head attention).
+FT functional_multi_head_attention_forward (need_weights=false -> routes through the clone-free WINNING
+SDPA internally + tensor_matmul in/out projections), f64 no-grad inference [seq256,batch8,embed512,heads8]
+vs PyTorch nn.MultiheadAttention (examples/mha_f64_headtohead.rs, min-time):
+- FrankenTorch 144.9 ms vs PyTorch 25.1 ms = **FT ~5.77x SLOWER (LOSS)**.
+
+FT's 145 ms is ~20x the ~7-10 ms of actual compute => dominated by per-op API overhead: MHA is ~10
+composed ops (3 in-proj matmuls, head reshapes/permutes, sdpa, merge, out-proj), each paying node
+creation + intermediate value clones in the no-grad path. PyTorch's MHA is lean (~25 ms). The single
+SDPA win is swamped + the in/out-proj matmuls are matrixmultiply-vs-MKL (per-core slower).
+
+★ BOUNDS the attention win honestly: raw SDPA WINS (training ~2.1x, inference 1.13-1.34x), but the
+PRACTICAL transformer block (MHA) LOSES ~5.77x. Don't overclaim "FT wins attention" — only the isolated
+SDPA op wins; the composed layer loses. BROAD lever (architectural, not pursued): cut FT's per-op no-grad
+API overhead (node creation + intermediate clones across composed ops) — the real composed-op-inference
+bottleneck. The SDPA clone-elision fixed ONE op; composed ops would need it systemically + lighter nodes.
+(Measurement note: caught the sin()-in-timed-loop bug again, 172->145 ms after precomputing inputs.)
