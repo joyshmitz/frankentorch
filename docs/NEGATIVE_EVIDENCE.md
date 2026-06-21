@@ -2619,3 +2619,22 @@ structural, NOT from the frankentorch repo. Measured consumers:
   19c8ba4c), `cargo build/test -p ft-autograd && -p ft-api && -p ft-conformance` + clippy; fix any
   compile slip (single file, contained); expect bit-exact; then merge to main. No ft-nn change needed.
 - Pending-bench also still open: cuqzu (14291513) + create_graph sparse skip (5fe70493) verify batch.
+
+## 2026-06-21l - frankentorch-05upk branch impl INSPECTION-VERIFIED clean (disk-low, no cargo)
+
+- Careful manual pass over all ~15 sites of the staged single-file impl (branch
+  blackthrush/05upk-arc-wip, commit 19c8ba4c) found NO type/borrow errors:
+  - report `#[derive(Debug, Clone, PartialEq)]` all hold for `Arc<Vec<f64>>` (content PartialEq).
+  - `gradient()`/`tensor_gradients_iter` use `as_ref().map(|a| a.as_slice())` -> `&[f64]` (sig unchanged).
+  - `scaled_clone` builds fresh `Arc::new(...)`; `gradient_value` unchanged (reads via `gradient()`).
+  - persistent sites: `.map(|a| a.as_slice()/len())`, `Arc::make_mut(grad).fill`, `insert(Arc::new(..))`.
+  - `accumulate_persistent_gradients(&[Option<Arc<Vec<f64>>>])`: `Some(arc)=as_ref`; accumulate via
+    `Arc::make_mut(existing)` + `arc.as_slice()`; insert via `Arc::clone(arc)` (the share, no to_vec).
+    Borrow-clean (self.persistent_grads mut vs gradients-param immut are disjoint; reads precede get_mut).
+  - create_graph persist = `match` with `Arc::make_mut`/`Arc::new(vals)` (avoids the entry/or_insert_with
+    vals move-borrow conflict). update_ optimizer path: `update(gradient.as_slice(), values)` (read-only).
+  - No leftover `.as_deref()`/`Vec<Option<Vec<f64>>>`/`.gradients[` consumers; backward-closure return
+    types (`-> Result<Vec<Option<Vec<f64>>>>`) correctly left as raw Vec (they are din buffers, not the report).
+- HIGH CONFIDENCE it compiles; expect minimal-to-zero fixes + bit-exact at recovery. Still verify with
+  cargo before merging to main (inspection != compiler). Pending-bench batch unchanged (cuqzu 14291513 +
+  create_graph skip 5fe70493).
