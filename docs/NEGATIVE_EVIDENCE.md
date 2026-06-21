@@ -4245,3 +4245,18 @@ svd-loop). The earlier QR-pinv batched attempt (21bv) FAILED (pinv_qr Option -> 
 regressed, reverted); this FUSED svd-pinv (no QR, no Option, fused reconstruction, no tape/materialization)
 is the clean win. Validates the fused-kernel lever: matmul fix (ch) -> unlock -> fused kernels (hermitian-pinv
 7-11x cj + general pinv 7-12x ck). 30 vs-PyTorch wins.
+
+## 2026-06-21cl - WIN (31st, small-k): fused batched lstsq (svd) = 5.32x (k=4) / 1.12x (k=16); ~parity k=32
+
+lstsq_batched_contiguous_f64 (FUSED: per-plane reduced SVD applied to B = V Σ⁺ (Uᵀ B), parallel, no
+tape/Option) + tensor_linalg_lstsq batched no-grad f64 fast path. MEASURED (examples/lstsq_batched_h2h.rs):
+  [100000,4,4]×4rhs   FT 30.2ms vs torch 160.5ms = 5.32x FASTER
+  [20000,16,16]×4rhs  FT 94.6ms vs torch 105.5ms = 1.12x FASTER
+  [4000,32,32]×4rhs   FT 98.7ms vs torch  83.0ms = 1.19x SLOWER
+Correct: A@X-B err ~1e-14 (kernel test lstsq_batched_square_solves_and_tall_normal_equations: square A@X≈B
++ tall Aᵀ(AX−B)≈0). ft-kernel-cpu 526/0 + ft-api lstsq 6/0. WINS small batched lstsq (k<=16); ~parity/slight-
+loss at k=32 because PyTorch's lstsq uses an efficient QR driver (gelsy, unlike pinv's full svd) -> harder
+to beat at larger k (FT svd-lstsq is svd-bound). NEW functionality (batched lstsq errored before -- feature
+gap filled, NOT a regression). The earlier QR-lstsq attempt failed on the Option trap; this fused svd-lstsq
+is clean + correct. Fused-kernel lever tally: matmul (ch) -> hermitian-pinv (cj 7-11x) + general pinv (ck
+7-12x) + lstsq (cl 5.3x small-k). 31 wins. NEXT: batched-linalg GRAD (eigh/svd/qr VJP fused).

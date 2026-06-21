@@ -18350,6 +18350,93 @@ pub fn eigh_contiguous_f32(data: &[f32], meta: &TensorMeta) -> Result<EighResult
     })
 }
 
+/// Batched least-squares solve `min ||A X − B||`: `A [..., m, n]`, `B [..., m, nrhs]` -> `X [..., n, nrhs]
+/// = A⁺ B` via per-plane reduced SVD applied directly to B (X = V Σ⁺ (Uᵀ B)). FUSED: per-plane SVD +
+/// apply-to-B in ONE parallel pass — no autograd tape, no reshape/view materialization, no QR-Option
+/// split; the σ⁺ threshold gives the minimum-norm solution for rank-deficient planes. PyTorch loops
+/// LAPACK per plane (~101-150ms small m,n). frankentorch-batched-eigh. (BlackThrush)
+pub fn lstsq_batched_contiguous_f64(
+    a: &[f64],
+    a_meta: &TensorMeta,
+    b: &[f64],
+    b_meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(a, a_meta)?;
+    ensure_unary_layout_and_storage(b, b_meta)?;
+    let ashape = a_meta.shape();
+    let bshape = b_meta.shape();
+    let nd = ashape.len();
+    if nd < 2 || bshape.len() != nd {
+        return Err(KernelError::ShapeMismatch {
+            lhs: ashape.to_vec(),
+            rhs: bshape.to_vec(),
+        });
+    }
+    let m = ashape[nd - 2];
+    let n = ashape[nd - 1];
+    let nrhs = bshape[nd - 1];
+    let kk = m.min(n);
+    if bshape[nd - 2] != m || ashape[..nd - 2] != bshape[..nd - 2] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: ashape.to_vec(),
+            rhs: bshape.to_vec(),
+        });
+    }
+    let bb: usize = ashape[..nd - 2].iter().product();
+    let (a_plane, b_plane, x_plane) = (m * n, m * nrhs, n * nrhs);
+    let ao = a_meta.storage_offset();
+    let bo = b_meta.storage_offset();
+    let a = &a[ao..ao + bb * a_plane];
+    let b = &b[bo..bo + bb * b_plane];
+    let pmeta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+    let mut out = vec![0.0f64; bb * x_plane];
+    let first_err = std::sync::Mutex::new(None);
+    out.par_chunks_mut(x_plane)
+        .zip(a.par_chunks(a_plane))
+        .zip(b.par_chunks(b_plane))
+        .for_each(|((o, ap), bp)| match svd_contiguous_f64(ap, &pmeta, false) {
+            Ok(r) => {
+                let u = &r.u; // [m, kk]
+                let s = &r.s; // [kk]
+                let vh = &r.vh; // [kk, n]
+                let smax = s.first().copied().unwrap_or(0.0);
+                let tol = (m.max(n) as f64) * f64::EPSILON * smax;
+                // z[i][c] = σ⁺_i · Σ_p U[p][i]·B[p][c]   (scaled Uᵀ B), [kk, nrhs]
+                let mut z = vec![0.0f64; kk * nrhs];
+                for i in 0..kk {
+                    let sp = if s[i] > tol { 1.0 / s[i] } else { 0.0 };
+                    for c in 0..nrhs {
+                        let mut acc = 0.0;
+                        for p in 0..m {
+                            acc += u[p * kk + i] * bp[p * nrhs + c];
+                        }
+                        z[i * nrhs + c] = acc * sp;
+                    }
+                }
+                // X[a][c] = Σ_i V[a][i]·z[i][c] = Σ_i vh[i][a]·z[i][c]
+                for a2 in 0..n {
+                    for c in 0..nrhs {
+                        let mut acc = 0.0;
+                        for i in 0..kk {
+                            acc += vh[i * n + a2] * z[i * nrhs + c];
+                        }
+                        o[a2 * nrhs + c] = acc;
+                    }
+                }
+            }
+            Err(e) => {
+                let mut g = first_err.lock().unwrap();
+                if g.is_none() {
+                    *g = Some(e);
+                }
+            }
+        });
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    Ok(out)
+}
+
 /// Batched general (Moore-Penrose) pseudo-inverse: input `[..., m, n]` -> pinv `[B*n*m]` where each
 /// plane's pinv = `V diag(σ⁺) Uᵀ` (A = U Σ Vʰ reduced SVD), σ⁺_i = 1/σ_i if σ_i > tol else 0
 /// (tol = max(m,n)·eps·σ_max, matching torch.linalg.pinv's default rtol). FUSED: each plane's reduced
@@ -31395,6 +31482,68 @@ mod tests {
                 super::matrix_exp_contiguous_f32(&dataf[b * k * k..(b + 1) * k * k], &kmetaf).unwrap();
             for t in 0..k * k {
                 assert_eq!(outf[b * k * k + t].to_bits(), r[t].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn lstsq_batched_square_solves_and_tall_normal_equations() {
+        // square full-rank: A @ X ≈ B. tall (m>n): normal equations Aᵀ(A X − B) ≈ 0.
+        for (bb, m, n, nrhs) in [(6usize, 5usize, 5usize, 3usize), (5, 7, 4, 2)] {
+            let mut a = vec![0.0f64; bb * m * n];
+            for x in 0..bb * m * n {
+                a[x] = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
+            }
+            for b in 0..bb {
+                for d in 0..m.min(n) {
+                    a[b * m * n + d * n + d] += (m + n) as f64;
+                }
+            }
+            let mut bm = vec![0.0f64; bb * m * nrhs];
+            for x in 0..bb * m * nrhs {
+                bm[x] = (((x * 40503usize) % 7919) as f64) * 0.01 - 3.0;
+            }
+            let am = TensorMeta::from_shape(vec![bb, m, n], DType::F64, Device::Cpu);
+            let bmeta = TensorMeta::from_shape(vec![bb, m, nrhs], DType::F64, Device::Cpu);
+            let xs = super::lstsq_batched_contiguous_f64(&a, &am, &bm, &bmeta).unwrap();
+            assert_eq!(xs.len(), bb * n * nrhs);
+            for b in 0..bb {
+                let ap = &a[b * m * n..(b + 1) * m * n];
+                let bp = &bm[b * m * nrhs..(b + 1) * m * nrhs];
+                let xp = &xs[b * n * nrhs..(b + 1) * n * nrhs];
+                if m == n {
+                    // A @ X ≈ B
+                    for i in 0..m {
+                        for c in 0..nrhs {
+                            let mut s = 0.0;
+                            for t in 0..n {
+                                s += ap[i * n + t] * xp[t * nrhs + c];
+                            }
+                            assert!((s - bp[i * nrhs + c]).abs() < 1e-8, "A@X!=B");
+                        }
+                    }
+                } else {
+                    // residual r = A X − B; Aᵀ r ≈ 0
+                    let mut r = vec![0.0f64; m * nrhs];
+                    for i in 0..m {
+                        for c in 0..nrhs {
+                            let mut s = 0.0;
+                            for t in 0..n {
+                                s += ap[i * n + t] * xp[t * nrhs + c];
+                            }
+                            r[i * nrhs + c] = s - bp[i * nrhs + c];
+                        }
+                    }
+                    for j in 0..n {
+                        for c in 0..nrhs {
+                            let mut s = 0.0;
+                            for i in 0..m {
+                                s += ap[i * n + j] * r[i * nrhs + c];
+                            }
+                            assert!(s.abs() < 1e-7, "normal eqn AᵀR!=0: {s}");
+                        }
+                    }
+                }
             }
         }
     }
