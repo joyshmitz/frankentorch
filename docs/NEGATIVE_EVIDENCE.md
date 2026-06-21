@@ -6,6 +6,16 @@ is explicitly satisfied.
 
 ## 2026-06-21 - frankentorch-kgs4.151 - direct grouped masked flash SDPA (GQA) keep, PyTorch loss at 32t
 
+- FAIR-HARNESS CONFIRMATION (2026-06-21, cc): re-measured with PyTorch's exact harness
+  (q/k/v built ONCE, time op+read only — `example sdpa_gqa_fair_headtohead`) to rule out the
+  create-in-loop overhead that turned out to be the f32 culprit (see kgs4.154). GQA is STILL
+  a loss: 32 torch threads, FT `5.9–7.0 ms` vs PyTorch `2.5–2.6 ms` = FT `2.25–2.81x` slower
+  (rel-diff `1.58e-14` MATCH). So the loss is REAL (PyTorch's GQA kernel + vectorised exp),
+  not a measurement artifact — do not re-probe GQA expecting a harness flip. (Aside: FT's
+  fair-*reuse* number isn't faster than create-fresh, because the session tape accumulates
+  nodes on reuse — the gmuml retention issue — so the harness nuance runs the other way for
+  FT than for PyTorch.)
+
 - Lever attempted: replace the `repeat_kv_heads` K/V expansion in
   `tensor_scaled_dot_product_attention_gqa` (no-grad f64, additive
   `[seq_q,seq_k]`/`[B*h_q,seq_q,seq_k]` mask, contiguous q/k/v) with a direct grouped
