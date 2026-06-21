@@ -2305,3 +2305,32 @@ is explicitly satisfied.
   ft-api 2336 passed (only the 2 pre-existing reds: complex_arithmetic_golden +
   batch_norm1d_3d_native_fused), conformance 199/0 + all sub-suites, ft-autograd clippy
   clean. Bit-exact (no arithmetic change), can't-regress. Bead CLOSED.
+
+## 2026-06-21c - BACKWARD-ALLOCATION FRONTIER MAP (code-first turn, disk-low 48G — no builds)
+
+Definitive audit of every per-backward allocation in `backward_with_options` (first-order),
+so the swarm does not re-probe what is already harvested or proven-locked:
+
+- ELIMINATED (shipped, verified):
+  - grad slots — lazy first-contribution (cbe4t).
+  - Sum/Mean constant contribution Vec — lazy accumulate (96e5d).
+  - forward input clone — Cow-borrow, all custom-op variants (mbitj + 20q7c + audit 20i).
+  - CustomFunction first-contribution copy — owned move (kwarf).
+  - intermediate persistent-grad clones — leaf+retain-only persistence (pwjrs).
+  - sparse_gradients + gradient_nodes per-backward Vecs — gated/empty in first-order (rdgt6).
+- TELEMETRY-CONTRACT-LOCKED (CANNOT eliminate — tests assert content/length):
+  - `dependency_snapshot = pending.clone()` (Vec<usize>, node-count): asserted by
+    tests at ~20909/21070 (content `[2,1,1,0]`) and ~21463 (`len()==node_count`).
+  - `execution_order` (Vec<NodeId>): asserted at ~20301 (`vec![z,y,x]`).
+  - `steps` (Vec<TensorBackwardStep>): `steps.len()` used at ~20595; rendered in telemetry.
+  These are node-count-sized (small, not numel) and part of the public telemetry contract.
+- REMAINING numel allocation (the ONLY one left): the persistent LEAF-grad `to_vec` clone
+  (report + persistent_grads dual-ownership). Fix = Arc-share (bead 05upk, fully scoped).
+  BLOCKED: (a) requires editing ft-nn's 2 `gradients()` test callers — ft-nn carries a
+  static 767-line peer WIP (collision); (b) large core-critical surface (GradScaler/
+  optimizers/sparse/double-backward) — must be a fully-verified dedicated run, NOT a
+  code-first/disk-low ship.
+- CONCLUSION: the backward-allocation vein is harvested except the Arc lever (blocked).
+  Parallelism levers remain dead in the rch ~10-core sandbox (2026-06-20b). No further
+  safe code-first perf lever exists right now; next real progress needs ft-nn to land
+  (unblock 05upk) or an unclaimed perf bead.
