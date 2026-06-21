@@ -3246,3 +3246,20 @@ LEVER (identified, not yet shipped): a lean no-grad SDPA path — borrow inputs 
 ~17 ms is fresh-session-per-call (a bench artifact; real serving reuses the session/graph -> kernel's
 7.85 ms dominates -> would WIN ~2.5x). MEASUREMENT NOTE: initial probe read 38 ms — a bug (regenerated
 inputs via sin() INSIDE the timed loop); fixed to clone pre-computed inputs (matches the gauntlet harness).
+## 2026-06-21af - ★ SHIPPED: no-grad f64 SDPA inference FLIPPED loss->WIN by borrowing inputs (3 dead clones removed)
+
+Shipped the lever identified in 2026-06-21ae. The no-grad f64 SDPA fast path (lib.rs ~5129) cloned
+q/k/v via tensor_values (3x 4MB = 12 MB at [16,512,64]) only to pass &[f64] to sdpa_forward_f64 (which
+TAKES &[f64]) — dead copies. Replaced with `self.tensor_tape.tensor(x)?.contiguous_values()?` borrows
+(scoped so tensor_variable(out) still gets &mut self). Bit-exact (same data, same kernel).
+- sdpa API phase: 14.9 ms -> 9.1 ms (kernel 7.9 ms + out node).
+- f64 SDPA INFERENCE non-causal: FT 24.8 -> **19.0 ms** vs PyTorch 21.5 ms = **1.13x FASTER (was 1.24x slower)**.
+- f64 SDPA INFERENCE causal:     FT 22.9 -> **16.8 ms** vs PyTorch 22.5 ms = **1.34x FASTER**.
+VERIFIED bit-exact: ft-api 2335 passed / 3 failed (the 3 are PRE-EXISTING peer reds — complex_golden,
+batch_norm1d_3d_native_fused, batch_norm2d_f32_shortcut — unrelated to SDPA); 17 sdpa tests pass incl.
+tensor_sdpa_fused_matches_validated_and_finite_diff, sdpa_causal_mask, sdpa_gqa_matches_torch.
+
+=> f64 SDPA now WINS BOTH regimes: TRAINING ~2.1x AND INFERENCE 1.13-1.34x (non-causal + causal). Head-
+to-head tally grows: 2W (train ±causal) + inference wins. A real shipped pure-Rust lever (not just the
+kernel — removed the API-path dead clones that made inference lose). Per-call (fresh-session) basis; the
+3x tensor_variable input-setup (6 ms) is the caller's, amortized in real serving.

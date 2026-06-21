@@ -123,6 +123,30 @@ fn main() {
     }
     kt.sort_by(|a, b| a.partial_cmp(b).unwrap());
     println!("  RAW sdpa_forward_f64 kernel only: {:8.3} ms (min)", kt[0]);
+
+    // PHASE BREAKDOWN of one no-grad API call (min over iters) — localize the ~17ms overhead.
+    let shape = vec![BH, SEQ, D];
+    let (mut t_new, mut t_var, mut t_sdpa, mut t_read) = (f64::MAX, f64::MAX, f64::MAX, f64::MAX);
+    for _ in 0..iters {
+        let a = Instant::now();
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        t_new = t_new.min(a.elapsed().as_secs_f64() * 1e3);
+        let a = Instant::now();
+        let qn = s.tensor_variable(q.clone(), shape.clone(), false).unwrap();
+        let kn = s.tensor_variable(k.clone(), shape.clone(), false).unwrap();
+        let vn = s.tensor_variable(v.clone(), shape.clone(), false).unwrap();
+        t_var = t_var.min(a.elapsed().as_secs_f64() * 1e3);
+        let a = Instant::now();
+        let out = s.scaled_dot_product_attention(qn, kn, vn, None, 0.0, false).unwrap();
+        t_sdpa = t_sdpa.min(a.elapsed().as_secs_f64() * 1e3);
+        let a = Instant::now();
+        let r: f64 = s.tensor_values(out).unwrap().iter().sum();
+        t_read = t_read.min(a.elapsed().as_secs_f64() * 1e3);
+        std::hint::black_box(r);
+    }
+    println!(
+        "  PHASES (min ms): session_new {t_new:.3}  3x tensor_variable {t_var:.3}  sdpa {t_sdpa:.3}  read_out {t_read:.3}"
+    );
     report(&q, &k, &v, "non-causal", false, iters);
     report(&q, &k, &v, "causal", true, iters);
 }
