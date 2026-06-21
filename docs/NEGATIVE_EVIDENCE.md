@@ -4016,3 +4016,18 @@ PyTorch comparator used the local CPU sidecar because RCH workers still lack tor
   [4000,32,32]  FT 14.1ms vs PyTorch 70.954784ms = 5.03x FASTER
 
 Score for this pass: `3W / 0L / 0N` vs PyTorch. Checksum sums match the expected f32 rounded totals (`1.7920e6`, `5.2736e6`, `4.1574e6`). Verification: focused `ft-kernel-cpu` bit-exact-vs-looping f32 test, focused `ft-api` shape/dtype test, and `ft-conformance --profile release` all passed through RCH. File-scoped rustfmt and the example compile check passed. Repo-wide fmt/clippy remain blocked by pre-existing unrelated drift (`ft-api` example/source formatting and `clippy::manual_memcpy` scan-helper warnings), recorded in the artifact bundle. Artifact: `artifacts/perf/frankentorch-kgs4.cod-b-batched-eigvalsh-f32-20260621/`.
+## 2026-06-21bv - NOT-SHIPPED: batched pinv = 27.75x when QR-pinv succeeds BUT data-dependent + svd-fallback walled
+
+Implemented pinv_qr_batched_contiguous_f64 (par over planes) + tensor_linalg_pinv batched path. MEASURED:
+[100000,8,4] FT 15.4ms vs PyTorch 426ms = 27.75x FASTER (chk MATCH) — a REAL win when pinv_qr_contiguous_f64
+returns Some. BUT pinv_qr returns None (declines -> caller must SVD-pinv) UNPREDICTABLY (data/conditioning-
+dependent): square [100000,4,4] -> None; tall [20000,24,16] -> None; tall [100000,8,4] -> Some. For None,
+the only correct fallback is the SVD pinv, which is FT-scalar-SVD-walled (the 189x) -> serial per-plane
+svd-pinv loop = 2.70x SLOWER than PyTorch (2943 vs 1088ms @ [20000,24,16]) + chk rel 3.3e-2 (ill-conditioned).
+The earlier "56x probe" was an ARTIFACT: None returns fast and was masked by `.unwrap_or(0.0)`.
+=> NOT SHIPPED. A data-dependent wins-or-regresses path is too fragile; error-on-None is an unpredictable
+parity gap. The clean fix needs a FAST batched SVD-pinv = FT's SVD un-walled (deep multi-session rewrite,
+out of scope). DEFERRED (bead ogu1e). NEXT: lstsq (qr-based, NO Option fragility -> likely clean) + svdvals f32.
+LESSON: a kernel returning Option<result> (decline-to-fallback) breaks the batched-parallel pattern when the
+fallback is vendor/scalar-walled. ALWAYS verify the fast path FIRES (returns Some) with a NON-masking probe
+(never unwrap_or a sentinel) before claiming a win. Score: 0W/1L (1 regression caught + reverted pre-commit).
