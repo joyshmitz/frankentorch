@@ -919,7 +919,8 @@ is explicitly satisfied.
   gradient enabled.
 - Source of idea: scalar-loss specialization and partial evaluation to remove
   output allocation and dense upstream allocation before attacking deeper tape,
-  arena, and layout work.
+  arena, and layout work; cross-checked against alien-graveyard loop
+  fusion/locality and alien-artifact AD proof obligations.
 - Baseline same-worker evidence: rch Criterion on `vmi1227854`, materialized
   `rms_norm/grad_2048x1024` time `[11.683 ms, 12.229 ms, 12.596 ms]`.
 - Candidate same-worker evidence: rch Criterion on `vmi1227854`, existing
@@ -959,12 +960,35 @@ is explicitly satisfied.
     and `rch exec -- cargo clippy -p ft-api --all-targets -- -D warnings`
     remained blocked by broad pre-existing all-target lint debt; no source was
     shipped from this lane.
+  - 2026-06-21 restart verification on the source-reverted checkout:
+    `rg` found no remaining `functional_rms_norm_sum`,
+    `rms_norm_sum_forward`, `rms_norm_backward_scalar`, or
+    `grad_sum_2048x1024` references in the touched API/kernel/bench source.
+  - Post-revert `rch exec -- cargo bench -p ft-api --bench ops_bench -- rms_norm/grad_2048x1024 --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot`:
+    passed on `hz2`, materialized median `29.419 ms`; cross-worker sanity only.
+  - `rch exec -- cargo test -p ft-kernel-cpu rms_norm --lib -- --nocapture`:
+    passed, 2 focused RMSNorm unit-dy tests.
+  - `rch exec -- cargo test -p ft-api functional_rms_norm --lib -- --nocapture`:
+    passed, 6 focused RMSNorm API/autograd tests.
+  - `rch exec -- cargo test -p ft-conformance`: passed; RCH had no admissible
+    workers and fell back local, but the per-crate conformance suite completed
+    green.
+  - `rch exec -- cargo clippy -p ft-api --lib -- -D warnings`: initially exposed
+    one current-checkout `needless_range_loop` in the existing BatchNorm
+    scalar-sum code; the loop now iterates over `x`, and the rerun passed.
+  - `rch exec -- cargo clippy -p ft-kernel-cpu --lib -- -D warnings`: passed.
+  - `rch exec -- cargo fmt --check -p ft-api -p ft-kernel-cpu`: passed.
+  - `git diff --check` on the touched docs/kernel/artifact surface: passed.
+  - `ubs` on `docs/NEGATIVE_EVIDENCE.md`,
+    `crates/ft-kernel-cpu/src/lib.rs`, and the scorecard: `0` critical
+    issues; existing broad warning inventory remains.
 - Evidence:
   - `artifacts/perf/frankentorch-kgs4.137/gauntlet_20260620T133307Z/baseline_rch_ops_rms_norm_grad.log`
   - `artifacts/perf/frankentorch-kgs4.137/gauntlet_20260620T133307Z/candidate_rch_ops_rms_norm_grad.log`
   - `artifacts/perf/frankentorch-kgs4.137/gauntlet_20260620T133307Z/local_pytorch_rms_norm_sum.log`
   - `artifacts/perf/frankentorch-kgs4.137/gauntlet_20260620T133307Z/env.txt`
   - `artifacts/perf/frankentorch-kgs4.137/gauntlet_20260620T133307Z/summary.md`
+  - `artifacts/perf/frankentorch-kgs4.137/gauntlet_20260620T133307Z/SCORECARD.md`
 
 ## 2026-06-20 - frankentorch-kgs4.125 - BatchNorm1d NCL native keep with PyTorch loss
 
