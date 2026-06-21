@@ -38,9 +38,7 @@ is explicitly satisfied.
   Materialized FT/PyTorch ratio from the same `hz2` run:
   `10.685 / 2.681297323 = 3.98x` slower.
 - Win/loss/neutral vs PyTorch: `0W / 1L / 0N`.
-- Final source state: keep the scalar-backward helper and
-  `functional_avg_pool2d_sum` API/bench row; revert/remove the allocation-free
-  forward-deforestation helper.
+- Remote source state: no product code is shipped in this evidence-only follow-up; the tested scalar-backward helper and bench row were not landed because the shared checkout was dirty/stale. The allocation-free forward-deforestation helper was reverted/removed.
 - Hygiene notes: `git diff --check` passed. `rustfmt --edition 2024 --check`
   on the touched Rust files reported broad pre-existing whole-file drift in
   `ft-api/src/lib.rs` and `ft-kernel-cpu/src/lib.rs`; no format rewrite was

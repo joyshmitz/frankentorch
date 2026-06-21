@@ -6,10 +6,10 @@ Agent: cod-a
 ## Lever
 
 Specialize f64 no-pad/no-ceil `sum(functional_avg_pool2d(...))` for the
-gauntlet avg_pool2d workload. The kept implementation uses the existing
+gauntlet avg_pool2d workload. The measured internal implementation used the existing
 optimized `avg_pool2d_forward_f64` plus `sum_tensor_contiguous_f64` forward
-path and avoids the dense output-gradient buffer in backward with
-`avg_pool2d_backward_scalar_f64`.
+path and avoided the dense output-gradient buffer in backward with
+`avg_pool2d_backward_scalar_f64`. This remote closeout is evidence-only; the helper is not present in the pushed source tree.
 
 The allocation-free logical pooled-output range reducer was tried and removed:
 it regressed the same-worker bench.
@@ -83,7 +83,6 @@ Ratios:
 
 ## Verdict
 
-Keep the scalar-backward API and bench row as an internal FrankenTorch win.
-Do not count this as PyTorch dominance. Do not retry logical range-sum forward
+Evidence-only closeout. The scalar-backward API and bench row were measured as an internal FrankenTorch win, but are not present in the pushed source tree. Do not count this as PyTorch dominance. Do not retry logical range-sum forward
 deforestation without a same-worker microprofile showing it beats the existing
 optimized materialized forward plus pairwise sum.
