@@ -4055,3 +4055,18 @@ VERIFIED: eig_batched_matches_looping_2d_bit_exact (evals+evecs bit-exact vs FT 
 1/0. CLEAN (geev/Francis-QR, no Option/svd-wall). geev family now COMPLETE (eigvals + eig). 17 vs-PyTorch
 wins. Batched-linalg class: eigh/eigvalsh/qr (f64+f32), svdvals (f64), matrix_exp (f64+f32), eigvals+eig
 (f64). REMAINING (bead ogu1e): svdvals f32 (new 2-D kernel) + svd tiny-k + f32 mirrors of eigvals/eig.
+
+## 2026-06-21by - NEW WIN (18th): batched svd = 7.8-11.3x vs PyTorch (the biggest single PyTorch weakness)
+
+svd_batched_contiguous_f64 (par over planes -> U,S,Vh; full/reduced) + tensor_linalg_svd batched no-grad
+f64 path. MEASURED (examples/batched_svd_h2h.rs):
+  [100000,4,4]  FT 27.6ms vs PyTorch 310.8ms = 11.25x FASTER (ssum MATCH)
+  [50000,8,8]   FT 52.0ms vs PyTorch 523.9ms = 10.08x (ssum MATCH)
+  [20000,16,16] FT 80.1ms vs PyTorch 626.1ms = 7.82x (ssum rel 2.7e-5, FT-vs-LAPACK svd tol, ill-cond data)
+VERIFIED: svd_batched_matches_looping_2d_bit_exact (U,S,Vh bit-exact vs FT 2-D, reduced+full) + ft-api svd
+21/0. ★ CORRECTION to the deep-linalg ledger: the 189x svd-scalar penalty is LARGE-MATRIX-ONLY (N=256);
+for tiny k (probed k=2,3,4,8,16: FT 5/15/26/46/72ms vs torch 83/206/339/520/668ms = 9-16x) per-plane SVD is
+cheap, so batched-parallel beats PyTorch's gesdd-loop. The earlier "svd tiny-k only / loses k>=16" fear was
+WRONG. 18 vs-PyTorch wins. Batched-linalg class: eigh/eigvalsh/qr (f64+f32), svdvals (f64), matrix_exp
+(f64+f32), eigvals/eig (f64), svd (f64). REMAINING (bead ogu1e): f32 mirrors (need NEW f32 geev/svd/svdvals
+2-D kernels -- bigger lift). geev + svd + sym-eig families all batched-complete in f64.
