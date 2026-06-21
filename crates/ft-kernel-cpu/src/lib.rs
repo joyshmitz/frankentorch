@@ -18908,6 +18908,49 @@ pub fn triangular_solve_backward_grad_a_f64(
     grad_a
 }
 
+/// Batched symmetric eigenvalues: input `[..., k, k]` -> eigenvalues `[B*k]` (row-major). Parallelizes
+/// the verified 2-D [`eigvalsh_contiguous_f64`] over the batch. PyTorch loops LAPACK per plane (per-call
+/// overhead dominates for small k); values-only so cheaper than batched eigh. Bit-identical to looping
+/// the 2-D eigvalsh. frankentorch-batched-eigh. (BlackThrush)
+pub fn eigvalsh_batched_contiguous_f64(
+    data: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    let nd = shape.len();
+    if nd < 2 || shape[nd - 1] != shape[nd - 2] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![nd],
+        });
+    }
+    let k = shape[nd - 1];
+    let bb: usize = shape[..nd - 2].iter().product();
+    let plane = k * k;
+    let offset = meta.storage_offset();
+    let data = &data[offset..offset + bb * plane];
+    let kmeta = TensorMeta::from_shape(vec![k, k], DType::F64, Device::Cpu);
+    let mut evals = vec![0.0f64; bb * k];
+    let first_err = std::sync::Mutex::new(None);
+    evals
+        .par_chunks_mut(k)
+        .zip(data.par_chunks(plane))
+        .for_each(|(ev, pl)| match eigvalsh_contiguous_f64(pl, &kmeta) {
+            Ok(w) => ev.copy_from_slice(&w),
+            Err(e) => {
+                let mut g = first_err.lock().unwrap();
+                if g.is_none() {
+                    *g = Some(e);
+                }
+            }
+        });
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    Ok(evals)
+}
+
 /// Compute just the eigenvalues of a symmetric matrix (sorted ascending).
 pub fn eigvalsh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
@@ -30476,6 +30519,40 @@ mod tests {
                     (lr - lb).abs() <= etol,
                     "n={n} b={b}: eigenvalue[{idx}] ref={lr} blocked={lb} (tol {etol})"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn eigvalsh_batched_matches_looping_2d_bit_exact() {
+        let (bb, k) = (9usize, 6usize);
+        let mut data = vec![0.0f64; bb * k * k];
+        for b in 0..bb {
+            for i in 0..k {
+                for j in 0..k {
+                    data[b * k * k + i * k + j] = (((b * 3 + i * 11 + j * 7) % 89) as f64) * 0.1;
+                }
+            }
+        }
+        for b in 0..bb {
+            for i in 0..k {
+                for j in 0..k {
+                    let s = (data[b * k * k + i * k + j] + data[b * k * k + j * k + i]) * 0.5;
+                    data[b * k * k + i * k + j] = s;
+                }
+            }
+            for i in 0..k {
+                data[b * k * k + i * k + i] += k as f64;
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![bb, k, k], DType::F64, Device::Cpu);
+        let kmeta = TensorMeta::from_shape(vec![k, k], DType::F64, Device::Cpu);
+        let evals = super::eigvalsh_batched_contiguous_f64(&data, &meta).unwrap();
+        assert_eq!(evals.len(), bb * k);
+        for b in 0..bb {
+            let w = super::eigvalsh_contiguous_f64(&data[b * k * k..(b + 1) * k * k], &kmeta).unwrap();
+            for i in 0..k {
+                assert_eq!(evals[b * k + i].to_bits(), w[i].to_bits());
             }
         }
     }

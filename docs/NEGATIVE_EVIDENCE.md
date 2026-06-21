@@ -3895,3 +3895,16 @@ Guarded the f32 fast path to 2-D so batched f32 routes via the f64 cast. MEASURE
 VERIFIED: ft-api eigh 44/0 (no regression from the batched path + f32 2-D guard). The 8th vs-PyTorch win
 is now USER-FACING. REMAINING (bead batched-linalg-class-ogu1e): f32 batched eigh + eigvalsh + check
 batched svd/inv/det/qr/cholesky for the same LAPACK-loop-overhead win.
+
+## 2026-06-21bp - NEW WIN (9th): batched eigvalsh = 4.8-8.0x vs PyTorch (extends the batched-linalg class)
+
+eigvalsh_batched_contiguous_f64 (par over planes, values-only, mirror of eigh_batched) + tensor_linalg_
+eigvalsh batched no-grad f64 fast path (+ f32 fast path guarded to 2-D). MEASURED
+(examples/batched_eigvalsh_api_h2h.rs, eigenvalue-sum = trace EXACT MATCH):
+  [100000,4,4]  FT 8.1ms  vs PyTorch 64.8ms  = 8.03x FASTER
+  [20000,16,16] FT 24.2ms vs PyTorch 144.5ms = 5.97x
+  [4000,32,32]  FT 21.1ms vs PyTorch 101.0ms = 4.79x
+VERIFIED: eigvalsh_batched_matches_looping_2d_bit_exact (bit-identical vs loop) + ft-api eigvalsh 4/0.
+Batched-linalg class now 2 user-facing ops (eigh + eigvalsh). REMAINING (bead batched-linalg-class-ogu1e):
+batched svd/svdvals/qr (PyTorch svd 339-669ms!, svdvals 138-234ms, qr 40-89ms — all LAPACK-loop; svd may
+win only tiny-k since FT svd is scalar, but svdvals/qr likely win across k). 9 vs-PyTorch wins total.
