@@ -4115,3 +4115,19 @@ contract for the 2-D path). 24 vs-PyTorch wins. Batched-linalg f32: eigh/eigvals
 the svdvals cast (untested but enabled). NEXT (bead ogu1e): measure those + re-sweep; native f32 geev/svd
 kernels are NO LONGER needed (cast suffices). LESSON: for an f64-only kernel family, a dtype-cast wrapper
 delivers the f32 batched win for free -- check for/add the cast before writing native f32 kernels.
+
+## 2026-06-21cc - REGRESSION FIX + f32 svd-derived wins: matrix_rank f32 cast + nuc/cond/rank f32 = 3.4-5.9x
+
+REGRESSION (introduced by my prior commit 7920dab3's svdvals f32 cast): svdvals now PRESERVES the f32
+dtype, so matrix_rank (both tensor_linalg_matrix_rank AND tensor_matrix_rank) -- which extract singular
+values via tensor_values (f64-ONLY) -- now PANIC on an f32 input. Caught by re-running the f32 svd-derived
+head-to-head (rank case stopped output). FIX: added the dt!=F64 cast (f32->f64->rank->cast back) to both
+matrix_rank variants. f32 svd-derived now all work + win (examples/batched_f32_svdderiv_h2h.rs, chk OK):
+  nuc  [100000,4,4] 5.92x | [20000,16,16] 3.79x
+  cond [100000,4,4] 5.32x | [20000,16,16] 3.43x
+  rank [100000,4,4] 5.28x | [20000,16,16] 3.45x
+matrix_rank 4/0 + matrix_norm 7/0 + cond 11/0 + svdvals 3/0 (all green). ★ LESSON: a dtype-fixing cast on a
+LOW-level op (svdvals) can break DOWNSTREAM callers that extract its result via the f64-only tensor_values --
+when changing an op's dtype behavior, grep its callers and add casts to the value-extracting consumers.
+f32 batched-linalg + svd-derived now COMPLETE. 27 vs-PyTorch wins. NEXT (bead ogu1e): genuinely new op
+family/regime (batched-linalg f64+f32 direct+derived comprehensively harvested).
