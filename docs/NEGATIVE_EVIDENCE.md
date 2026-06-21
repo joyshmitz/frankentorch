@@ -2466,3 +2466,21 @@ No new cargo build/bench/check was run this turn (disk-critical pause respected)
   with the same ft-autograd/ft-api/ft-conformance run as cuqzu when disk recovers; revert this
   hunk if it fails to compile (it is a trivial `Vec::new()` for the same field type, so expected
   green). Exercised by the double-backward / gradient-penalty / WGAN-GP / hessian tests.
+
+## 2026-06-21h - inspection-safe alloc-skip vein COMPLETE across ALL backward paths (scalar audited this turn)
+
+- Audited the third/last backward path this turn — the SCALAR `NodeId` backward (`BackwardReport`
+  at lib.rs ~1069): its only payload is `gradients: Vec<Option<f64>>` (f64 scalars, not Vec — no
+  numel alloc) plus telemetry; it has NO `sparse_gradients`/`gradient_nodes` fields. So there is
+  nothing to gate there.
+- Therefore the inspection-safe per-backward always-empty/default alloc-skip vein is now
+  COMPLETE across all three paths: tensor first-order (rdgt6 sparse_gradients+gradient_nodes;
+  cuqzu sparse_grad_requested BTreeSet), tensor create_graph (5fe70493 sparse_gradients), and
+  scalar (clean — nothing to skip). Combined with the earlier traffic-reduction harvest
+  (96e5d/0w3ns/kwarf/mbitj/20q7c) and the telemetry-contract lock (2026-06-21c), there is NO
+  further safe code-first (no-cargo) perf edit available.
+- The ONLY remaining lever is 05upk (Arc-share leaf grad), which is a compiler-gated core-type
+  change (exact plan committed) blocked by ft-nn WIP — it CANNOT be done during a cargo pause.
+- PENDING-BENCH (verify when disk recovers, one batch): cuqzu (14291513) + create_graph skip
+  (5fe70493) — both code-first, unbuilt; ft-autograd/ft-api/ft-conformance; revert any hunk that
+  fails to compile. rdgt6 already verified.
