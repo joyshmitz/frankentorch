@@ -3450,3 +3450,15 @@ GQA correct+winning.
 => The f64 SDPA win is now COMPLETE across {unmasked, causal, masked} x {inference, training} x {both
 entry points + GQA} — all the same structural gap (PyTorch CPU has no fused f64 flash-attn; FT's flash
 avoids the score materialization). Padding-mask attention training is ubiquitous in real transformers.
+
+## 2026-06-21ar - f32 masked SDPA = NO GAP (PyTorch f32 flash handles masks) — masked win is f64-specific
+
+Reconsidered the f32 dismissal in the masked light: does PyTorch's CPU f32 flash-attn handle an explicit
+ADDITIVE mask, or fall to math (which FT could flash-beat, like f64)? MEASURED (PyTorch f32 [16,512,64]):
+unmasked 9.91ms, causal 10.08ms, **masked 9.22ms (0.93x of unmasked)** => PyTorch's f32 flash DOES flash
+the additive mask (no math fallback). So there is NO f32-masked gap; FT's f32 flash-masked would lose
+(~12ms vs PyTorch ~9ms), exactly like unmasked f32. The masked SDPA win is f64-SPECIFIC, same as the
+unmasked win: PyTorch CPU has NO f64 flash (masked/causal/unmasked all materialize -> FT wins), but DOES
+flash f32 (masked/causal/unmasked -> FT loses). Did NOT implement f32 flash-masked (would regress). The
+f64 masked win (inference + training, both entry points + GQA, 21ap/21aq) is the complete masked win.
+Measured-not-assumed: tested the dismissal, refuted the f32-masked-opportunity hypothesis.
