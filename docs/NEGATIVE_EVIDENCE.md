@@ -5349,3 +5349,17 @@ KEEP eigh f32 + lstsq f32 as wins; svd f32 marginal (don't claim), qr f32 mixed 
 No source change (f32 routes through the existing f64 batched grad via cast; correctness inherited
 from the f64 tests + the validated f32-cast mechanism in the eigvals/cond f32 tests). AGENT cc.
 Cumulative f32 grad-mirror wins this session: cond, matrix_norm, eigvals, matrix_exp, eigh, lstsq.
+
+## 2026-06-22 - WIN: f32 batched eigvalsh + svdvals GRADIENT = 2.15-4.78x vs PyTorch
+
+f32 mirrors of the peer-shipped f64 eigvalsh-grad (cq) + svdvals-grad (cr) values-only batched
+gradients. f32 routes through the f64 batched grad via cast; torch f32 loops syevd/gesdd per plane.
+MEASURED (examples/valuesgrad_f32_h2h.rs, fwd+bwd step, loss=sum(out⊙out)), FT on RCH hz2 vs PyTorch
+2.12.0 local f32 (mixed-location):
+  eigvalsh [20000,8] 2.46x  [8000,16] 2.15x  [3000,32] 3.72x
+  svdvals  [20000,8,4] 4.78x [8000,16,8] 3.52x [3000,32,16] 3.57x
+Values-only grads are gauge-free (oracle-exact). No source change (f32 routes through the existing
+f64 batched grads; correctness inherited). AGENT cc. This COMPLETES the f32 grad-mirror sweep:
+WINS = cond, matrix_norm, eigvals, matrix_exp, eigh, lstsq, eigvalsh, svdvals f32;
+marginal/mixed = svd, qr f32. The batched decomposition-grad surface is now comprehensively
+measured across BOTH dtypes (f64 + f32). Score vs PyTorch: 6W / 0L / 0N.
