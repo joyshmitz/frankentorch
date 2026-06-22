@@ -1,11 +1,20 @@
 # FrankenTorch Release-Readiness Scorecard
 
-Updated: 2026-06-21
+Updated: 2026-06-22
 
 ## Performance Gauntlet
 
 | Bead | Workload | Result vs PyTorch | Before/after verdict | Release action |
 |---|---:|---:|---:|---|
+| `6cd43c96` (cc) | batched `matrix_norm` (nuc/±2) GRAD `[B,n,n]` n=8/16/32 | `7.0-10.1x` faster (oracle-exact grad-sum) | was an ERROR (2-D-only); batched svdvals grad + sum/max/min_dim; FT hz2 vs PyTorch local | keep |
+| `0e692074` (cc) | batched `cond` (p=±2) GRAD `[B,n,n]` n=8/16/32 | `6.87-9.66x` faster (oracle-exact) | was an ERROR; σmax/σmin via batched svdvals grad + narrow + div | keep |
+| `0a48b897` (cc) | batched `pinv` GRAD `[B,8,4]/[B,16,8]/[B,32,16]` | `1.31-2.07x` faster (oracle-exact) | code shipped w/ lstsq; normal-equations composition vs torch slow looped-SVD pinv | keep |
+| `5dc2f8bc` (cc) | batched `lstsq` GRAD `[B,8,4]/[B,16,8]/[B,32,16]` | `1.55-3.03x` faster (oracle-exact) | was an ERROR; new batched `inv` grad keystone + pinv composition; torch lstsq backward pathologically slow | keep |
+| `474b09ca` (cc) | batched `matrix_exp` GRAD `[B,n,n]` n=4/8/16/32 | `3.29-4.19x` faster (oracle-exact) | was an ERROR; parallel per-plane augmented-expm adjoint | keep |
+| `c9d94d2b` (cc) | batched `eigvals` (general/complex) GRAD `[B,n,n]` n=4/8/16/32 | `5.48-10.29x` faster | was an ERROR; parallel per-plane complex VJP; 1x fwd over expensive geev | keep |
+| `bb7bdc7f` (cc) | batched `qr` GRAD `[B,m,n]` n=4/8/16/32 | `1.30-2.26x` faster at k≥8 (4×4 marginal) | was an ERROR; parallel per-plane QR VJP | keep |
+| `e26f1f83` (cc) | batched `svd` GRAD (reduced, tall/square) `[B,n,n]` n=4/8/16/32 | `2.08-2.43x` faster | was an ERROR; parallel per-plane U/S/Vh VJP | keep |
+| `550ac7d2` (cc) | batched `eigh` GRAD `[B,n,n]` n=4/8/16/32 | `2.66-3.99x` faster | was an ERROR; parallel per-plane eigenvalue+eigenvector VJP | keep |
 | `frankentorch-kgs4.cod-b-batched-svdvals-f32` | f32 batched `svdvals` `[100000,8,4]`, `[20000,16,8]`, `[8000,32,16]` | `39.13x`, `28.84x`, `24.68x` faster than PyTorch CPU tmpfs sidecar | kept; same-worker `vmi1153651` cast-path->streaming-upcast speedups `1.50x`/`1.55x`/`1.68x`; conformance green | keep; continue tiny-k `svd`, f32 eig/eigvals storage mirrors only if casts become allocation-bound, and batched QR/eig grad gaps |
 | `frankentorch-kgs4.cod-b-batched-lstsq` | full-rank overdetermined f64 batched `lstsq` `[100000,8,4]`, `[20000,16,8]`, `[8000,32,16]` with `rhs=2` | `14.27x`, `4.79x`, `1.82x` faster than PyTorch CPU local sidecar | kept; QR first attempt falls through to existing SVD batched fallback on any declining plane; checksums matched | keep; continue `svdvals` f32, tiny-k `svd`, and f32 eig/eigvals mirrors |
 | `frankentorch-kgs4.cod-b-batched-eigvalsh-f32` | native f32 batched eigvalsh `[100000,4,4]`, `[20000,16,16]`, `[4000,32,32]` | `7.32x`, `7.46x`, `5.03x` faster than PyTorch CPU local sidecar | kept/confirmed; same-worker `hz2` fallback->native speedups `2.03x`/`3.86x`/`1.74x`; conformance green | keep; continue f32 `svdvals`, batched `pinv`, `lstsq`, and tiny-k `svd` gaps |
