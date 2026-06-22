@@ -39,6 +39,14 @@ is explicitly satisfied.
   (feature + perf), needs owner sign-off and likely BlackThrush linalg-crate coordination. Filed
   as **frankentorch-qe48n** with the baselines. (matrix_exp/eig/svd/eigvalsh/svdvals batched paths
   are already shipped wins — the batched-linalg PERF vein is harvested for the ops that batch.)
+- det/cholesky CONFIRMED LOSSES (measured, don't implement): PyTorch det/slogdet are FAST at all
+  k (k4 1.0ms / k16 8.6ms / k32 8.4ms / k64 13ms), unlike solve/inv. ROOT CAUSE (the key insight):
+  det needs only the LU FACTORIZATION (getrf), which PyTorch batches efficiently; solve/inv ALSO do
+  the TRIANGULAR SOLVE (getrs), which is PyTorch's slow batched op. So FT wins solve/inv (getrs-
+  bound, FT's batched fwd/back-sub beats PyTorch's batched getrs at k>=32) but LOSES det/cholesky
+  (getrf/potrf-bound, where FT's scalar LU is slower than batched LAPACK). cholesky = potrf-only,
+  same story. So the batched-linalg vein's wins are SOLVE + INV only; det/cholesky are getrf/potrf-
+  walled. Vein fully characterized + closed.
 - TRIED + REVERTED the obvious ft-api shortcut (no-grad batched-solve fast path: detect 3-D,
   rayon par-over-batch calling the 2-D `lu_factor`+`lu_solve` kernels per matrix, assemble one
   leaf). Correct (rel `1.9e-12`) but a LOSS: FT `105 ms` vs PyTorch `47 ms` @[20000,16,16]
