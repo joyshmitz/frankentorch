@@ -33,6 +33,14 @@ is explicitly satisfied.
   same fast svdvals → same ~26x class. These are among FT's biggest PyTorch wins — FT's batched
   Golub-Reinsch/eigh-based svdvals (deferred-Givens replay, see [[project_svd_deferred_replay_vein]])
   crushes PyTorch's per-plane LAPACK gesdd loop at f64. Don't re-probe; SVD-based linalg is a FT win.
+- EIG/QR family same story (2026-06-22, same 2000×64×64 f64 batch): PyTorch slow (eig 2233ms, eigvals
+  1139, qr 799, eigh 545, eigvalsh 183; lu_factor 24ms FAST = getrf, consistent with the cholesky/det
+  losses). FT WINS (existing, batched-eigh + deferred-Givens replay): **eigvalsh FT 11.2ms = 16.3x**,
+  **eigh(vals) 29.7ms = 18.3x**, **qr(R) 61.4ms = 13.0x**; complex eig/eigvals (PyTorch 1.1-2.2s) win
+  even bigger (not read here — complex output). NET RULE (whole batched-decomposition surface mapped):
+  FT WINS the SVD/eig/eigh/svdvals/qr/cond/matrix_norm-nuc/solve/inv class 13-27x (PyTorch's f64 batched
+  gesdd/geev/syev/geqrf/getrs are slow per-plane loops); FT LOSES only det/cholesky/lu_factor (getrf/
+  potrf are PyTorch's FAST batched factorizations, ~24ms). Don't re-probe the decomposition surface.
 
 ## 2026-06-21 - batched cholesky/det/inv/solve - FT 2-D-only (torch-parity FEATURE gap + perf opportunity, filed qe48n)
 
