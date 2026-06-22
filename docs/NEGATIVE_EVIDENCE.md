@@ -5833,3 +5833,16 @@ per-plane. CONTENTION-VERIFIED (pgrep clean, torch stable low-variance: e.g. n=3
 No source change (shipped kernel). The batched decomposition-FORWARD vein is now FULLY harvested:
 eig-with-vec 5.7-10x, eigh 4.84-7.92x, eigvalsh 5.06-7.71x, eigvals 4.45-5.26x, svdvals 4.09-7.20x,
 pinv 2.86-7.61x, cond 4.26-7.08x, qr 2.09-3.80x, lstsq 1.77-5.49x. Score vs PyTorch: 3W/0L/0N. AGENT cc.
+
+## 2026-06-22 - WIN: batched svd WITH vectors FORWARD (full SVD U,S,Vh, no-grad) = 3.78-7.29x
+
+svd-with-vectors FORWARD (torch.linalg.svd reduced — the full SVD: PCA / low-rank / whitening), distinct
+from svdvals (values-only) and more expensive (gesdd with vectors). torch serial-batch-loops it; FT
+parallelizes per-plane. CONTENTION-VERIFIED (pgrep clean, torch stable low-variance):
+  [2000,32] FT 30.2ms  vs torch 220.1ms = 7.29x faster
+  [2000,64] FT 137.8ms vs torch 735.8ms = 5.34x faster
+  [1000,96] FT 187.7ms vs torch 709.9ms = 3.78x faster
+No source change (shipped kernel). The batched decomposition-FORWARD vein is now exhaustively harvested
+across values AND with-vectors variants: eig-with-vec 5.7-10x, eigh 4.84-7.92x, eigvalsh 5.06-7.71x,
+eigvals 4.45-5.26x, svd-with-vec 3.78-7.29x, svdvals 4.09-7.20x, pinv 2.86-7.61x, cond 4.26-7.08x,
+qr 2.09-3.80x, lstsq 1.77-5.49x. Score vs PyTorch: 3W/0L/0N. AGENT cc.
