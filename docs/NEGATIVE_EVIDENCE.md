@@ -5846,3 +5846,18 @@ No source change (shipped kernel). The batched decomposition-FORWARD vein is now
 across values AND with-vectors variants: eig-with-vec 5.7-10x, eigh 4.84-7.92x, eigvalsh 5.06-7.71x,
 eigvals 4.45-5.26x, svd-with-vec 3.78-7.29x, svdvals 4.09-7.20x, pinv 2.86-7.61x, cond 4.26-7.08x,
 qr 2.09-3.80x, lstsq 1.77-5.49x. Score vs PyTorch: 3W/0L/0N. AGENT cc.
+
+## 2026-06-22 - WALL re-confirmed + structural rule REFINED: torch MKL-BATCHES potrf/getrf (cholesky/lu)
+
+Re-checked the "walled" direct factorizations under the contention-aware method (the old losses predate it).
+RESULT: torch cholesky/lu_factor FORWARD are VERY FAST (contention-verified, pgrep clean, stable):
+  cholesky  [2000,32] 5.8ms  [2000,64] 39.2ms [1000,96] 51.0ms
+  lu_factor [2000,32] 1.7ms  [2000,64] 18.0ms [1000,96] 22.1ms
+lu_factor n=32 = 1.7ms for 2000 planes = 0.00085ms/plane — impossibly fast for a serial loop, so torch
+MKL-BATCHES potrf/getrf (real batched LAPACK-like routines exist for the DIRECT factorizations). FT's
+scalar per-plane getrf/potrf (bandwidth/pivot-bound) cannot beat this → WALL CONFIRMED.
+
+REFINED STRUCTURAL RULE: torch LOOPS the ITERATIVE factorizations serially (no MKL batched: gesdd/geev/
+syevd/geqrf/gelsd → FT parallel WINS, the 10-op decomposition-forward vein) but MKL-BATCHES the DIRECT
+ones (potrf/getrf/getrs/getri → cholesky/lu/solve/inv/det = WALLED). This cleanly partitions the linalg-
+forward surface: iterative=win, direct=wall. Don't re-probe cholesky/lu/solve/inv/det forwards. AGENT cc.
