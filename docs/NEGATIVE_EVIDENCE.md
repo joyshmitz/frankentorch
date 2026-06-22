@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-21 - batched cholesky/det/inv/solve - FT 2-D-only (torch-parity FEATURE gap + perf opportunity, filed qe48n)
+
+- Probe: matrix_exp wins 9.8-31x at tiny-k/huge-B because PyTorch loops there even with a batched
+  path. Checked whether cholesky/det/inv/solve have the same weakness. FT can't compare —
+  `tensor_linalg_cholesky`/`_solve`/`_inv` are 2-D ONLY (ShapeMismatch on [B,k,k], expects 2-D),
+  while PyTorch batches them. So this is a FEATURE gap, not a directly-measurable perf lever.
+- PyTorch CPU batched baselines (cc, 32 threads, f64), ms/iter:
+  cholesky [100000,4,4]=`6.4`, [20000,16,16]=`17.9`; det=`0.96`/`8.4`; inv=`8.4`/`42.0`;
+  solve=`8.3`/`41.9`. (det/cholesky are well-batched-LAPACK; inv/solve@k16 are the slow ones.)
+- Opportunity: matrix_exp (which DOES batch in FT) hits `6.9 ms` @k16 using batched small-matrix
+  solves internally, so a batched FT inv/solve (parallel-over-batch, the matrix_exp pattern) would
+  likely BEAT PyTorch's `42 ms`@k16 (~6x). Biggest target = batched inv/solve.
+- Disposition: NOT a small-per-crate lever — it's autograd-aware N-D batching for 4 linalg ops
+  (feature + perf), needs owner sign-off and likely BlackThrush linalg-crate coordination. Filed
+  as **frankentorch-qe48n** with the baselines. (matrix_exp/eig/svd/eigvalsh/svdvals batched paths
+  are already shipped wins — the batched-linalg PERF vein is harvested for the ops that batch.)
+
 ## 2026-06-21 - rrelu borrowed-inputs - small confirm of the heuristic (1.15x, kept as cleanup)
 
 - Lever: `tensor_rrelu` (eval, deterministic midpoint slope = a trivially cheap leaky-relu)
