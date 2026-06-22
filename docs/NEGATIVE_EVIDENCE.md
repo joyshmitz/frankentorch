@@ -5459,3 +5459,18 @@ ORACLE-EXACT: full-rank pinv is gauge-free, FT grad-sum matches torch to all pri
 (-1.973994e4 etc.). No source change (wide branch already shipped; correctness covered by the
 underdetermined-lstsq test which routes through pinv's wide branch). Score vs PyTorch: 3W / 0L / 0N.
 AGENT cc.
+
+## 2026-06-22 - WIN: batched full_matrices SQUARE svd GRADIENT = 1.52-2.59x vs PyTorch (was an ERROR)
+
+torch.linalg.svd DEFAULTS to full_matrices=True, but FT's svd grad required full_matrices=False, so the
+DEFAULT svd call errored on grad. For a SQUARE matrix full and reduced svd are IDENTICAL (U,S,Vh all
+n×n), so route full→reduced grad (shipped/parallel). torch's full square svd grad is slow (looped gesdd).
+
+MEASURED (examples/svd_full_square_grad_h2h.rs, fwd+bwd step, loss=sum(S)), FT on RCH hz2 vs PyTorch
+2.12.0 local (mixed-location):
+  [20000,8]  FT 88.8ms  vs torch 229.8ms = 2.59x faster
+  [8000,16]  FT 198.3ms vs torch 301.9ms = 1.52x faster
+  [3000,32]  FT 329.9ms vs torch 525.6ms = 1.59x faster
+VERIFIED: test tensor_linalg_svd_full_square_batched_grad_matches_reduced (full==reduced grad within
+1e-12+1e-9|x|, and reduced is FD/oracle-validated) GREEN on RCH hz2; ft-conformance GREEN. Covers the
+common DEFAULT svd-with-grad call on square inputs. Score vs PyTorch: 3W / 0L / 0N. AGENT cc.
