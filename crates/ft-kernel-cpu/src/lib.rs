@@ -19468,6 +19468,100 @@ pub fn cholesky_backward_lower_f64(l: &[f64], grad_l: &[f64], n: usize) -> Vec<f
     grad_a
 }
 
+/// Batched forward of the pivoted LU factorization: input `[..., n, n]` -> per-plane
+/// `(P, L, U, packed_lu, pivots)`. Parallelizes the verified 2-D [`lu_factor_contiguous_f64`]
+/// + [`lu_unpack`] over the batch. PyTorch loops getrf per plane. frankentorch batched-lu-grad.
+pub struct LuBatchedResult {
+    pub p: Vec<f64>,
+    pub l: Vec<f64>,
+    pub u: Vec<f64>,
+    pub packed: Vec<f64>,
+    pub pivots: Vec<f64>,
+    pub n: usize,
+    pub bb: usize,
+}
+pub fn lu_factor_unpack_batched_contiguous_f64(
+    data: &[f64],
+    meta: &TensorMeta,
+) -> Result<LuBatchedResult, KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    let nd = shape.len();
+    if nd < 2 || shape[nd - 1] != shape[nd - 2] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![nd],
+        });
+    }
+    let n = shape[nd - 1];
+    let bb: usize = shape[..nd - 2].iter().product();
+    let plane = n * n;
+    let offset = meta.storage_offset();
+    let data = &data[offset..offset + bb * plane];
+    let kmeta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+    let first_err = std::sync::Mutex::new(None);
+    let per: Vec<Option<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)>> = data
+        .par_chunks(plane)
+        .map(|pl| match lu_factor_contiguous_f64(pl, &kmeta) {
+            Ok(f) => {
+                let up = lu_unpack(&f);
+                let piv: Vec<f64> = f.pivots.iter().map(|&p| p as f64).collect();
+                Some((up.p, up.l, up.u, f.lu, piv))
+            }
+            Err(e) => {
+                let mut g = first_err.lock().unwrap();
+                if g.is_none() {
+                    *g = Some(e);
+                }
+                None
+            }
+        })
+        .collect();
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    let mut p = Vec::with_capacity(bb * plane);
+    let mut l = Vec::with_capacity(bb * plane);
+    let mut u = Vec::with_capacity(bb * plane);
+    let mut packed = Vec::with_capacity(bb * plane);
+    let mut pivots = Vec::with_capacity(bb * n);
+    for item in per {
+        let (pp, ll, uu, pk, pv) = item.unwrap();
+        p.extend_from_slice(&pp);
+        l.extend_from_slice(&ll);
+        u.extend_from_slice(&uu);
+        packed.extend_from_slice(&pk);
+        pivots.extend_from_slice(&pv);
+    }
+    Ok(LuBatchedResult { p, l, u, packed, pivots, n, bb })
+}
+
+/// Batched LU VJP: per plane, `grad_A = lu_backward_f64(packed_plane, perm_plane, grad_packed_plane)`.
+/// Parallelizes the verified 2-D [`lu_backward_f64`] over the batch. frankentorch batched-lu-grad.
+pub fn lu_backward_batched_contiguous_f64(
+    packed: &[f64],
+    pivots: &[f64],
+    grad_packed: &[f64],
+    bb: usize,
+    n: usize,
+) -> Vec<f64> {
+    let plane = n * n;
+    let mut out = vec![0.0f64; bb * plane];
+    if bb == 0 || n == 0 {
+        return out;
+    }
+    out.par_chunks_mut(plane)
+        .zip(packed.par_chunks(plane))
+        .zip(grad_packed.par_chunks(plane))
+        .zip(pivots.par_chunks(n))
+        .for_each(|(((o, pk), gp), piv)| {
+            let perm: Vec<usize> = piv.iter().map(|&x| x as usize).collect();
+            let g = lu_backward_f64(pk, &perm, gp, n);
+            o.copy_from_slice(&g);
+        });
+    out
+}
+
 /// Reverse-mode VJP of the LU factorization (packed `lu` = unit-lower L + upper U,
 /// `perm[i]` = original A row that became B row i) from the packed factor cotangent
 /// `grad_lu`:

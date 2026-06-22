@@ -5377,3 +5377,23 @@ Disk-free torch probe (local 2.12.0, B=8000 n=16) of the last unchecked grad ops
 The disk-neutral quick-win surface (batched decomposition-grad f64+f32, dtype+shape extensions) is
 COMPREHENSIVELY HARVESTED (~16 wins this session). Remaining levers all need focused sessions: eig-
 with-vectors grad (6hqw9), lu(P,L,U) grad (new), packed-GEMM/SIMD-exp/allocator (e4yuj). AGENT cc.
+
+## 2026-06-22 - PARITY-CLOSURE + MIXED perf: batched lu(P,L,U) GRADIENT (was an ERROR)
+
+Batched lu(P,L,U) with requires_grad (nd>=3) previously ERRORED ("linalg_lu: autograd only supported
+for a square F64 matrix"). Now works via the established batch-the-2D-VJP pattern: new kernels
+lu_factor_unpack_batched_contiguous_f64 (parallel per-plane lu_factor+unpack) +
+lu_backward_batched_contiguous_f64 (parallel per-plane lu_backward_f64); batched grad path in
+tensor_linalg_lu (two nodes L,U masking grad to their triangle; P non-grad leaf).
+
+MEASURED (examples/batched_lu_grad_h2h.rs, fwd+bwd step, loss=sum(L)+sum(U)), FT on RCH hz2 vs
+PyTorch 2.12.0 local (mixed-location):
+  [20000,8]  FT 99.456 ms  vs PyTorch 126.358 ms = 1.27x faster
+  [8000,16]  FT 119.460 ms vs PyTorch 84.907 ms  = 0.71x SLOWER
+  [3000,32]  FT 178.593 ms vs PyTorch 215.944 ms = 1.21x faster
+MIXED (net ~parity): the 3-node design recomputes the batched LU 3x (P + L-node + U-node forwards),
+and torch's lu backward is fast at n=16. NOT claimed as a perf domination. ORACLE-EXACT (LU is unique
+given P; grad-sums match PyTorch to all printed digits, e.g. 8.777617e5). KEPT as a parity-gap closure
+(batched lu grad worked nowhere before; PyTorch supports it) — strictly better than erroring. VERIFIED:
+test tensor_linalg_lu_batched_grad_matches_per_plane_2d GREEN; ft-conformance --profile release GREEN.
+Score vs PyTorch: 2W / 1L (mixed). AGENT cc.
