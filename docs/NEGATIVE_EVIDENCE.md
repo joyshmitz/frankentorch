@@ -5412,3 +5412,19 @@ probe (34-98ms) over-suggested slowness; with this fixture torch is well-optimiz
 the lu_factor batched grad source per the campaign rule. lu_factor grad WALLED. (NOTE: lu(P,L,U) grad
 shipped 9487cea8 as a mixed/parity-closure is the related kept case; lu_factor is a cleaner-looking
 single-node design that still loses.) AGENT cc.
+
+## 2026-06-22 - WIN: batched WIDE (m<n) svd GRADIENT = 3.0-4.1x vs PyTorch (was an ERROR)
+
+Extends the batched svd grad (e26f1f83, was tall/square m>=n only; wide errored) to WIDE m<n via the
+transpose composition: svd(A) = (Vhᵀ, S, Uᵀ) from svd(Aᵀ) (Aᵀ is tall → hits the shipped batched tall
+svd grad). transpose+svd+transpose are all grad-aware. torch's wide svd backward is VERY slow (looped
+gesdd: probed fwd 133-219ms, fwd+bwd 505-1220ms).
+
+MEASURED (examples/svd_wide_grad_h2h.rs, fwd+bwd step, loss=sum(S)), FT on RCH hz2 vs PyTorch 2.12.0
+local (mixed-location):
+  [20000,4,8]  FT 51.5ms  vs torch 208.9ms = 4.06x faster
+  [8000,8,16]  FT 78.7ms  vs torch 253.9ms = 3.23x faster
+  [3000,16,32] FT 108.1ms vs torch 325.6ms = 3.01x faster
+VERIFIED: test tensor_linalg_svd_wide_batched_grad_matches_finite_difference (sum(S) grad, gauge-free,
+vs central finite differences, within 1e-4+1e-3|x|) GREEN on RCH hz2; ft-conformance GREEN. The
+sum(S) gradient is gauge-free (oracle-comparable). Score vs PyTorch: 3W / 0L / 0N. AGENT cc.
