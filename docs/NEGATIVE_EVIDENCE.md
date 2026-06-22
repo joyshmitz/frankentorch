@@ -5428,3 +5428,20 @@ local (mixed-location):
 VERIFIED: test tensor_linalg_svd_wide_batched_grad_matches_finite_difference (sum(S) grad, gauge-free,
 vs central finite differences, within 1e-4+1e-3|x|) GREEN on RCH hz2; ft-conformance GREEN. The
 sum(S) gradient is gauge-free (oracle-comparable). Score vs PyTorch: 3W / 0L / 0N. AGENT cc.
+
+## 2026-06-22 - WIN: batched WIDE (m<n) qr GRADIENT = 1.12-2.52x vs PyTorch (was an ERROR)
+
+Extends the batched qr grad (bb7bdc7f, tall/square m>=n only; wide errored) to WIDE m<n via the
+square-qr composition: (Q,R1)=qr(A[:,:m]) [square -> shipped batched grad]; R2=Qᵀ·A[:,m:]; R=[R1|R2].
+narrow/qr/matmul/cat all grad-aware. (The svd transpose trick does NOT apply to qr — qr(Aᵀ) is LQ,
+giving trapezoidal R; the column-split composition is the correct route.) torch's wide qr backward is
+slow (looped geqrf, probed 145-647ms).
+
+MEASURED (examples/qr_wide_grad_h2h.rs, fwd+bwd step, loss=sum(R)), FT on RCH hz2 vs PyTorch 2.12.0
+local (mixed-location):
+  [20000,4,8]  FT 50.8ms  vs torch 116.8ms = 2.30x faster
+  [8000,8,16]  FT 68.6ms  vs torch 172.6ms = 2.52x faster
+  [3000,16,32] FT 116.5ms vs torch 129.9ms = 1.12x (marginal, mixed-location)
+VERIFIED: test tensor_linalg_qr_wide_batched_grad_matches_finite_difference (sum(R) grad vs central
+FD within 1e-4+1e-3|x|) GREEN on RCH hz2; ft-conformance GREEN. Score vs PyTorch: 3W / 0L / 0N.
+Completes the uncovered-shape grad extensions (underdetermined lstsq + wide svd + wide qr). AGENT cc.
