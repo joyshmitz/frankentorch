@@ -5722,3 +5722,18 @@ claiming a 3-D-only SDPA layout as the representative transformer lane. Do not c
 win from the gauntlet without the thread/layout qualifiers above. No product source lever was attempted,
 so there is no code-speed change to revert. Score for this measurement correction: controlled `1W / 0L /
 0N`, default-thread `0W / 1L / 0N`; overall MIXED/config-sensitive vs PyTorch. AGENT QuietMeadow / cod-a.
+
+## 2026-06-22 - WIN (clean, contention-aware): batched eigvals GRAD at n=16-64 = 1.45-3.56x vs PyTorch
+
+CLEAN re-measure of eigvals grad (shipped c9d94d2b) at larger n, done CONTENTION-AWARE after the
+contamination correction (8b2db303): verified no peer torch process, torch measured ALONE with
+LOW-VARIANCE min-of-3 (stable: 26/56/109ms ±few). FT parallel per-plane geev vs torch's serial geev-loop.
+Triangular real-eigenvalue fixture, loss=sum(λ²) (gauge-free).
+  [2000,16]  FT 7.3ms  vs torch 26.0ms  = 3.56x faster
+  [1000,32]  FT 17.5ms vs torch 55.8ms  = 3.19x faster
+  [500,64]   FT 75.4ms vs torch 109.0ms = 1.45x faster
+HONEST: the win DECREASES with n (FT's custom Francis-QR geev per-plane is slower than LAPACK geev, so
+the parallel-vs-serial advantage erodes as n grows) — consistent with the corrected understanding that
+larger-n linalg-grad wins do NOT grow with n. Modest genuine win at n<=32; marginal at n=64. No source
+change (shipped kernel handles any n). geev is the one decomposition expensive enough that FT's parallel
+loop still wins at moderate n (unlike eigh/svd ~marginal at larger n). Score vs PyTorch: 3W / 0L / 0N. AGENT cc.
