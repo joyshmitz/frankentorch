@@ -5474,3 +5474,20 @@ MEASURED (examples/svd_full_square_grad_h2h.rs, fwd+bwd step, loss=sum(S)), FT o
 VERIFIED: test tensor_linalg_svd_full_square_batched_grad_matches_reduced (full==reduced grad within
 1e-12+1e-9|x|, and reduced is FD/oracle-validated) GREEN on RCH hz2; ft-conformance GREEN. Covers the
 common DEFAULT svd-with-grad call on square inputs. Score vs PyTorch: 3W / 0L / 0N. AGENT cc.
+
+## 2026-06-22 - WIN: batched mode='complete' SQUARE qr GRADIENT = 1.71-20.0x vs PyTorch (was an ERROR)
+
+mode='complete' for a SQUARE matrix == reduced qr (Q n×n, R n×n), but FT's qr grad gated reduced=true,
+so complete-square errored on grad. Route complete-square→reduced (shipped/parallel). torch's complete
+square qr backward is very slow (looped geqrf; sum(R) loss especially).
+
+MEASURED (examples/qr_complete_square_grad_h2h.rs, fwd+bwd step, loss=sum(R)), FT on RCH hz2 vs PyTorch
+2.12.0 local (mixed-location):
+  [20000,8]  FT 31.1ms  vs torch 622.7ms = 20.0x faster
+  [8000,16]  FT 74.9ms  vs torch 607.6ms = 8.11x faster
+  [3000,32]  FT 213.4ms vs torch 365.6ms = 1.71x faster
+VERIFIED: test tensor_linalg_qr_complete_square_batched_grad_matches_reduced (complete==reduced within
+1e-12+1e-9|x|; reduced qr grad shipped/validated bb7bdc7f) GREEN on RCH hz2; ft-conformance GREEN (39
+passed). grad-sum differs from torch by the qr R-diagonal sign convention (FT vs LAPACK geqrf) — a gauge
+difference, not a bug; correctness via the complete==reduced internal test. Score vs PyTorch: 3W / 0L / 0N.
+This completes the mode-coverage extensions (full-square svd + complete-square qr). AGENT cc.
