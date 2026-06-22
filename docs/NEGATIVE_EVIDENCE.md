@@ -5334,3 +5334,18 @@ matrix_exp f32 ratio is smaller (torch f32 scaling-squaring is cheaper than f64,
 + 2n×2n augmented expm), but still a win at every shape. VERIFIED: test
 tensor_eigvals_matexp_f32_batched_grad_matches_f64_cast GREEN on RCH hz2; ft-conformance GREEN.
 TOLERANCE-parity (f32 via f64). Score vs PyTorch: 8W / 0L / 0N.
+
+## 2026-06-22 - WIN (eigh,lstsq f32) + MARGINAL/MIXED (svd,qr f32): f32 decomposition GRAD mirrors
+
+Measured the remaining f32 grad mirrors (route through the f64 batched grad via cast; torch f32
+loops per plane). examples/decomp_f32_grad_h2h.rs, fwd+bwd step, FT on RCH hz2 vs PyTorch 2.12.0
+local f32 (mixed-location):
+  eigh  [20000,8] 2.21x  [8000,16] 1.53x  [3000,32] 2.04x   -> WIN
+  lstsq [20000,8,4] 2.45x [8000,16,8] 1.63x [3000,32,16] 1.22x -> WIN
+  svd   [20000,8,4] 1.11x [8000,16,8] 1.30x [3000,32,16] 1.11x -> MARGINAL (mixed-location borderline)
+  qr    [20000,8,4] 0.50x [8000,16,8] 0.84x [3000,32,16] 2.15x -> MIXED (loss at small; torch f32 qr
+        backward is fast for tiny m, FT wins only at larger n)
+KEEP eigh f32 + lstsq f32 as wins; svd f32 marginal (don't claim), qr f32 mixed (loss at small n).
+No source change (f32 routes through the existing f64 batched grad via cast; correctness inherited
+from the f64 tests + the validated f32-cast mechanism in the eigvals/cond f32 tests). AGENT cc.
+Cumulative f32 grad-mirror wins this session: cond, matrix_norm, eigvals, matrix_exp, eigh, lstsq.
