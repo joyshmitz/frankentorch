@@ -14774,6 +14774,115 @@ pub fn lu_solve_contiguous_f64(
     Ok(x)
 }
 
+/// Batched dense solve A·X = B for a stack of small/medium matrices: `a` is
+/// `[batch, n, n]` and `b` is `[batch, n, m]`, both row-major contiguous; returns
+/// `[batch, n, m]`. Each matrix is an INDEPENDENT LU-with-partial-pivoting solve,
+/// inlined (no `LuFactorResult`/meta/validation overhead per matrix) and distributed
+/// across the rayon pool over the batch — the regime where PyTorch's batched LAPACK
+/// gesv carries heavy per-tiny-matrix overhead (47 ms for 20000×16×16). Tolerance-
+/// parity with torch's `linalg.solve` (both LU + partial pivot; reassociated). The
+/// per-matrix ft-api loop calling the 2-D kernels lost 2.2x to this overhead — this
+/// folds the whole batch into one parallel kernel. frankentorch-qe48n.
+#[must_use]
+pub fn lu_solve_batched_contiguous_f64(
+    a: &[f64],
+    b: &[f64],
+    batch: usize,
+    n: usize,
+    m: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; batch * n * m];
+    if batch == 0 || n == 0 || m == 0 {
+        return out;
+    }
+    // Parallelise over BATCH CHUNKS (not per matrix) so each worker allocates its LU/pivot
+    // scratch ONCE and reuses it across its chunk — a per-matrix `to_vec` left the k=16 regime
+    // alloc-overhead-bound (110 MFLOP in 82 ms = 1.4 GF/s). ~8x oversubscription keeps load
+    // balanced. frankentorch-qe48n.
+    let nthreads = rayon::current_num_threads().max(1);
+    let chunk_mats = (batch / (nthreads * 8)).max(1);
+    out.par_chunks_mut(chunk_mats * n * m)
+        .enumerate()
+        .for_each(|(ci, ochunk)| {
+            let mut lu = vec![0.0f64; n * n];
+            let mut piv: Vec<usize> = vec![0; n];
+            let n_local = ochunk.len() / (n * m);
+            for local in 0..n_local {
+                let bi = ci * chunk_mats + local;
+                lu.copy_from_slice(&a[bi * n * n..(bi + 1) * n * n]);
+                let x = &mut ochunk[local * n * m..(local + 1) * n * m];
+                lu_solve_one_inplace_f64(&mut lu, &mut piv, &b[bi * n * m..(bi + 1) * n * m], x, n, m);
+            }
+        });
+    out
+}
+
+/// One dense LU-with-partial-pivoting solve for the batched kernel: factor `lu` (an n×n
+/// row-major COPY of A, overwritten) in place, then solve A·x = b into `x` (n×m). `piv`/`lu`
+/// are caller-owned scratch reused across a batch chunk. Doolittle (multipliers in lower),
+/// matches torch's `linalg.solve` (LU + partial pivot) to fp tolerance.
+fn lu_solve_one_inplace_f64(lu: &mut [f64], piv: &mut [usize], b: &[f64], x: &mut [f64], n: usize, m: usize) {
+    for (i, p) in piv.iter_mut().enumerate() {
+        *p = i;
+    }
+    for k in 0..n {
+        let mut max_val = lu[k * n + k].abs();
+        let mut max_row = k;
+        for i in (k + 1)..n {
+            let v = lu[i * n + k].abs();
+            if v > max_val {
+                max_val = v;
+                max_row = i;
+            }
+        }
+        if max_row != k {
+            for j in 0..n {
+                lu.swap(k * n + j, max_row * n + j);
+            }
+            piv.swap(k, max_row);
+        }
+        let diag = lu[k * n + k];
+        if diag == 0.0 {
+            continue; // singular: leave U[k,k]=0 → inf/nan downstream, as gesv.
+        }
+        for i in (k + 1)..n {
+            let f = lu[i * n + k] / diag;
+            lu[i * n + k] = f;
+            for j in (k + 1)..n {
+                lu[i * n + j] -= f * lu[k * n + j];
+            }
+        }
+    }
+    // Permute B rows into x, then forward (unit-L) + back (U) substitution.
+    for i in 0..n {
+        let src = piv[i] * m;
+        x[i * m..i * m + m].copy_from_slice(&b[src..src + m]);
+    }
+    // No `if l != 0.0` guard: for a dense LU factor the multipliers are ~never zero, and
+    // l=0 makes `-= l*..` a no-op anyway (bit-exact), so dropping the branch lets the
+    // `for c` axpy vectorise (the k=16 hot regime).
+    for i in 0..n {
+        for k in 0..i {
+            let l = lu[i * n + k];
+            for c in 0..m {
+                x[i * m + c] -= l * x[k * m + c];
+            }
+        }
+    }
+    for i in (0..n).rev() {
+        for k in (i + 1)..n {
+            let u = lu[i * n + k];
+            for c in 0..m {
+                x[i * m + c] -= u * x[k * m + c];
+            }
+        }
+        let diag = lu[i * n + i];
+        for c in 0..m {
+            x[i * m + c] /= diag;
+        }
+    }
+}
+
 /// Native f32 LU solve — applies the pivot permutation then a forward (unit
 /// lower L) + back (upper U) substitution entirely in `f32`. `lu` is the packed
 /// n×n LU factor row-major and `pivots[i]` the row swapped to position `i`
@@ -28456,6 +28565,35 @@ pub fn sparse_coo_add(
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
+
+    // The batched LU-solve kernel must match the per-matrix 2-D lu_factor+lu_solve path
+    // (the authoritative reference) to tolerance — both are LU with partial pivoting.
+    #[test]
+    fn lu_solve_batched_matches_per_matrix_2d() {
+        use ft_core::{DType, Device, TensorMeta};
+        let (batch, n, m) = (37usize, 11usize, 5usize);
+        let a: Vec<f64> = (0..batch * n * n)
+            .map(|i| {
+                let (bi, r, c) = (i / (n * n), (i / n) % n, i % n);
+                if r == c { (n as f64) + 1.0 + (bi as f64) * 0.01 } else { 0.1 / ((r + c + 1) as f64) }
+            })
+            .collect();
+        let b: Vec<f64> = (0..batch * n * m).map(|i| ((i as f64) * 0.013 + 0.2).sin()).collect();
+        let got = super::lu_solve_batched_contiguous_f64(&a, &b, batch, n, m);
+        let a_nn = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let b_nm = TensorMeta::from_shape(vec![n, m], DType::F64, Device::Cpu);
+        for bi in 0..batch {
+            let factor =
+                super::lu_factor_contiguous_f64(&a[bi * n * n..(bi + 1) * n * n], &a_nn).unwrap();
+            let want =
+                super::lu_solve_contiguous_f64(&factor, &b[bi * n * m..(bi + 1) * n * m], &b_nm)
+                    .unwrap();
+            for (g, w) in got[bi * n * m..(bi + 1) * n * m].iter().zip(want.iter()) {
+                let rel = (g - w).abs() / (w.abs() + 1e-12);
+                assert!(rel < 1e-9, "batch {bi}: {g} vs {w} (rel {rel:.2e})");
+            }
+        }
+    }
 
     #[test]
     fn sdpa_backward_f32_unit_dout_matches_dense_ones() {
