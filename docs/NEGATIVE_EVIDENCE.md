@@ -5037,3 +5037,35 @@ matches looping the 2-D qr grad per plane within `1e-9 + 1e-7·|x|`) GREEN on RC
 `ft-conformance --profile release` GREEN on RCH `hz2`. TOLERANCE-parity (kgs4.77 policy).
 Score vs PyTorch: `3W / 0L / 1 marginal`. The whole batched-decomposition-grad surface
 (eigh/svd/qr) is now done; remaining bead u0csd item = eig (general, complex) batched grad.
+
+## 2026-06-22 - WIN: batched eigvals (general/complex) GRADIENT = 5.48-10.29x vs PyTorch (was an ERROR)
+
+Completes the batched-decomposition-grad surface (eigh/svd/qr/eigvals). Batched general
+eigenvalues with `requires_grad` (`nd>=3`) previously **errored** (2-D-only grad path).
+PyTorch loops LAPACK `geev` (with vectors) plus the per-plane complex eigenvalue VJP
+serially. FrankenTorch parallelizes both. Single output (the (k,2) eigenvalue tensor),
+so only 1x forward over the EXPENSIVE geev — the best ratio of the four grad wins.
+
+LEVER (frankentorch batched-eigvals-grad, AGENT cc):
+- Batched grad path in `tensor_linalg_eigvals`: forward = `eig_batched_contiguous_f64`
+  (parallel geev-with-vectors), backward = per-plane complex VJP
+  `grad_A = Re(V⁻ᴴ diag(grad_λ) Vᴴ)` parallelized over the batch with rayon, reusing the
+  validated 2-D complex helpers `eig_reconstruct_complex_v` / `complex_mat_inverse`.
+
+MEASURED (examples/batched_eigvals_grad_h2h.rs, fwd+bwd step, loss = sum(λ⊙λ)), FT on
+RCH `hz2` vs PyTorch `2.12.0+cpu` local (8 threads, mixed-location — FT remote):
+  `[20000,4,4]`  FT 3.486 ms  vs PyTorch 35.886 ms  = `10.29x` faster
+  `[8000,8,8]`   FT 6.790 ms  vs PyTorch 64.532 ms  = `9.50x` faster
+  `[3000,16,16]` FT 15.859 ms vs PyTorch 114.680 ms = `7.23x` faster
+  `[1000,32,32]` FT 32.141 ms vs PyTorch 176.194 ms = `5.48x` faster
+
+The per-plane VJP is the EXISTING validated 2-D code (frankentorch-ng1hw); the new work
+is only the batching, proven by `tensor_linalg_eigvals_batched_grad_matches_per_plane_2d`
+(NON-uniform sum-of-squares cotangent → non-trivial grad, catches per-plane slicing bugs;
+batched grad_A matches looping the 2-D grad within `1e-9 + 1e-7·|x|`). Cross-PyTorch
+grad-sum differs by eigenvalue ORDERING gauge (sum-of-squares weights eigenvalues).
+
+VERIFIED: focused test GREEN on RCH `hz2`; `ft-conformance --profile release` GREEN on
+`hz2`. Distinct-eigenvalue case only (defective/repeated → singular, errors loud, as torch).
+Score vs PyTorch: `4W / 0L / 0N`. Batched-decomposition-grad surface COMPLETE
+(eigh/svd/qr/eigvals); bead u0csd fully resolved.
