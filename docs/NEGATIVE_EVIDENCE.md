@@ -115,7 +115,7 @@ is explicitly satisfied.
   trick to the cdist tolerance contract). 163→22.8ms (7.1x internal), removing the 45x loss. Residual:
   still 6.4x slower than PyTorch's 3.56ms — FT's GEMM + session I/O (tensor_variable out [P,R]=32MB +
   read-back) vs PyTorch's tight fused/in-place; that residual is the session-arena floor again, not the
-  op. pdist p=2 same pattern (not yet done). Batched (3-D) p=2 still uses the composed path.
+  op. pdist p=2 ALSO SHIPPED (same fused pattern): FT 19.3ms vs PyTorch 8.34ms = 2.32x slower (residual smaller than cdist's 6.4x — pdist output is the condensed vector, not [N,N]); bit-exact (8 pdist + 199 conformance). Batched (3-D) cdist p=2 still composed.
 - quantile_dim single-q no-grad was 5.7x SLOW (silent) — routed to the parallel quickselect fast path
   → 5x internal, PARITY with PyTorch (not yet a win): a selection-op scan found PyTorch's `quantile` is
   SORT-based + slow (73ms / 190ms @[4000,4000]/[20000,2000], dim=1) while its `median` is introselect-
