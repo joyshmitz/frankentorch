@@ -16,6 +16,12 @@ route no-grad contiguous f32 `tensor_cdist(..., p=2)` through the same fused
 norm + cross + assembly pattern as f64. Autograd, non-contiguous, non-f32, and
 non-p2 paths remain on the existing routes.
 
+Follow-up shipped as `frankentorch-kgs4.149` (cod-b, `IvoryDeer`): the fused
+f64/f32 p=2 no-grad routes now assemble distances in place over the raw GEMM
+cross buffer instead of allocating and writing a second full `[P,R]` output
+scratch. Semantics stay the same: `cross[i,j]` is overwritten with
+`sqrt(max(nx[i] + ny[j] - 2 * cross[i,j], 0))` before the tensor is returned.
+
 Measured on RCH `ovh-a`, crate-scoped only, warm target
 `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`:
 
@@ -28,12 +34,26 @@ Measured on RCH `ovh-a`, crate-scoped only, warm target
   the same `[2000,100]` shape: `1.58 ms`. Final FT/PyTorch ratio is
   `11.796 / 1.58 = 7.47x SLOWER`.
 
+Buffer-reuse re-benchmark (local only because two RCH Criterion bench attempts
+were killed during dependency/build setup; still crate-scoped `-p ft-api` with
+warm `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`):
+
+- `cargo bench -p ft-api --bench cdist_bench -- cdist_p2_f32 --noplot`
+  - composed f32 p=2 control: `64.020 ms` p50 (matches the earlier current-route
+    baseline class, so the run is comparable for the fused-path delta)
+  - fused f32 p=2 route after in-place assembly: `4.6457 ms` p50
+  - vs the same-session pre-change fused route from this block (`6.3233 ms` p50
+    on `vmi1149989` before the patch): `1.36x` faster
+  - PyTorch comparator remains `1.58 ms`; current FT/PyTorch ratio is
+    `4.6457 / 1.58 = 2.94x SLOWER`
+
 Decision: KEEP as an internal no-grad f32 route cleanup, not a PyTorch win.
 This removes the avoidable FT composition overhead and preserves f32 output
 dtype, but the residual is still PyTorch's tight f32 cdist kernel versus FT's
-`sgemm_bt` plus session/output materialization. Score vs PyTorch: `0W / 1L / 0N`.
-Do not retry this as a PyTorch win without a lower-level f32 GEMM/session-output
-profile that can plausibly close the remaining ~7.5x.
+`sgemm_bt` plus session/output materialization. The buffer-reuse follow-up
+narrows but does not flip the gap. Score vs PyTorch: `0W / 1L / 0N`. Do not
+retry this as a PyTorch win without a lower-level f32 GEMM/session-output
+profile that can plausibly close the remaining ~2.9x.
 
 ## 2026-06-21 - across-matrix INTERLEAVED-W batched LU - NO GAIN (reverted) — k=16 batched solve/inv gap stands
 
