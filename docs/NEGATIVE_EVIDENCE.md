@@ -5274,3 +5274,18 @@ f64 value tensor + builds f64 index output). MEASURED FT on RCH hz2 vs PyTorch l
 Not a win — bandwidth/materialization-walled, torch is tight. bucketize delegates to searchsorted
 (same). histc 84ms / bincount 44ms (probe) are also torch-fast = walled. Binning/search regime
 WALLED. AGENT cc.
+
+## 2026-06-22 - WIN: batched UNDERDETERMINED (m<n) lstsq GRADIENT = 1.85-4.20x vs PyTorch, ORACLE-EXACT
+
+Extends the batched lstsq grad win (5dc2f8bc) to the underdetermined m<n (min-norm) case — already
+covered code-wise by pinv's wide branch Aᵀ(AAᵀ)⁻¹ but previously untested/unmeasured. torch's
+underdetermined lstsq backward is also slow (probed fwd+bwd 153-215ms, looped driver).
+
+MEASURED (examples/batched_lstsq_grad_h2h.rs m<n shapes, fwd+bwd step, loss=sum(X⊙X)), FT on RCH
+hz2 vs PyTorch 2.12.0 local (mixed-location):
+  `[20000,4,8]`  FT 35.075 ms  vs PyTorch 147.354 ms = `4.20x` faster
+  `[8000,8,16]`  FT 59.235 ms  vs PyTorch 165.911 ms = `2.80x` faster
+  `[3000,16,32]` FT 115.006 ms vs PyTorch 213.286 ms = `1.85x` faster
+ORACLE-EXACT: min-norm lstsq solution is unique, FT grad-sum matches PyTorch to all printed digits
+(e.g. -4.830782e2). VERIFIED: test tensor_linalg_lstsq_underdetermined_batched_grad_matches_per_plane_2d
+GREEN on RCH hz2; ft-conformance --profile release GREEN. Score vs PyTorch: 3W / 0L / 0N.

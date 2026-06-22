@@ -109,6 +109,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         (20_000usize, 8usize, 4usize, 2usize),
         (8_000usize, 16usize, 8usize, 2usize),
         (3_000usize, 32usize, 16usize, 2usize),
+        // underdetermined m<n (min-norm via pinv wide branch)
+        (20_000usize, 4usize, 8usize, 2usize),
+        (8_000usize, 8usize, 16usize, 2usize),
+        (3_000usize, 16usize, 32usize, 2usize),
     ] {
         let (ft_ms, ft_sum) = run_ft(batch, m, n, nrhs)?;
         print!("B={batch} m={m} n={n} rhs={nrhs}: FT {ft_ms:.3} ms gradsum {ft_sum:.6e}");
