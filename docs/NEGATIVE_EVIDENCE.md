@@ -39,6 +39,13 @@ is explicitly satisfied.
   (feature + perf), needs owner sign-off and likely BlackThrush linalg-crate coordination. Filed
   as **frankentorch-qe48n** with the baselines. (matrix_exp/eig/svd/eigvalsh/svdvals batched paths
   are already shipped wins — the batched-linalg PERF vein is harvested for the ops that batch.)
+- NN/STRUCTURAL/MISC op scan COMPLETE (2026-06-21, don't re-scan): PyTorch-only timing found the slow
+  ops are all BANDWIDTH-bound (output-size-dominated), NOT compute levers — kron(200×200) 1564ms writes
+  a 40000×40000=1.6B-elem=12.8GB output (the write IS the cost), one_hot(2M,100) 267ms = 1.6GB output,
+  unfold/im2col(64,64,56,56) 482ms = 860MB output. FT can't beat PyTorch on identical memory traffic.
+  Fast PyTorch ops (no opening): normalize 0.24ms, softmax 0.70, logsumexp 1.0, bincount 2.65, diagonal
+  0.01, tensordot/cdist/pdist all <26ms; matrix_exp batched already an FT win (memory). (einsum "185ms"
+  was a bad measure — randn was inside the timed fn.) No fresh compute lever in nn/structural/misc.
 - SCAN/CUMULATIVE + MISC op scan COMPLETE (2026-06-21, don't re-scan): PyTorch-only timing of the
   slowest scan/misc ops @[4000,4000] dim=1 (or 20M): cummax 268ms, sort 282 / argsort 349ms, cummin
   156, logcumsumexp 158, cumsum 105, cumprod 116, diff 96, renorm 139, repeat_interleave 165 (20M),
