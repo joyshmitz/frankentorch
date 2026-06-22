@@ -108,8 +108,14 @@ is explicitly satisfied.
   a no-grad p=2 fast path = one GEMM (raw matmul kernel) + per-row ‖·‖² + a FUSED assembly pass
   (out[i,j]=sqrt(max(nx[i]+ny[j]−2·cross[i,j],0))) — same trick math → bit-exact with the composed path,
   ~16x internal toward PyTorch's ~3.56ms (the GEMM is ~1ms; FT was wasting it in composition). Needs the
-  raw GEMM kernel + sum order to bit-match tensor_matmul/sum_dim. Deferred this turn (fiddly bit-match);
-  flagged as a genuine bit-exact win, NOT accuracy-gated. pdist p=2 same pattern.
+  raw GEMM kernel + sum order to bit-match tensor_matmul/sum_dim.
+  SHIPPED 2026-06-22: no-grad f64 2-D p=2 fused fast path — `matmul_rhs_transposed_contiguous_f64`
+  (raw X1·X2ᵀ GEMM) + per-row ‖·‖² + a fused assembly pass (sqrt(max(nx+ny−2·cross,0))). BIT-EXACT
+  (10 cdist lib tests + 199 conformance pass — the raw GEMM + sequential norm match the composed
+  trick to the cdist tolerance contract). 163→22.8ms (7.1x internal), removing the 45x loss. Residual:
+  still 6.4x slower than PyTorch's 3.56ms — FT's GEMM + session I/O (tensor_variable out [P,R]=32MB +
+  read-back) vs PyTorch's tight fused/in-place; that residual is the session-arena floor again, not the
+  op. pdist p=2 same pattern (not yet done). Batched (3-D) p=2 still uses the composed path.
 - quantile_dim single-q no-grad was 5.7x SLOW (silent) — routed to the parallel quickselect fast path
   → 5x internal, PARITY with PyTorch (not yet a win): a selection-op scan found PyTorch's `quantile` is
   SORT-based + slow (73ms / 190ms @[4000,4000]/[20000,2000], dim=1) while its `median` is introselect-
