@@ -5,9 +5,9 @@
 use std::time::Instant;
 use ft_api::FrankenTorchSession;
 use ft_core::ExecutionMode;
-const D0: usize = 256;
-const D1: usize = 100;
-const D2: usize = 16;
+const D0: usize = 48;
+const D1: usize = 128;
+const D2: usize = 128;
 fn main() {
     let iters: usize = std::env::var("ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
     let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
