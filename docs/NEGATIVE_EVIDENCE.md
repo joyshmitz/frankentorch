@@ -5182,3 +5182,27 @@ ORACLE-EXACT: the condition number is gauge-free, FT grad-sum matches PyTorch to
 printed digits (e.g. -2.525130e4, -1.080715e5). VERIFIED: test
 `tensor_linalg_cond_batched_grad_matches_per_plane_2d` GREEN on RCH `hz2`;
 `ft-conformance --profile release` GREEN. Score vs PyTorch: `3W / 0L / 0N`.
+
+## 2026-06-22 - WIN: batched matrix_norm (nuc, ±2) GRADIENT = 7.0-10.1x vs PyTorch, ORACLE-EXACT (was an ERROR)
+
+Same svdvals-based family as cond. torch's batched `matrix_norm` for singular-value ords
+(nuc/±2) loops per-plane SVD at BOTH forward and backward: 227-521ms fwd+bwd (probed). Batched
+matrix_norm with `requires_grad` (`nd>=3`, ord in {2,-2,nuc}) previously **errored** (the
+batched fast path was gated `!requires_grad`, then a 2-D-only guard). The fast-path
+composition — batched `svdvals` (grad-aware, 6-9x) + sum_dim/max_dim/min_dim over the
+singular values — is already fully grad-aware, so the fix was just removing the
+`!requires_grad` gate. frankentorch batched-matrix-norm-grad (AGENT cc).
+
+MEASURED (examples/batched_matrix_norm_grad_h2h.rs, fwd+bwd step, loss = sum(‖A‖)), FT on
+RCH `hz2` vs PyTorch `2.12.0+cpu` local (8 threads, mixed-location — FT remote):
+  nuc `[20000,8,8]`   FT 28.851 ms vs PyTorch 202.102 ms = `7.00x`
+  nuc `[8000,16,16]`  FT 31.962 ms vs PyTorch 258.137 ms = `8.08x`
+  nuc `[3000,32,32]`  FT 49.217 ms vs PyTorch 497.708 ms = `10.11x`
+  2   `[20000,8,8]`   FT 24.671 ms vs PyTorch 204.698 ms = `8.30x`
+  2   `[8000,16,16]`  FT 32.080 ms vs PyTorch 259.451 ms = `8.09x`
+  2   `[3000,32,32]`  FT 53.028 ms vs PyTorch 474.465 ms = `8.95x`
+
+ORACLE-EXACT: matrix norms are gauge-free, FT grad-sum matches PyTorch to all printed digits
+(e.g. nuc 1.598800e5, spectral 2.014831e4). VERIFIED: test
+`tensor_matrix_norm_batched_grad_matches_per_plane_2d` (nuc + spectral) GREEN on RCH `hz2`;
+`ft-conformance --profile release` GREEN. Score vs PyTorch: `6W / 0L / 0N`.
