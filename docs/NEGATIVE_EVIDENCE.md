@@ -5884,3 +5884,17 @@ f64-internal cast). CONTENTION-VERIFIED (pgrep clean, torch stable low-variance)
 Slightly below the f64 forwards (eigvalsh f64 5.06-7.71x) — FT pays the f32->f64 cast and torch f32 is a bit
 faster per-plane — but solid wins. No source change. Covers the dominant-dtype inference case. Score vs
 PyTorch: 6W/0L/0N. AGENT cc.
+
+## 2026-06-22 - NEUTRAL: eig-with-vectors GRAD (peer-impl 6hqw9) is MIXED/BMM-bound 0.67-1.71x
+
+Measured the peer-implemented batched eig-with-vectors grad (tensor_linalg_eig now has a real grad path)
+CONTENTION-AWARE (pgrep clean, torch stable), triangular real-eigenvalue fixture, loss=sum(evals)+sum(evecs):
+  [2000,32] FT 95.8ms  vs torch 163.9ms = 1.71x faster
+  [1000,48] FT 149.8ms vs torch 217.6ms = 1.45x faster
+  [500,64]  FT 194.0ms vs torch 130.0ms = 0.67x SLOWER
+MIXED — wins at small n, loses at n=64. Confirms the general finding: decomposition GRADS are BMM/VJP-bound
+(the backward dominates, FT's batched matmul is ~2.6x slower than MKL bmm), so they win only modestly and
+erode with n — UNLIKE the FORWARDS (4-10x, torch serial batch loop). Not claimed as a win (peer's impl +
+mixed). This closes the loop: the whole linalg surface is mapped — iterative FORWARDS win (harvested),
+direct forwards walled (MKL-batched), GRADS modest/BMM-bound. The remaining real lever is the deep GEMM/BMM
+rewrite (e4yuj) which would lift all the grads at once. AGENT cc.
