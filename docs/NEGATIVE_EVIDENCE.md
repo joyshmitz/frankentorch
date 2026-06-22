@@ -39,6 +39,19 @@ is explicitly satisfied.
   (feature + perf), needs owner sign-off and likely BlackThrush linalg-crate coordination. Filed
   as **frankentorch-qe48n** with the baselines. (matrix_exp/eig/svd/eigvalsh/svdvals batched paths
   are already shipped wins — the batched-linalg PERF vein is harvested for the ops that batch.)
+- quantile_dim single-q no-grad was 5.7x SLOW (silent) — routed to the parallel quickselect fast path
+  → 5x internal, PARITY with PyTorch (not yet a win): a selection-op scan found PyTorch's `quantile` is
+  SORT-based + slow (73ms / 190ms @[4000,4000]/[20000,2000], dim=1) while its `median` is introselect-
+  fast (7ms / 17ms). FT's single-q `tensor_quantile_dim` always used the AUTOGRAD `kth_order_statistic_
+  keepdim` (builds tape nodes even no-grad) = 411ms (5.7x slower than PyTorch). The parallel-quickselect
+  `tensor_quantile_dim_multi_nograd_f64` existed but only multi-q routed to it. Routed single-q no-grad
+  f64 there (frankentorch-qntl): 411→82ms (5x internal), now PARITY (82 vs 73ms = 1.13x slower). NOT a
+  PyTorch win yet: FT's per-lane quickselect is ~10x slower than PyTorch's introselect (the 7ms median
+  proves O(n) selection can do this fast) — the gap is per-lane Vec gather + `total_cmp` comparator +
+  par_chunks granularity. FOLLOW-UP (real win lead): optimize the no-grad select kernel for inner==1
+  (contiguous lanes) — select in place on a mutable `vals` clone via par_chunks_mut(dim_size), no per-
+  lane gather Vec, cheaper comparator (lanes are NaN-checked so no NaN) — target PyTorch's ~7ms = ~10x
+  win. Shipped the routing fix (tested, conformance green, no regression); the kernel-speed win is open.
 - BATCHED-LINALG COVERAGE MAP COMPLETE (2026-06-21 PyTorch-only scan, don't re-scan): measured every
   slow PyTorch batched linalg op at [20000,16,16]/[5000,32,32] to find the dispatch-overhead weakness.
   Slowest PyTorch ops: pinv 690-1174ms, lstsq 159-255ms, qr 92-108ms, cholesky_solve 46-84ms,
