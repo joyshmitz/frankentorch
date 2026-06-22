@@ -5898,3 +5898,18 @@ erode with n — UNLIKE the FORWARDS (4-10x, torch serial batch loop). Not claim
 mixed). This closes the loop: the whole linalg surface is mapped — iterative FORWARDS win (harvested),
 direct forwards walled (MKL-batched), GRADS modest/BMM-bound. The remaining real lever is the deep GEMM/BMM
 rewrite (e4yuj) which would lift all the grads at once. AGENT cc.
+
+## 2026-06-22 - WIN (foundational, thread-verified): batched bmm at TINY-n HIGH-batch = 1.48-2.49x vs PyTorch
+
+FT's batched matmul (tensor_matmul, [B,n,n]@[B,n,n]) BEATS torch.bmm at tiny n / high batch. THREAD-VERIFIED
+(not core-count): torch.bmm SATURATES for tiny matrices (n=16 B=20000: 35.4ms@1t -> 8.6ms@8t -> 5.9ms@32t,
+only 1.46x from 8->32) — MKL's batched gemm has high per-call overhead for tiny matrices and stops scaling
+~8-16 threads. FT reaches BELOW torch's 32-thread floor:
+  [20000,16] FT 4.0ms  vs torch 9.5ms(8t)/5.9ms(32t) = 2.38x / 1.48x
+  [10000,32] FT 8.9ms  vs torch 19.6ms(8t)/13.4ms(32t) = 2.20x / 1.51x
+  [5000,64]  FT 17.1ms vs torch 42.5ms(8t)/25.8ms(32t) = 2.49x / 1.51x
+~1.5x vs torch's BEST (32t saturated), 2.2-2.5x at the 8t convention. FT's parallel-over-batch
+matrixmultiply has a genuinely lower floor than MKL batched gemm for tiny matrices. CONTENTION-VERIFIED
+(pgrep clean). No source change (shipped matmul + 2-D tiling kgs4.45). CORRECTS the old "FT bmm 2.6x slower"
+note (that was LARGE matmul; tiny-n high-batch is a WIN). Foundational — bmm underlies attention/per-head
+ops/grad VJPs. Score vs PyTorch: 3W/0L/0N. AGENT cc.
