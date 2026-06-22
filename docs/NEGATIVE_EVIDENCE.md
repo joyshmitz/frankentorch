@@ -5821,3 +5821,15 @@ eigh 4.84-7.92x, eigvals 4.45-5.26x, svdvals 4.09-7.20x, pinv 2.86-7.61x, cond 4
 lstsq 1.77-5.49x — ALL win at high batch because torch's CPU batched factorizations (geev/gesdd/syevd/geqrf)
 loop ~serially over the batch (proven: torch svdvals doesn't speed up with threads) while FT parallelizes
 per-plane. Score vs PyTorch: 6W/0L/0N. AGENT cc.
+
+## 2026-06-22 - WIN: batched eigvalsh FORWARD (symmetric eigenvalues, no-grad) = 5.06-7.71x
+
+eigvalsh FORWARD (torch.linalg.eigvalsh — symmetric eigenvalues, syevd values-only; the most common
+eigenvalue op in ML: PCA/whitening/spectral). torch syevd-values is serial-batch-looped; FT parallelizes
+per-plane. CONTENTION-VERIFIED (pgrep clean, torch stable low-variance: e.g. n=32 [35,35,35,35]):
+  [2000,32] FT 4.5ms  vs torch 34.7ms  = 7.71x faster
+  [2000,64] FT 23.8ms vs torch 120.4ms = 5.06x faster
+  [1000,96] FT 39.0ms vs torch 228.2ms = 5.85x faster
+No source change (shipped kernel). The batched decomposition-FORWARD vein is now FULLY harvested:
+eig-with-vec 5.7-10x, eigh 4.84-7.92x, eigvalsh 5.06-7.71x, eigvals 4.45-5.26x, svdvals 4.09-7.20x,
+pinv 2.86-7.61x, cond 4.26-7.08x, qr 2.09-3.80x, lstsq 1.77-5.49x. Score vs PyTorch: 3W/0L/0N. AGENT cc.
