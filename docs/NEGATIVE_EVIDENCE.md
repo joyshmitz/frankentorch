@@ -5206,3 +5206,25 @@ ORACLE-EXACT: matrix norms are gauge-free, FT grad-sum matches PyTorch to all pr
 (e.g. nuc 1.598800e5, spectral 2.014831e4). VERIFIED: test
 `tensor_matrix_norm_batched_grad_matches_per_plane_2d` (nuc + spectral) GREEN on RCH `hz2`;
 `ft-conformance --profile release` GREEN. Score vs PyTorch: `6W / 0L / 0N`.
+
+## 2026-06-22 - NEGATIVE: cdist / solve_triangular / cholesky_solve GRAD are torch-fused/MKL-WALLED (probe sweep)
+
+Continuing the disk-free torch backward probe ([[feedback_torch_backward_probe]]) beyond the
+9 batched-grad wins, this sweep found the remaining candidates are WALLED — do NOT pursue:
+
+- `cdist` grad: torch's backward is FUSED + extremely fast (measured, local torch 2.12.0):
+  `[1500,1500,8]` p=1 7.0ms / p=2 5.1ms; `[1000,1000,16]` p=1 5.2ms / p=2 2.7ms (p=2 uses the
+  ‖x-y‖²=‖x‖²+‖y‖²-2x·y MKL-matmul trick). FT's current composed grad path (broadcast
+  sub+abs+pow+sum_dim+pow, materializes the full [P,R,M] diff tensor) measured FT on RCH `hz2`
+  `[1500,1500,8]` p=1 1644ms / p=2 297ms — 30-230x SLOWER, gradsums CORRECT. A hand-fused FT
+  backward could cut FT's time a lot but cannot beat torch's 2.7-7ms vectorized/MKL backward;
+  net would be ~parity-to-loss → not worth a fused-kernel build. cdist grad WALLED.
+- `solve_triangular` grad: bwd ~13ms (`[8000,16,16]`), trsm-based (MKL) — WALLED.
+- `cholesky_solve`/`lu_solve`: getrs/2-TRSM (MKL) — WALLED (consistent with origin's earlier map).
+
+CONCLUSION: the batched-grad winnable surface (FT parallel-over-batch beats torch's serial
+per-plane LAPACK/driver loop) is COMPREHENSIVELY HARVESTED (9 wins this session: eigh/svd/qr/
+eigvals/matrix_exp/lstsq/pinv/cond/matrix_norm). Remaining grad gaps are torch-fused (cdist),
+MKL-batched (inv/solve/cholesky/lu/trsm/getrs), potrf/getrf-fast (det/slogdet/cholesky), or
+matmul-MKL (matrix_power). Next durable perf needs a genuinely different (non-linalg, non-fused)
+regime. AGENT cc. Score: 0W / 0L / 3N (negative map).
