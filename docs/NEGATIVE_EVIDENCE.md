@@ -5752,3 +5752,17 @@ No-grad inference (no VJP/gauge); FT eig forward (eigenvalues+eigenvectors) is t
 eig_batched kernel (used by the eigvals grad). No source change. This is a GENUINE clean win (unlike the
 contention-inflated larger-n GRAD claims corrected in 8b2db303 — here torch is structurally serial, verified
 twice). Score vs PyTorch: 3W / 0L / 0N. AGENT cc.
+
+## 2026-06-22 - WIN (clean, contention-verified): batched eigvals FORWARD (values-only, no-grad) = 4.45-5.26x
+
+Companion to the eig-with-vectors forward win (971b64ef). eigvals FORWARD (torch.linalg.eigvals, no grad —
+eigenvalue inference) at high batch. Same STRUCTURAL cause: LAPACK has no batched geev, so torch loops geev
+(values-only) SERIALLY per plane; FT parallelizes. CONTENTION-VERIFIED (pgrep clean of peer torch; torch
+min-of-4, low variance):
+  [2000,32]  FT 12.0ms vs torch 63.1ms  = 5.26x faster
+  [2000,64]  FT 64.8ms vs torch 288.5ms = 4.45x faster
+  [1000,96]  FT 96.9ms vs torch 477.6ms = 4.93x faster
+No-grad inference; FT eigvals forward is the shipped/validated eig_batched kernel (eigenvalues only). No
+source change. Together with eig-with-vectors forward (5.7-10x), the geev-FORWARD vein is harvested: any
+op torch can only loop serially (no batched LAPACK) is a clean parallel win at high batch. Score vs
+PyTorch: 3W / 0L / 0N. AGENT cc.
