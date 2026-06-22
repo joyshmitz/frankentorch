@@ -5913,3 +5913,15 @@ matrixmultiply has a genuinely lower floor than MKL batched gemm for tiny matric
 (pgrep clean). No source change (shipped matmul + 2-D tiling kgs4.45). CORRECTS the old "FT bmm 2.6x slower"
 note (that was LARGE matmul; tiny-n high-batch is a WIN). Foundational — bmm underlies attention/per-head
 ops/grad VJPs. Score vs PyTorch: 3W/0L/0N. AGENT cc.
+
+## 2026-06-22 - WIN (thread-verified): RECTANGULAR tiny bmm (attention QKᵀ/AV shapes) = 1.08-1.63x vs torch best
+
+Extends the tiny-bmm win (d148b719) to the REAL-WORLD rectangular shapes ([BH,M,K]@[BH,K,N] — multi-head
+attention QKᵀ/AV, linear-over-batch). THREAD-VERIFIED, FT on RCH hz2 vs torch 8t/32t local:
+  [4096,128x64x128] FT 56.5ms vs torch 121.0(8t)/82.9(32t) = 2.14x / 1.47x
+  [2048,256x64x256] FT 96.7ms vs torch 227.5(8t)/157.9(32t) = 2.35x / 1.63x
+  [4096,64x128x64]  FT 26.5ms vs torch 42.3(8t)/28.5(32t)  = 1.60x / 1.08x
+NEW FINDING: the win depends on the CONTRACTION dim K — strong at K=64 (attention head dim, 1.47-1.63x vs
+torch's best) but MARGINAL at K=128 (1.08x, MKL more competitive when K grows). So tiny-bmm wins are
+strongest exactly at attention-head shapes (K=D=64-128). No source change (shipped matmul). Foundational for
+attention matmuls (the QKᵀ/AV bmms, separate from the parity-walled softmax). Score vs PyTorch: 3W/0L/0N. AGENT cc.
