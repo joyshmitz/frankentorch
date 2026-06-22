@@ -5737,3 +5737,18 @@ the parallel-vs-serial advantage erodes as n grows) — consistent with the corr
 larger-n linalg-grad wins do NOT grow with n. Modest genuine win at n<=32; marginal at n=64. No source
 change (shipped kernel handles any n). geev is the one decomposition expensive enough that FT's parallel
 loop still wins at moderate n (unlike eigh/svd ~marginal at larger n). Score vs PyTorch: 3W / 0L / 0N. AGENT cc.
+
+## 2026-06-22 - WIN (clean, contention-verified): batched eig WITH eigenvectors FORWARD (no-grad) = 5.7-10.0x
+
+The eig-with-vectors FORWARD (torch.linalg.eig, no grad — eigenvalue+eigenvector inference) at high batch +
+larger n. STRUCTURAL win: LAPACK has no batched geev, so torch loops geev-with-vectors SERIALLY per plane
+(744ms ~= 2000 x 0.37ms/geev at n=64); FT parallelizes the per-plane geev over the batch. Distinct from the
+small-n geev forward (~2.3x in project_eig_geev_gap) — at HIGH batch the serial-loop-vs-parallel gap is much
+bigger. CONTENTION-VERIFIED (pgrep clean of peer torch; torch re-measured TWICE, LOW variance ~6%, stable).
+  [2000,64]  FT 130.9ms vs torch 744.5ms  = 5.69x faster
+  [1000,96]  FT 185.7ms vs torch 1064.3ms = 5.73x faster
+  [500,128]  FT 157.5ms vs torch 1574.6ms = 10.0x faster
+No-grad inference (no VJP/gauge); FT eig forward (eigenvalues+eigenvectors) is the shipped/validated
+eig_batched kernel (used by the eigvals grad). No source change. This is a GENUINE clean win (unlike the
+contention-inflated larger-n GRAD claims corrected in 8b2db303 — here torch is structurally serial, verified
+twice). Score vs PyTorch: 3W / 0L / 0N. AGENT cc.
