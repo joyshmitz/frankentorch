@@ -4,6 +4,25 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-21 - across-matrix INTERLEAVED-W batched LU - NO GAIN (reverted) — k=16 batched solve/inv gap stands
+
+- Lever: close the k=16 batched solve/inv gap (FT 82ms vs PyTorch 47ms = 1.65x slower; the only
+  non-win in kgs4.160/161) by processing W=8 matrices INTERLEAVED ([n,n,W]/[n,m,W], matrix index
+  innermost) so the dominant O(n³) elimination + substitutions vectorise over the W-matrix lane —
+  the idea being that W independent matrices fill the per-matrix k-recurrence pipeline that starves
+  within-matrix vectorisation at small n. Implemented `lu_solve_group_interleaved_f64` (per-lane
+  pivoting, auto-vec `for w` inner loops), bit-exact (kernel test passed: same per-matrix pivoting
+  + elimination order → identical results).
+- Result: NO GAIN, slight REGRESSION. Clean 3-run re-measure: interleaved solve [20000,16,16]
+  `86 ms` vs the simple per-matrix kernel's `82 ms` (still ~1.8x slower than PyTorch's 47ms). The
+  interleave + de-interleave (O(n²·W)) + per-k pivot-bookkeeping overhead offsets the SIMD-lane
+  gain at small n (the interleave is ~half the LU FLOPs for n=16). REVERTED to the simple kernel.
+- LESSON: across-matrix interleaving only pays when n is large enough that the O(n³) vectorised
+  elimination dwarfs the O(n²·W) interleave shuffle — for the tiny-matrix batched regime it doesn't.
+  The k=16 gap is genuinely FT's scalar LU vs LAPACK's tuned mid-size gesv; closing it needs either
+  hand-written SIMD (manual intrinsics, per-lane pivot masks) or wiring an external small-LU — both
+  beyond a clean safe-Rust lever. kgs4.160/161 (solve+inv, win small/large k) stand as-is.
+
 ## 2026-06-21 - batched cholesky/det/inv/solve - FT 2-D-only (torch-parity FEATURE gap + perf opportunity, filed qe48n)
 
 - Probe: matrix_exp wins 9.8-31x at tiny-k/huge-B because PyTorch loops there even with a batched

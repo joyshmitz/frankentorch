@@ -14798,7 +14798,10 @@ pub fn lu_solve_batched_contiguous_f64(
     // Parallelise over BATCH CHUNKS (not per matrix) so each worker allocates its LU/pivot
     // scratch ONCE and reuses it across its chunk — a per-matrix `to_vec` left the k=16 regime
     // alloc-overhead-bound (110 MFLOP in 82 ms = 1.4 GF/s). ~8x oversubscription keeps load
-    // balanced. frankentorch-qe48n.
+    // balanced. (An across-matrix INTERLEAVED-W variant was tried to close the k=16 gap but ran
+    // ~86 ms vs this 82 ms — the interleave/de-interleave + per-k pivot bookkeeping offset the
+    // SIMD gain at small n; reverted. The k=16 gap is FT scalar LU vs LAPACK gesv.)
+    // frankentorch-qe48n.
     let nthreads = rayon::current_num_threads().max(1);
     let chunk_mats = (batch / (nthreads * 8)).max(1);
     out.par_chunks_mut(chunk_mats * n * m)
@@ -14853,14 +14856,10 @@ fn lu_solve_one_inplace_f64(lu: &mut [f64], piv: &mut [usize], b: &[f64], x: &mu
             }
         }
     }
-    // Permute B rows into x, then forward (unit-L) + back (U) substitution.
     for i in 0..n {
         let src = piv[i] * m;
         x[i * m..i * m + m].copy_from_slice(&b[src..src + m]);
     }
-    // No `if l != 0.0` guard: for a dense LU factor the multipliers are ~never zero, and
-    // l=0 makes `-= l*..` a no-op anyway (bit-exact), so dropping the branch lets the
-    // `for c` axpy vectorise (the k=16 hot regime).
     for i in 0..n {
         for k in 0..i {
             let l = lu[i * n + k];
