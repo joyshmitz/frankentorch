@@ -20,6 +20,16 @@ is explicitly satisfied.
   (feature + perf), needs owner sign-off and likely BlackThrush linalg-crate coordination. Filed
   as **frankentorch-qe48n** with the baselines. (matrix_exp/eig/svd/eigvalsh/svdvals batched paths
   are already shipped wins — the batched-linalg PERF vein is harvested for the ops that batch.)
+- TRIED + REVERTED the obvious ft-api shortcut (no-grad batched-solve fast path: detect 3-D,
+  rayon par-over-batch calling the 2-D `lu_factor`+`lu_solve` kernels per matrix, assemble one
+  leaf). Correct (rel `1.9e-12`) but a LOSS: FT `105 ms` vs PyTorch `47 ms` @[20000,16,16]
+  (2.2x slower), `27` vs `9 ms` @[100000,4,4]. ROOT CAUSE: per-matrix kernel-call overhead
+  (20000× `ensure_layout` + `LuFactorResult` Vec allocs + meta build) dominates for tiny
+  matrices — identical timing for plain-LU and mixed-refine kernels. matrix_exp hits `6.9 ms`@k16
+  because it batches INSIDE one kernel (no per-matrix setup). LESSON: batched tiny-matrix linalg
+  must be a BATCHED KERNEL (one call, internal contiguous-slice loop, parallel), NOT an ft-api
+  per-matrix loop — the latter is allocation/setup-overhead-bound and loses. That batched kernel
+  is the qe48n next step (ft-kernel-cpu / BlackThrush linalg crate).
 
 ## 2026-06-21 - rrelu borrowed-inputs - small confirm of the heuristic (1.15x, kept as cleanup)
 
