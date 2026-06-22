@@ -14291,30 +14291,38 @@ impl TensorTape {
                     // `mat2_vals[col + inner*n]` indexed mat2[inner,col] = the WRONG
                     // transpose, giving grad_out @ mat2 — only correct for symmetric
                     // mat2. Caught by the create_graph vs regular-backward cross-check.)
-                    let mat1_numel = Self::checked_mul_usize(m, k, "addmm mat1 grad overflow")?;
-                    let mut mat1_contrib = vec![0.0; mat1_numel];
-                    for row in 0..m {
-                        for col in 0..k {
-                            let mut acc = 0.0;
-                            for inner in 0..n {
-                                acc += incoming[row * n + inner] * mat2_vals[col * n + inner];
-                            }
-                            mat1_contrib[row * k + col] = alpha * acc;
-                        }
+                    // addmm = nn.Linear's primitive (bias + mat1@mat2); its mat1/mat2 grads had NO
+                    // all-ones fast path, so the naive serial triple-loops were slow for EVERY loss.
+                    // Route through the fast adaptively-parallel GEMM kernels (matmul tolerance-parity).
+                    // grad_mat1[m,k] = alpha * (incoming[m,n] @ mat2[k,n]^T)  (dgemm_bt).
+                    // grad_mat2[k,n] = alpha * (mat1[m,k]^T @ incoming[m,n])  (transpose + dgemm).
+                    // frankentorch addmm-bwd-fast.
+                    let mut mat1_contrib = ft_kernel_cpu::matmul_rhs_transposed_contiguous_f64(
+                        m, n, k, &incoming, &mat2_vals,
+                    )
+                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+                    for v in mat1_contrib.iter_mut() {
+                        *v *= alpha;
                     }
                     Self::accumulate_tensor_gradient(mat1, &mut grads[mat1.0], &mat1_contrib)?;
 
                     // d/d(mat2): alpha * mat1^T @ grad_out => [k,m] @ [m,n] = [k,n]
-                    let mat2_numel = Self::checked_mul_usize(k, n, "addmm mat2 grad overflow")?;
-                    let mut mat2_contrib = vec![0.0; mat2_numel];
-                    for row in 0..k {
-                        for col in 0..n {
-                            let mut acc = 0.0;
-                            for inner in 0..m {
-                                acc += mat1_vals[inner * k + row] * incoming[inner * n + col];
-                            }
-                            mat2_contrib[row * n + col] = alpha * acc;
+                    let mut mat1_t = vec![0.0_f64; k * m];
+                    for inner in 0..m {
+                        for row in 0..k {
+                            mat1_t[row * m + inner] = mat1_vals[inner * k + row];
                         }
+                    }
+                    let mat1_t_meta =
+                        ft_core::TensorMeta::from_shape(vec![k, m], DType::F64, ft_core::Device::Cpu);
+                    let inc_meta =
+                        ft_core::TensorMeta::from_shape(vec![m, n], DType::F64, ft_core::Device::Cpu);
+                    let mut mat2_contrib = ft_kernel_cpu::matmul_tensor_contiguous_f64(
+                        &mat1_t, &incoming, &mat1_t_meta, &inc_meta,
+                    )
+                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+                    for v in mat2_contrib.iter_mut() {
+                        *v *= alpha;
                     }
                     Self::accumulate_tensor_gradient(mat2, &mut grads[mat2.0], &mat2_contrib)?;
 

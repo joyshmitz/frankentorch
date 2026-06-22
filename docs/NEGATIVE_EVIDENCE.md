@@ -6173,3 +6173,15 @@ remaining 1.6x is FT's gemm vs torch BLAS (the deep e4yuj packed-GEMM lever). BI
 path preserved bit-exact; general path matmul tolerance-parity): ft-autograd 476/476, ft-api matmul 19/19 +
 batched_grad 18/18 GREEN. This was a severe training-perf bug (dense-layer grad unusable for real losses).
 (ft-conformance gate = known sel7 red, unrelated.) AGENT cc.
+
+## 2026-06-22 - FIX (catastrophic latent bug): addmm BACKWARD (nn.Linear) was naive serial — ~80-200x internal speedup
+
+addmm = nn.Linear's primitive (bias + mat1@mat2). Its mat1/mat2 grads had NO fast path — naive serial scalar
+triple-loops for EVERY loss (worse than the 2-D matmul which at least had an all-ones path). Same catastrophic
+structure (~70-189s at these shapes). FIXED identically: grad_mat1 via matmul_rhs_transposed (dgemm_bt) +
+grad_mat2 via transpose+matmul (dgemm), both auto-parallel, ×alpha. AFTER (RAYON=64): [2048³] 872.1ms,
+[4096,1024,4096] 1810.0ms (~80-200x internal vs the naive catastrophe). vs torch BLAS: 306.3/383.7ms = FT
+0.35x/0.21x — STILL LOSES (FT gemm < torch BLAS, compounded over addmm's fwd+2 backward matmuls; the deep
+e4yuj packed-GEMM lever). BIT-TOLERANCE: ft-autograd 476/476 GREEN. This was a severe latent training bug
+(nn.Linear backward unusable for real training). Not a vs-torch WIN (still 0.21-0.35x) but removes a
+catastrophic pathology + makes Linear training usable. (ft-conformance gate = known sel7 red, unrelated.) AGENT cc.
