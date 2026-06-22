@@ -5672,3 +5672,25 @@ and loses on both p=2 rows once gated and remeasured on the baseline worker. Do 
 memoization for cdist p=2 grad without a lower-level profile proving the saved matrix stays hot and avoids
 the context clone. Score for this lever: `0W / 2L / 0N` vs baseline and still `0W / 2L / 0N` vs PyTorch.
 AGENT QuietMeadow / cod-a.
+
+## 2026-06-22 - CORRECTION (integrity): larger-n matrix_exp & eigh grad ratios were CONTENTION-INFLATED
+
+CRITICAL CORRECTION to the two prior entries (matrix_exp larger-n fd65933c "9.4-23.5x"; eigh larger-n
+f8da9ef0 "9.0-33.2x"). Those torch baselines were CONTAMINATED by a PEER's concurrent pytorch SDPA
+benchmark (cod-a, pytorch_sdpa_grad.py, PID 527572) running on the same host — it inflated the local
+torch timings ~5-15x and made them ERRATIC (the tell: non-monotonic per-plane times, e.g. torch n=96
+appearing 14x faster than n=64; and torch svd "timed out >350s" then ran in 200ms when alone).
+
+RE-MEASURED CLEAN (torch ALONE, no concurrent peer bench, min-of-3, LOW variance), FT on RCH hz2:
+  matrix_exp grad: [2000,64] FT 593ms vs torch 2037ms = 3.44x; [800,96] 753 vs 2011 = 2.67x;
+                   [400,128] 915 vs 1985 = 2.17x  (NOT 9.4-23.5x)
+  eigh grad:       [2000,64] FT 218ms vs torch 468ms = 2.14x; [800,96] 235 vs 404 = 1.72x;
+                   [400,128] 251 vs 413 = 1.64x  (NOT 9.0-33.2x)
+  svd grad:        [400,64] FT 147ms vs torch 210ms = 1.44x; [200,96] 212 vs 197 = 0.93x;
+                   [100,128] 320 vs 197 = 0.62x  -> MARGINAL/LOSS (torch svd backward is fast ~200ms)
+CONCLUSION: the "larger-n re-measure win GROWS with n" thesis is FALSE — it was contention. The real
+larger-n grads are SIMILAR to or slightly BELOW the small-n ratios (matrix_exp ~3x like its n<=32 3.3-4.2x;
+eigh ~2x like its n<=32 2.66-3.99x). svd grad larger-n is marginal/loss. matrix_exp & eigh remain modest
+WINS at the corrected magnitudes; svd is NOT a win. LESSON: ALWAYS pgrep for peer pytorch/bench processes
+before trusting a local torch baseline; trust only LOW-VARIANCE min-of-N; erratic/non-monotonic torch
+numbers = contention, discard. AGENT cc.
