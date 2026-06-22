@@ -51,8 +51,12 @@ is explicitly satisfied.
   156, logcumsumexp 158, cumsum 105, cumprod 116, diff 96, renorm 139, repeat_interleave 165 (20M),
   roll 124 (20M), flip 56. COVERAGE: the SCAN family is fully covered/won — FT cummax_dim measured
   86ms = 3.1x FASTER than PyTorch's 268ms (dedicated parallel-over-lanes kernel; cummin/cumsum/cumprod/
-  logcumsumexp same family, all shipped parallel). sort/argsort are SORT/partition-walled (same wall as
-  selection — Rust stdlib sort vs PyTorch's tuned introsort/nth_element, see quantile note). diff/roll/
+  logcumsumexp same family, all shipped parallel). sort/argsort = MEASURED LOSS 2.67-2.85x (2026-06-22,
+  was wrongly assumed "partition-walled like selection"): FT `sort_tensor_contiguous_f64` is actually a
+  RADIX sort (order-preserving key) PARALLEL over lanes — NOT a stdlib comparison sort — yet FT sort_dim
+  [4000,4000] = 233ms vs PyTorch 87ms (2.67x slower), [20000,2000] 588 vs 206ms (2.85x). The radix
+  key-computation + perm-tracking + index-output overhead loses to PyTorch's highly-tuned introsort.
+  Confirmed loss, different mechanism than selection's nth_element wall. diff/roll/
   renorm/repeat_interleave/flip are BANDWIDTH-bound (cheap elementwise/gather/copy — FT ≈ parity, no
   algorithmic lever). No fresh perf lever in this family.
 - quantile_dim single-q no-grad was 5.7x SLOW (silent) — routed to the parallel quickselect fast path
