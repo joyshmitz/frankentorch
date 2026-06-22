@@ -6063,3 +6063,17 @@ per-plane transposes (Bᵀ, Aᵀ) + tape/save_for_backward overhead, NOT the mat
 WIN is FORWARD-ONLY (forward 1.1-1.58x thread-matched); the GRAD does not benefit. NOT shipped as a win.
 FUTURE LEVER (not a current win): optimize FT's batched matmul backward (avoid the explicit batched
 transposes — fuse into the matmul kernel as gemm_bt/gemm_at; reduce tape clones). AGENT cc.
+
+## 2026-06-22 - WIN (UPGRADES the matmul-grad negative above): parallelized FT bmm/matmul BACKWARD — now 1.51x vs torch
+
+The matmul-grad LOSS recorded above was FT's serial scalar bmm backward (ft-autograd lib.rs ~11443 first-order
++ cg_bmm ~17657 double-backward — both naive triple-loops, ~127x the forward). FIXED: first-order bmm
+backward now PARALLELIZES over the independent batch planes via rayon (BIT-EXACT — same per-plane arithmetic,
+just fanned over cores); cg_bmm (double-backward) routes through the fast bmm_tensor_contiguous_f64 kernel.
+INTERNAL (before→after, RAYON=64): [20000,16] 222→134.9ms, [10000,32] 615→280.7ms, [5000,64] 2160→667.8ms
+(1.65-3.24x). vs PyTorch THREAD-MATCHED (FT 64t vs torch 64t), clean n=16: FT 134.9ms vs torch 203.8ms =
+1.51x faster (FLIPPED the prior 0.89x LOSS into a WIN). torch n=32/64 bmm-grad unreliable (times out >200s/run
+— pathological backward at batch), FT completes in 280.7/667.8ms. VERIFIED BIT-EXACT: ft-autograd 476/476,
+ft-api matmul 19/19 + batched_grad 18/18 GREEN (rayon-over-batch changes no arithmetic). matmul backward is
+the most-executed training primitive (every linear layer). (ft-conformance gate is the known sel7 red,
+unrelated; this is verified via the per-crate lib suites.) Score vs PyTorch: 1W (n=16 clean) / 0L. AGENT cc.

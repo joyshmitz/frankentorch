@@ -11440,34 +11440,46 @@ impl TensorTape {
                     let mut lhs_contrib = vec![0.0; lhs_numel];
                     let mut rhs_contrib = vec![0.0; rhs_numel];
 
-                    for b in 0..batch {
-                        let lhs_base = b * lhs_batch_stride;
-                        let rhs_base = b * rhs_batch_stride;
-                        let out_base = b * out_batch_stride;
-
-                        // grad_lhs[b] = grad_out[b] @ rhs[b]^T
-                        for row in 0..m {
-                            for inner in 0..k {
-                                let mut acc = 0.0;
-                                for col in 0..n {
-                                    acc += incoming[out_base + row * n + col]
-                                        * rhs_values[rhs_base + inner * n + col];
-                                }
-                                lhs_contrib[lhs_base + row * k + inner] = acc;
-                            }
-                        }
-
-                        // grad_rhs[b] = lhs[b]^T @ grad_out[b]
-                        for inner in 0..k {
-                            for col in 0..n {
-                                let mut acc = 0.0;
+                    // Parallelize over the (independent) batch planes — each plane's per-plane
+                    // arithmetic is unchanged, so this is BIT-EXACT (no tolerance shift), just fanned
+                    // over cores. The old serial scalar triple-loop made bmm/matmul BACKWARD ~127x the
+                    // forward at high batch (the most-executed training primitive). frankentorch bmm-bwd-par.
+                    {
+                        use rayon::prelude::*;
+                        let incoming_ref = &incoming;
+                        let lhs_ref = &lhs_values;
+                        let rhs_ref = &rhs_values;
+                        lhs_contrib
+                            .par_chunks_mut(lhs_batch_stride)
+                            .zip(rhs_contrib.par_chunks_mut(rhs_batch_stride))
+                            .enumerate()
+                            .for_each(|(b, (lhs_chunk, rhs_chunk))| {
+                                let rhs_base = b * rhs_batch_stride;
+                                let out_base = b * out_batch_stride;
+                                let lhs_base = b * lhs_batch_stride;
+                                // grad_lhs[b] = grad_out[b] @ rhs[b]^T
                                 for row in 0..m {
-                                    acc += lhs_values[lhs_base + row * k + inner]
-                                        * incoming[out_base + row * n + col];
+                                    for inner in 0..k {
+                                        let mut acc = 0.0;
+                                        for col in 0..n {
+                                            acc += incoming_ref[out_base + row * n + col]
+                                                * rhs_ref[rhs_base + inner * n + col];
+                                        }
+                                        lhs_chunk[row * k + inner] = acc;
+                                    }
                                 }
-                                rhs_contrib[rhs_base + inner * n + col] = acc;
-                            }
-                        }
+                                // grad_rhs[b] = lhs[b]^T @ grad_out[b]
+                                for inner in 0..k {
+                                    for col in 0..n {
+                                        let mut acc = 0.0;
+                                        for row in 0..m {
+                                            acc += lhs_ref[lhs_base + row * k + inner]
+                                                * incoming_ref[out_base + row * n + col];
+                                        }
+                                        rhs_chunk[inner * n + col] = acc;
+                                    }
+                                }
+                            });
                     }
 
                     Self::accumulate_tensor_gradient(lhs, &mut grads[lhs.0], &lhs_contrib)?;
@@ -17662,18 +17674,17 @@ impl TensorTape {
         let m = lhs_shape[1];
         let k = lhs_shape[2];
         let n = rhs_shape[2];
-        let mut result = vec![0.0; batch * m * n];
-        for b in 0..batch {
-            for i in 0..m {
-                for j in 0..n {
-                    let mut acc = 0.0;
-                    for p in 0..k {
-                        acc += lhs_data[b * m * k + i * k + p] * rhs_data[b * k * n + p * n + j];
-                    }
-                    result[b * m * n + i * n + j] = acc;
-                }
-            }
-        }
+        // Route the create_graph bmm value-compute through the FAST parallel batched-matmul kernel
+        // (the same one the forward uses) instead of a naive serial scalar triple-loop — the latter
+        // made the bmm/matmul BACKWARD ~127x the forward (it's on the first-order bmm-grad path too).
+        // The recorded `Bmm` op below keeps double-backward correct; only the values change (matmul is
+        // tolerance-parity, not bit-exact). frankentorch cg-bmm-fast.
+        let lhs_k_meta = ft_core::TensorMeta::from_shape(vec![batch, m, k], DType::F64, device);
+        let rhs_k_meta = ft_core::TensorMeta::from_shape(vec![batch, k, n], DType::F64, device);
+        let result = ft_kernel_cpu::bmm_tensor_contiguous_f64(
+            &lhs_data, &rhs_data, &lhs_k_meta, &rhs_k_meta,
+        )
+        .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
         let meta = ft_core::TensorMeta::from_shape(vec![batch, m, n], dtype, device);
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
