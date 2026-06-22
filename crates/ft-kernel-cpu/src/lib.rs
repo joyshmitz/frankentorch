@@ -19124,6 +19124,34 @@ pub fn eigh_eigenvector_vjp_f64(v: &[f64], w: &[f64], grad_v: &[f64], n: usize) 
     grad_a
 }
 
+/// Batched VJP of the symmetric-eig EIGENVECTORS: for each of `bb` `k×k` planes,
+/// `grad_A = sym(V·(F∘(Vᵀ·grad_V))·Vᵀ)`. Parallelizes the verified 2-D
+/// [`eigh_eigenvector_vjp_f64`] over the batch (each plane is bit-identical to the
+/// 2-D call). PyTorch loops the per-plane eigenvector backward serially; this fans
+/// the independent planes across cores. TOLERANCE-parity. frankentorch batched-eigh-grad.
+pub fn eigh_eigenvector_vjp_batched_contiguous_f64(
+    v: &[f64],
+    w: &[f64],
+    grad_v: &[f64],
+    bb: usize,
+    k: usize,
+) -> Vec<f64> {
+    let plane = k * k;
+    let mut out = vec![0.0f64; bb * plane];
+    if k == 0 || bb == 0 {
+        return out;
+    }
+    out.par_chunks_mut(plane)
+        .zip(v.par_chunks(plane))
+        .zip(w.par_chunks(k))
+        .zip(grad_v.par_chunks(plane))
+        .for_each(|(((o, vp), wp), gvp)| {
+            let g = eigh_eigenvector_vjp_f64(vp, wp, gvp, k);
+            o.copy_from_slice(&g);
+        });
+    out
+}
+
 /// Reverse-mode VJP of the reduced tall/square SVD (m≥n, distinct positive S) from
 /// the output cotangents (`gu`, `gs`, `gv`). `u` is m×k, `s` is [k], `vh` is k×n.
 /// Routes every matmul (Uᵀ·gU, Vh·gV, U·M, ·Vᵀ, the (I−UUᵀ) projection) through the

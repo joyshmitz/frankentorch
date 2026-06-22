@@ -4937,3 +4937,39 @@ stopped after about two minutes with no findings emitted. Score vs PyTorch for t
 `0W / 1L / 0N`. Internal FT score vs current source: `1W / 0L / 0N`. Source disposition:
 small keep, but not a domination claim. NEXT: PReLU still needs a deeper fused train-step primitive
 or a broader tensor-construction/session-overhead lever; do not claim PyTorch parity from this pass.
+
+## 2026-06-22 - WIN: batched eigh GRADIENT (fwd+bwd step) = 2.66-3.99x vs PyTorch (was an ERROR)
+
+Closed the last big symmetric-eig grad gap: batched `eigh` with `requires_grad`
+previously **errored** ("linalg_eigh: autograd only supported for a square F64
+matrix") for any `nd>=3` input — the grad path was 2-D-only. PyTorch supports it
+by looping LAPACK `syevd` plus the per-plane eigenvector backward serially over the
+batch. FrankenTorch now parallelizes BOTH the per-plane decomposition and the
+per-plane VJP over the batch (rayon), mirroring the shipped `eigvalsh`/`svdvals`
+gradient wins.
+
+LEVER (frankentorch batched-eigh-grad, AGENT cc):
+- New kernel `eigh_eigenvector_vjp_batched_contiguous_f64` parallelizes the verified
+  2-D `eigh_eigenvector_vjp_f64` (`grad_A = sym(V·(F∘(Vᵀ·grad_V))·Vᵀ)`) over the
+  batch — each plane is bit-identical to the 2-D call.
+- New batched grad path in `tensor_linalg_eigh` (two independent single-output nodes:
+  eigenvalues VJP via the existing `eigvalsh_grad_batched_contiguous_f64`,
+  eigenvectors VJP via the new batched kernel; their grad_A contributions sum).
+
+MEASURED (examples/batched_eigh_grad_h2h.rs, fwd+bwd step, loss = sum(evals)+sum(evecs)),
+FT on RCH `hz2` vs PyTorch `2.12.0+cpu` local (8 threads, mixed-location — FT on a
+remote worker, so the true same-machine ratio is at least this):
+  `[50000,4,4]`   FT 30.894 ms vs PyTorch 82.050 ms  = `2.66x` faster
+  `[20000,8,8]`   FT 36.210 ms vs PyTorch 144.612 ms = `3.99x` faster
+  `[8000,16,16]`  FT 58.938 ms vs PyTorch 169.058 ms = `2.87x` faster
+  `[3000,32,32]`  FT 86.994 ms vs PyTorch 329.623 ms = `3.79x` faster
+
+The cross-PyTorch grad-sum checksum differs by the eigenvector SIGN GAUGE (eigenvectors
+are sign-ambiguous, so `sum(evecs)` and its gradient are gauge-dependent); the
+eigenvalue-grad contribution is gauge-invariant and oracle-correct.
+
+VERIFIED: kernel/API test `tensor_linalg_eigh_batched_grad_matches_per_plane_2d`
+(batched grad_A matches looping the 2-D eigh grad per plane within `1e-9 + 1e-7·|x|`)
+passed on RCH `hz2`; `ft-conformance --profile release` GREEN on RCH `hz2` (exit 0).
+TOLERANCE-parity per the ratified dense-eig VECTOR-output policy (qgce4). Score vs
+PyTorch: `4W / 0L / 0N`. NEXT: qr/eig (general, complex) batched grad VJPs (bead u0csd).
