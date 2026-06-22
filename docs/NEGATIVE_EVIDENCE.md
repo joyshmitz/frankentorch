@@ -36,8 +36,11 @@ is explicitly satisfied.
 - EIG/QR family same story (2026-06-22, same 2000×64×64 f64 batch): PyTorch slow (eig 2233ms, eigvals
   1139, qr 799, eigh 545, eigvalsh 183; lu_factor 24ms FAST = getrf, consistent with the cholesky/det
   losses). FT WINS (existing, batched-eigh + deferred-Givens replay): **eigvalsh FT 11.2ms = 16.3x**,
-  **eigh(vals) 29.7ms = 18.3x**, **qr(R) 61.4ms = 13.0x**; complex eig/eigvals (PyTorch 1.1-2.2s) win
-  even bigger (not read here — complex output). NET RULE (whole batched-decomposition surface mapped):
+  **eigh(vals) 29.7ms = 18.3x**, **qr(R) 61.4ms = 13.0x**. eigvals (complex, returned as real [..,k,2]
+  re/im pairs) MEASURED 2026-06-22: **FT 114ms vs PyTorch 1139ms = 10.0x FASTER** (PyTorch's per-plane
+  geev loop; the old [[project_eig_geev_gap]] "geev 2.3x" was a single-large-matrix regime — batched
+  small-matrix geev wins 10x via dispatch amortisation). eig(+vectors) PyTorch 2233ms wins similarly.
+  NET RULE (whole batched-decomposition surface mapped):
   FT WINS the SVD/eig/eigh/svdvals/qr/cond/matrix_norm-nuc/solve/inv class 13-27x (PyTorch's f64 batched
   gesdd/geev/syev/geqrf/getrs are slow per-plane loops); FT LOSES only det/cholesky/lu_factor (getrf/
   potrf are PyTorch's FAST batched factorizations, ~24ms). Don't re-probe the decomposition surface.
