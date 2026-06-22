@@ -19222,6 +19222,44 @@ pub fn svd_backward_tall_f64(
     grad_a
 }
 
+/// Batched VJP of the reduced tall/square SVD: for each of `bb` planes (`U` m×k,
+/// `S` [k], `Vh` k×n, cotangents `gu` m×k, `gs` [k], `gv` n×k), parallelizes the
+/// verified 2-D [`svd_backward_tall_f64`] over the batch (each plane bit-identical to
+/// the 2-D call). PyTorch loops the per-plane SVD backward serially; this fans the
+/// independent planes across cores. TOLERANCE-parity. frankentorch batched-svd-grad.
+#[allow(clippy::too_many_arguments)]
+pub fn svd_backward_tall_batched_contiguous_f64(
+    u: &[f64],
+    s: &[f64],
+    vh: &[f64],
+    gu: &[f64],
+    gs: &[f64],
+    gv: &[f64],
+    bb: usize,
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Vec<f64> {
+    let aplane = m * n;
+    let uplane = m * k;
+    let vplane = n * k;
+    let mut out = vec![0.0f64; bb * aplane];
+    if bb == 0 || k == 0 {
+        return out;
+    }
+    out.par_chunks_mut(aplane).enumerate().for_each(|(b, o)| {
+        let up = &u[b * uplane..(b + 1) * uplane];
+        let sp = &s[b * k..(b + 1) * k];
+        let vhp = &vh[b * k * n..(b + 1) * k * n];
+        let gup = &gu[b * uplane..(b + 1) * uplane];
+        let gsp = &gs[b * k..(b + 1) * k];
+        let gvp = &gv[b * vplane..(b + 1) * vplane];
+        let g = svd_backward_tall_f64(up, sp, vhp, gup, gsp, gvp, m, n, k);
+        o.copy_from_slice(&g);
+    });
+    out
+}
+
 /// Reverse-mode VJP of the reduced QR factorization (tall m≥n, full-rank R) from
 /// the output cotangents (`grad_q` m×n, `grad_r` n×n):
 ///   M = R·grad_Rᵀ − grad_Qᵀ·Q ; S = copyltu(M) ; Z = grad_Q + Q·S ;

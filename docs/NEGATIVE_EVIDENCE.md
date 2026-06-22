@@ -4973,3 +4973,36 @@ VERIFIED: kernel/API test `tensor_linalg_eigh_batched_grad_matches_per_plane_2d`
 passed on RCH `hz2`; `ft-conformance --profile release` GREEN on RCH `hz2` (exit 0).
 TOLERANCE-parity per the ratified dense-eig VECTOR-output policy (qgce4). Score vs
 PyTorch: `4W / 0L / 0N`. NEXT: qr/eig (general, complex) batched grad VJPs (bead u0csd).
+
+## 2026-06-22 - WIN: batched SVD GRADIENT (fwd+bwd step) = 2.08-2.43x vs PyTorch (was an ERROR)
+
+Sibling of the batched-eigh-grad win. Batched reduced SVD with `requires_grad`
+(`nd>=3`, tall/square `m>=n`) previously **errored** ("linalg_svd: autograd only
+supported for reduced SVD of a tall/square (m>=n) F64 matrix") — the grad path was
+2-D-only. PyTorch supports it by looping LAPACK `gesdd` plus the per-plane U/S/Vh
+backward serially over the batch. FrankenTorch now parallelizes both over the batch.
+
+LEVER (frankentorch batched-svd-grad, AGENT cc):
+- New kernel `svd_backward_tall_batched_contiguous_f64` parallelizes the verified 2-D
+  `svd_backward_tall_f64` over the batch (each plane bit-identical to the 2-D call).
+- New batched grad path in `tensor_linalg_svd` (three independent single-output nodes
+  U/S/Vh; each forward runs the batched reduced SVD and the backward calls the batched
+  VJP with the other two cotangents zeroed; grad_A contributions sum).
+
+MEASURED (examples/batched_svd_grad_h2h.rs, fwd+bwd step, loss = sum(U)+sum(S)+sum(Vh)),
+FT on RCH `hz2` vs PyTorch `2.12.0+cpu` local (8 threads, mixed-location — FT remote,
+so the true same-machine ratio is at least this):
+  `[50000,4,4]`   FT 76.171 ms  vs PyTorch 177.269 ms = `2.33x` faster
+  `[20000,8,8]`   FT 132.889 ms vs PyTorch 321.272 ms = `2.42x` faster
+  `[8000,16,16]`  FT 190.395 ms vs PyTorch 396.325 ms = `2.08x` faster
+  `[3000,32,32]`  FT 314.534 ms vs PyTorch 764.275 ms = `2.43x` faster
+
+The three-node design recomputes the batched SVD 3x in forward (matches the existing
+2-D pattern), capping the ratio below the eigh-grad win (2 nodes); still a clear win
+because the per-plane gesdd loop in PyTorch is serial. Cross-PyTorch grad-sum differs
+by the U/Vh SIGN GAUGE (expected); the singular-value-grad part is gauge-invariant.
+
+VERIFIED: test `tensor_linalg_svd_batched_grad_matches_per_plane_2d` (batched grad_A
+matches looping the 2-D svd grad per plane within `1e-9 + 1e-7·|x|`) GREEN on RCH `hz2`;
+`ft-conformance --profile release` GREEN on RCH `hz2`. TOLERANCE-parity (kgs4.76 policy).
+Score vs PyTorch: `4W / 0L / 0N`. NEXT: qr/eig (general) batched grad VJPs (bead u0csd).
