@@ -5261,3 +5261,16 @@ This completes the exhaustive forward+grad map of the batched-linalg surface. Co
 winnable surface (FT-parallel-over-batch beats torch-serial-per-plane decomposition loop) is
 CONVERGED. Remaining levers are deep/constraint-walled (bead e4yuj): packed-panel GEMM,
 tolerance-SIMD-exp f32 SDPA, product-default pure-Rust caching allocator. AGENT cc.
+
+## 2026-06-22 - NEGATIVE: searchsorted/bucketize PARITY-to-LOSS (already parallel, bandwidth-bound)
+
+Probed binning/search ops: torch searchsorted is slow-looking at scale (519ms for 50M queries
+into 10K sorted) but that's inherent cost, NOT single-threaded — torch is well-optimized. FT's
+searchsorted is ALREADY rayon-parallel (kgs4.99) and bandwidth/materialization-bound (clones the
+f64 value tensor + builds f64 index output). MEASURED FT on RCH hz2 vs PyTorch local:
+  seq=10000 nq=50M:  FT 553.7ms vs torch 519.6ms = 0.94x (slight loss, mixed-location)
+  seq=1000  nq=20M:  FT 121.7ms vs torch 62.4ms  = 0.51x SLOWER (torch's small-seq L1 loop wins)
+  seq=100000 nq=10M: FT 154.8ms vs torch 157.7ms = ~parity
+Not a win — bandwidth/materialization-walled, torch is tight. bucketize delegates to searchsorted
+(same). histc 84ms / bincount 44ms (probe) are also torch-fast = walled. Binning/search regime
+WALLED. AGENT cc.
