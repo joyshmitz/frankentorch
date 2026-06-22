@@ -32,8 +32,8 @@ fn bench(label: &str, rows: usize, cols: usize) {
     let pooln = rayon::ThreadPoolBuilder::new().build().unwrap();
     let nthreads = pooln.current_num_threads();
 
-    let serial = pool1.install(&run);
-    let parallel = pooln.install(&run);
+    let serial = pool1.install(run);
+    let parallel = pooln.install(run);
     assert_eq!(serial.len(), parallel.len());
     for (a, b) in serial.iter().zip(parallel.iter()) {
         assert_eq!(a.to_bits(), b.to_bits(), "parallel strided != serial");
@@ -42,13 +42,13 @@ fn bench(label: &str, rows: usize, cols: usize) {
     let mut old = f64::INFINITY;
     for _ in 0..15 {
         let t = Instant::now();
-        std::hint::black_box(pool1.install(&run));
+        std::hint::black_box(pool1.install(run));
         old = old.min(t.elapsed().as_secs_f64() * 1e3);
     }
     let mut new = f64::INFINITY;
     for _ in 0..15 {
         let t = Instant::now();
-        std::hint::black_box(pooln.install(&run));
+        std::hint::black_box(pooln.install(run));
         new = new.min(t.elapsed().as_secs_f64() * 1e3);
     }
     println!(
@@ -69,21 +69,21 @@ fn bench_unary(label: &str, rows: usize, cols: usize) {
         .unwrap();
     let pooln = rayon::ThreadPoolBuilder::new().build().unwrap();
     let nthreads = pooln.current_num_threads();
-    let serial = pool1.install(&run);
-    let parallel = pooln.install(&run);
+    let serial = pool1.install(run);
+    let parallel = pooln.install(run);
     for (a, b) in serial.iter().zip(parallel.iter()) {
         assert_eq!(a.to_bits(), b.to_bits(), "parallel unary strided != serial");
     }
     let mut old = f64::INFINITY;
     for _ in 0..15 {
         let t = Instant::now();
-        std::hint::black_box(pool1.install(&run));
+        std::hint::black_box(pool1.install(run));
         old = old.min(t.elapsed().as_secs_f64() * 1e3);
     }
     let mut new = f64::INFINITY;
     for _ in 0..15 {
         let t = Instant::now();
-        std::hint::black_box(pooln.install(&run));
+        std::hint::black_box(pooln.install(run));
         new = new.min(t.elapsed().as_secs_f64() * 1e3);
     }
     println!(

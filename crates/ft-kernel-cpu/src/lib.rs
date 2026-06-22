@@ -7,7 +7,10 @@ use wide::{f32x8, f64x4};
 
 const BATCH_NORM_MIN_PAR_ROWS: usize = 8;
 
-#[allow(unsafe_code)]
+type BatchedLuPartsF64 = (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>);
+type SvdTripleF64 = (Vec<f64>, Vec<f64>, Vec<f64>);
+
+#[allow(unsafe_code, clippy::items_after_test_module)]
 mod gemm {
     use rayon::prelude::*;
 
@@ -3882,7 +3885,7 @@ pub fn sdpa_forward_masked_gqa_f64(
     mask_bh_stride: usize,
 ) -> Vec<f64> {
     const BR: usize = 64;
-    debug_assert!(h_kv > 0 && h_q % h_kv == 0);
+    debug_assert!(h_kv > 0 && h_q.is_multiple_of(h_kv));
     let group = h_q / h_kv;
     let q_stride = seq_q * d_k;
     let k_head_stride = seq_k * d_k;
@@ -10786,6 +10789,33 @@ pub fn matmul_rhs_transposed_contiguous_f64(
     Ok(out)
 }
 
+pub fn matmul_rhs_transposed_contiguous_f32(
+    m: usize,
+    k: usize,
+    n: usize,
+    lhs: &[f32],
+    rhs_nk: &[f32],
+) -> Result<Vec<f32>, KernelError> {
+    let lhs_len = checked_mul(m, k, "matmul_rhs_transposed f32 lhs overflow")?;
+    let rhs_len = checked_mul(n, k, "matmul_rhs_transposed f32 rhs overflow")?;
+    let out_len = checked_mul(m, n, "matmul_rhs_transposed f32 output overflow")?;
+    if lhs.len() < lhs_len {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![lhs_len],
+            rhs: vec![lhs.len()],
+        });
+    }
+    if rhs_nk.len() < rhs_len {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![rhs_len],
+            rhs: vec![rhs_nk.len()],
+        });
+    }
+    let mut out = vec![0.0_f32; out_len];
+    gemm::sgemm_bt(m, k, n, &lhs[..lhs_len], &rhs_nk[..rhs_len], &mut out);
+    Ok(out)
+}
+
 /// `out = lhs[m,k] @ rhs_nk[n,k]^T` reusing the caller's `out` buffer (sister to
 /// [`matmul_rhs_transposed_contiguous_f64`]). Lets hot sequential loops (e.g. the
 /// LSTM recurrent `h @ W_hh^T` step) avoid a fresh allocation per call.
@@ -13059,8 +13089,8 @@ fn cumsum_lane_block_f64(block: &[f64], out: &mut [f64], dim_size: usize, inner_
         let dst = &mut out[row..row + inner_size];
         for inner in 0..inner_size {
             acc[inner] += src[inner];
-            dst[inner] = acc[inner];
         }
+        dst.copy_from_slice(&acc);
     }
 }
 
@@ -13529,8 +13559,8 @@ fn cumsum_backward_lane_block_f64(block: &[f64], out: &mut [f64], dim_size: usiz
         let dst = &mut out[row..row + inner_size];
         for inner in 0..inner_size {
             acc[inner] += src[inner];
-            dst[inner] = acc[inner];
         }
+        dst.copy_from_slice(&acc);
     }
 }
 
@@ -13617,8 +13647,8 @@ fn cumprod_lane_block_f64(block: &[f64], out: &mut [f64], dim_size: usize, inner
         let dst = &mut out[row..row + inner_size];
         for inner in 0..inner_size {
             acc[inner] *= src[inner];
-            dst[inner] = acc[inner];
         }
+        dst.copy_from_slice(&acc);
     }
 }
 
@@ -17002,6 +17032,7 @@ pub fn cholesky_solve_contiguous_f32(
 /// 1. Scale A by 2^-s so ||A/2^s|| < 1
 /// 2. Compute Padé [6/6] approximant R66(A/2^s)
 /// 3. Square the result s times: exp(A) = R66^(2^s)
+///
 /// Batched matrix exponential: input `[..., k, k]` -> `[B*k*k]` (same shape). Parallelizes the verified
 /// 2-D [`matrix_exp_contiguous_f64`] over the batch. PyTorch loops its scaling-squaring/Padé per plane
 /// (slow for small k); FT parallelizes. Bit-identical to looping the 2-D matrix_exp. (BlackThrush)
@@ -19592,7 +19623,7 @@ pub fn lu_factor_unpack_batched_contiguous_f64(
     let data = &data[offset..offset + bb * plane];
     let kmeta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
     let first_err = std::sync::Mutex::new(None);
-    let per: Vec<Option<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)>> = data
+    let per: Vec<Option<BatchedLuPartsF64>> = data
         .par_chunks(plane)
         .map(|pl| match lu_factor_contiguous_f64(pl, &kmeta) {
             Ok(f) => {
@@ -19985,7 +20016,7 @@ pub fn svdvals_grad_batched_contiguous_f64(
         return Ok(Vec::new());
     }
     let kk = m.min(n);
-    if kk == 0 || grad_sigma.len() % kk != 0 {
+    if kk == 0 || !grad_sigma.len().is_multiple_of(kk) {
         return Err(KernelError::ShapeMismatch {
             lhs: vec![grad_sigma.len()],
             rhs: vec![kk],
@@ -20032,14 +20063,14 @@ pub fn eigvalsh_grad_batched_contiguous_f64(
     }
     // k = evecs.len() / grad_evals.len()  (= (B·k·k)/(B·k));  B = grad_evals.len()/k.
     let total_g = grad_evals.len();
-    if evecs.len() % total_g != 0 {
+    if !evecs.len().is_multiple_of(total_g) {
         return Err(KernelError::ShapeMismatch {
             lhs: vec![evecs.len()],
             rhs: vec![total_g],
         });
     }
     let k = evecs.len() / total_g;
-    if k == 0 || total_g % k != 0 {
+    if k == 0 || !total_g.is_multiple_of(k) {
         return Err(KernelError::ShapeMismatch {
             lhs: vec![evecs.len()],
             rhs: vec![total_g],
@@ -22092,7 +22123,7 @@ pub fn svd_batched_contiguous_f64(
     data: &[f64],
     meta: &TensorMeta,
     full_matrices: bool,
-) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>), KernelError> {
+) -> Result<SvdTripleF64, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
     let shape = meta.shape();
     let nd = shape.len();
@@ -27855,8 +27886,8 @@ fn cumsum_lane_block_f32(block: &[f32], out: &mut [f32], dim_size: usize, inner_
         let dst = &mut out[row..row + inner_size];
         for inner in 0..inner_size {
             acc[inner] += src[inner];
-            dst[inner] = acc[inner];
         }
+        dst.copy_from_slice(&acc);
     }
 }
 
@@ -27933,8 +27964,8 @@ fn cumsum_backward_lane_block_f32(block: &[f32], out: &mut [f32], dim_size: usiz
         let dst = &mut out[row..row + inner_size];
         for inner in 0..inner_size {
             acc[inner] += src[inner];
-            dst[inner] = acc[inner];
         }
+        dst.copy_from_slice(&acc);
     }
 }
 
@@ -28006,8 +28037,8 @@ fn cumprod_lane_block_f32(block: &[f32], out: &mut [f32], dim_size: usize, inner
         let dst = &mut out[row..row + inner_size];
         for inner in 0..inner_size {
             acc[inner] *= src[inner];
-            dst[inner] = acc[inner];
         }
+        dst.copy_from_slice(&acc);
     }
 }
 
@@ -30200,14 +30231,14 @@ mod tests {
         let mut ww = vec![0.0f64; c * kh * kw];
         let mut wb = vec![0.0f64; c];
         for ni in 0..n {
-            for ci in 0..c {
+            for (ci, wb_ci) in wb.iter_mut().enumerate().take(c) {
                 let ib = (ni * c + ci) * ph * pw;
                 let ob = (ni * c + ci) * oh * ow;
                 let wbse = ci * kh * kw;
                 for oy in 0..oh {
                     for ox in 0..ow {
                         let g = dout[ob + oy * ow + ox];
-                        wb[ci] += g;
+                        *wb_ci += g;
                         for kr in 0..kh {
                             for kc in 0..kw {
                                 let ip = ib + (oy * sh + kr) * pw + ox * sw + kc;
@@ -31944,6 +31975,29 @@ mod tests {
     }
 
     #[test]
+    fn matmul_rhs_transposed_contiguous_f32_matches_sgemm_bt() {
+        for &(m, k, n) in &[(3usize, 5usize, 4usize), (64, 17, 32)] {
+            let lhs: Vec<f32> = (0..m * k)
+                .map(|i| ((i % 11) as f32 - 5.0) * 0.125 + i as f32 * 1e-4)
+                .collect();
+            let rhs_nk: Vec<f32> = (0..n * k)
+                .map(|i| ((i % 7) as f32 - 3.0) * 0.25 - i as f32 * 1e-5)
+                .collect();
+            let mut reference = vec![0.0_f32; m * n];
+            crate::gemm::sgemm_bt(m, k, n, &lhs, &rhs_nk, &mut reference);
+            let got = super::matmul_rhs_transposed_contiguous_f32(m, k, n, &lhs, &rhs_nk)
+                .expect("f32 rhs-transposed matmul");
+            for (idx, (a, b)) in got.iter().zip(reference.iter()).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "f32 rhs-transposed matmul diverged at {idx}: {a} vs {b}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn scaled_gemm_matches_post_scale_reference() {
         let (m, k, n) = (7usize, 11usize, 5usize);
         let alpha64 = 0.377_964_473_009_227_2_f64;
@@ -32375,8 +32429,8 @@ mod tests {
         // must reconstruct A — strong correctness check (square + tall).
         for (bb, m, n) in [(7usize, 5usize, 5usize), (6, 7, 4)] {
             let mut a = vec![0.0f64; bb * m * n];
-            for x in 0..bb * m * n {
-                a[x] = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
+            for (x, ax) in a.iter_mut().enumerate() {
+                *ax = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
             }
             let meta = TensorMeta::from_shape(vec![bb, m, n], DType::F64, Device::Cpu);
             let (u, s, vh) = super::svd_batched_contiguous_f64(&a, &meta, false).unwrap();
@@ -32399,8 +32453,8 @@ mod tests {
         // reconstruct A — a strong correctness check of the batched eigvalsh backward.
         let (bb, k) = (8usize, 5usize);
         let mut a = vec![0.0f64; bb * k * k];
-        for x in 0..bb * k * k {
-            a[x] = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
+        for (x, ax) in a.iter_mut().enumerate() {
+            *ax = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
         }
         for b in 0..bb {
             for i in 0..k {
@@ -32650,8 +32704,8 @@ mod tests {
         // square full-rank: A @ X ≈ B. tall (m>n): normal equations Aᵀ(A X − B) ≈ 0.
         for (bb, m, n, nrhs) in [(6usize, 5usize, 5usize, 3usize), (5, 7, 4, 2)] {
             let mut a = vec![0.0f64; bb * m * n];
-            for x in 0..bb * m * n {
-                a[x] = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
+            for (x, ax) in a.iter_mut().enumerate() {
+                *ax = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
             }
             for b in 0..bb {
                 for d in 0..m.min(n) {
@@ -32659,8 +32713,8 @@ mod tests {
                 }
             }
             let mut bm = vec![0.0f64; bb * m * nrhs];
-            for x in 0..bb * m * nrhs {
-                bm[x] = (((x * 40503usize) % 7919) as f64) * 0.01 - 3.0;
+            for (x, bmx) in bm.iter_mut().enumerate() {
+                *bmx = (((x * 40503usize) % 7919) as f64) * 0.01 - 3.0;
             }
             let am = TensorMeta::from_shape(vec![bb, m, n], DType::F64, Device::Cpu);
             let bmeta = TensorMeta::from_shape(vec![bb, m, nrhs], DType::F64, Device::Cpu);
@@ -32712,8 +32766,8 @@ mod tests {
         // General (non-symmetric) batched pinv: A @ pinv @ A ≈ A (Moore-Penrose), for square + tall.
         for (bb, m, n) in [(6usize, 5usize, 5usize), (5, 7, 4)] {
             let mut data = vec![0.0f64; bb * m * n];
-            for x in 0..bb * m * n {
-                data[x] = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
+            for (x, value) in data.iter_mut().enumerate() {
+                *value = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
             }
             // make full-rank-ish: bump the diagonal
             for b in 0..bb {
@@ -32761,8 +32815,8 @@ mod tests {
         // For SPD planes, pinv == inverse: A @ pinv ≈ I (and pinv symmetric).
         let (bb, k) = (7usize, 5usize);
         let mut data = vec![0.0f64; bb * k * k];
-        for x in 0..bb * k * k {
-            data[x] = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
+        for (x, value) in data.iter_mut().enumerate() {
+            *value = (((x * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
         }
         for b in 0..bb {
             for i in 0..k {
@@ -35977,7 +36031,7 @@ mod tests {
         let mut want = Vec::with_capacity(n);
         for c in 0..cols {
             for r in 0..rows {
-                let idx = c * 1 + r * cols; // strides [1, cols]
+                let idx = c + r * cols; // strides [1, cols]
                 want.push(lhs[idx].atan2(rhs[idx]));
             }
         }

@@ -44,6 +44,53 @@ fn bench_cdist(c: &mut Criterion) {
     }
 }
 
+fn bench_cdist_f32_p2(c: &mut Criterion) {
+    {
+        let (p, r, m) = (2000usize, 2000usize, 100usize);
+        let x1v: Vec<f32> = (0..p * m).map(|i| (i as f32 * 0.013).sin()).collect();
+        let x2v: Vec<f32> = (0..r * m).map(|i| (i as f32 * 0.017).cos()).collect();
+
+        c.bench_function(&format!("cdist_p2_f32_composed/{p}x{r}x{m}"), |b| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x1 = s
+                .tensor_variable_f32(x1v.clone(), vec![p, m], false)
+                .unwrap();
+            let x2 = s
+                .tensor_variable_f32(x2v.clone(), vec![r, m], false)
+                .unwrap();
+            b.iter(|| {
+                let x1_sq = s.tensor_mul(x1, x1).unwrap();
+                let x2_sq = s.tensor_mul(x2, x2).unwrap();
+                let x2_t = s.tensor_transpose(x2, 0, 1).unwrap();
+                let cross = s.tensor_matmul(x1, x2_t).unwrap();
+                let x1_norm = s.tensor_sum_dim(x1_sq, 1).unwrap();
+                let x2_norm = s.tensor_sum_dim(x2_sq, 1).unwrap();
+                let x1_u = s.tensor_unsqueeze(x1_norm, 1).unwrap();
+                let x2_u = s.tensor_unsqueeze(x2_norm, 0).unwrap();
+                let target = vec![p, r];
+                let x1_e = s.tensor_expand(x1_u, target.clone()).unwrap();
+                let x2_e = s.tensor_expand(x2_u, target).unwrap();
+                let norm_sum = s.tensor_add(x1_e, x2_e).unwrap();
+                let two_cross = s.tensor_mul_scalar(cross, 2.0).unwrap();
+                let d2 = s.tensor_sub(norm_sum, two_cross).unwrap();
+                let d2_clamped = s.tensor_clamp_min(d2, 0.0).unwrap();
+                black_box(s.tensor_sqrt(d2_clamped).unwrap());
+            });
+        });
+
+        c.bench_function(&format!("cdist_p2_f32_fused/{p}x{r}x{m}"), |b| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x1 = s
+                .tensor_variable_f32(x1v.clone(), vec![p, m], false)
+                .unwrap();
+            let x2 = s
+                .tensor_variable_f32(x2v.clone(), vec![r, m], false)
+                .unwrap();
+            b.iter(|| black_box(s.tensor_cdist(black_box(x1), black_box(x2), 2.0).unwrap()));
+        });
+    }
+}
+
 fn bench_pdist(c: &mut Criterion) {
     for &(n, m) in &[(256usize, 128usize), (512, 64)] {
         let out_len = n * (n - 1) / 2;
@@ -158,6 +205,7 @@ fn bench_pdist_p1(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_cdist,
+    bench_cdist_f32_p2,
     bench_pdist,
     bench_cdist_p1,
     bench_pdist_p1

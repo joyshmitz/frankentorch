@@ -46,7 +46,8 @@ fn run_all(numel: usize, reps: usize) {
 
 fn main() {
     let nthreads = rayon::current_num_threads();
-    for &numel in &[262_144usize] {
+    {
+        let numel = 262_144usize;
         let pool1 = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()

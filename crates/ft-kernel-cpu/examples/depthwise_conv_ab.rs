@@ -8,6 +8,7 @@ use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{conv2d_forward_f64, depthwise_conv2d_forward_f64};
 use std::time::Instant;
 
+#[allow(clippy::too_many_arguments)]
 fn per_group_im2col(
     padded: &[f64],
     weight: &[f64],

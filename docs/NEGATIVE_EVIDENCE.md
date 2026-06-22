@@ -4,6 +4,37 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-22 - KEEP (internal), PyTorch loss: f32 cdist p=2 no-grad fused route
+
+Bead `frankentorch-jpn1d`, assignee `cod-b`, agent `IvoryDeer`. The f64
+`cdist(..., p=2)` no-grad path already used the fused matmul identity, but f32
+still paid the old matmul-composition chain because the raw
+`matmul_rhs_transposed_contiguous_f32` helper was missing.
+
+Lever shipped: add `matmul_rhs_transposed_contiguous_f32` over `sgemm_bt` and
+route no-grad contiguous f32 `tensor_cdist(..., p=2)` through the same fused
+norm + cross + assembly pattern as f64. Autograd, non-contiguous, non-f32, and
+non-p2 paths remain on the existing routes.
+
+Measured on RCH `ovh-a`, crate-scoped only, warm target
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`:
+
+- same-binary Criterion A/B at `[2000,100] x [2000,100]`, bench
+  `cdist_bench -- cdist_p2_f32`:
+  - composed f32 p=2 route: `146.78 ms` p50
+  - fused f32 p=2 route: `11.796 ms` p50
+  - FT-internal speedup: `12.44x`
+- PyTorch comparator uses the current ledger's local torch 2.12 f32 p=2 row for
+  the same `[2000,100]` shape: `1.58 ms`. Final FT/PyTorch ratio is
+  `11.796 / 1.58 = 7.47x SLOWER`.
+
+Decision: KEEP as an internal no-grad f32 route cleanup, not a PyTorch win.
+This removes the avoidable FT composition overhead and preserves f32 output
+dtype, but the residual is still PyTorch's tight f32 cdist kernel versus FT's
+`sgemm_bt` plus session/output materialization. Score vs PyTorch: `0W / 1L / 0N`.
+Do not retry this as a PyTorch win without a lower-level f32 GEMM/session-output
+profile that can plausibly close the remaining ~7.5x.
+
 ## 2026-06-21 - across-matrix INTERLEAVED-W batched LU - NO GAIN (reverted) — k=16 batched solve/inv gap stands
 
 - Lever: close the k=16 batched solve/inv gap (FT 82ms vs PyTorch 47ms = 1.65x slower; the only
