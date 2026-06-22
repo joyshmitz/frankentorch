@@ -13967,6 +13967,84 @@ pub fn sort_tensor_contiguous_f64(
     Ok((sorted_values, indices))
 }
 
+pub fn argsort_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    dim: usize,
+    descending: bool,
+) -> Result<Vec<usize>, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let dim_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "argsort shape volume overflow")?;
+    let numel = checked_mul(
+        checked_mul(outer_size, dim_size, "argsort shape multiplication overflow")?,
+        inner_size,
+        "argsort shape multiplication overflow",
+    )?;
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+    let offset = meta.storage_offset();
+    let data = &input[offset..];
+
+    let mut indices = vec![0usize; numel];
+    let block = dim_size * inner_size;
+    let use_radix = dim_size >= SORT_RADIX_MIN_LEN && dim_size <= u32::MAX as usize;
+    indices
+        .par_chunks_mut(block)
+        .zip(data[..numel].par_chunks(block))
+        .for_each(|(idx_block, in_block)| {
+            let mut keys: Vec<u64> = Vec::new();
+            let mut perm: Vec<u32> = Vec::new();
+            let mut scratch: Vec<u32> = Vec::new();
+            for inner in 0..inner_size {
+                let mut radix_ok = use_radix;
+                if radix_ok {
+                    keys.clear();
+                    for d in 0..dim_size {
+                        let x = in_block[d * inner_size + inner];
+                        if x.is_nan() {
+                            radix_ok = false;
+                            break;
+                        }
+                        let k = sort_radix_key_f64(x);
+                        keys.push(if descending { !k } else { k });
+                    }
+                }
+
+                if radix_ok {
+                    sort_radix_perm(&keys, &mut perm, &mut scratch);
+                    for (out_d, &p) in perm.iter().enumerate() {
+                        idx_block[out_d * inner_size + inner] = p as usize;
+                    }
+                    continue;
+                }
+
+                let mut lane: Vec<(usize, f64)> = (0..dim_size)
+                    .map(|d| (d, in_block[d * inner_size + inner]))
+                    .collect();
+
+                if descending {
+                    lane.sort_by(|a, b| nan_greatest_cmp_f64(b.1, a.1));
+                } else {
+                    lane.sort_by(|a, b| nan_greatest_cmp_f64(a.1, b.1));
+                }
+
+                for (out_d, (orig_d, _)) in lane.into_iter().enumerate() {
+                    idx_block[out_d * inner_size + inner] = orig_d;
+                }
+            }
+        });
+
+    Ok(indices)
+}
+
 /// Return the k largest (or smallest) elements along the given dimension.
 ///
 /// Returns `(values, indices)` of shape `[..., k, ...]` where the dim-th
@@ -28204,6 +28282,79 @@ pub fn sort_tensor_contiguous_f32(
     Ok((sorted_values, indices))
 }
 
+pub fn argsort_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+    descending: bool,
+) -> Result<Vec<usize>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let dim_size = shape[dim];
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "argsort_f32 overflow")?;
+    let numel = checked_mul(
+        checked_mul(outer_size, dim_size, "argsort_f32 overflow")?,
+        inner_size,
+        "argsort_f32 overflow",
+    )?;
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+    let offset = meta.storage_offset();
+    let data = &input[offset..];
+    let mut indices = vec![0usize; numel];
+    let block = dim_size * inner_size;
+    let use_radix = dim_size >= SORT_RADIX_MIN_LEN && dim_size <= u32::MAX as usize;
+    indices
+        .par_chunks_mut(block)
+        .zip(data[..numel].par_chunks(block))
+        .for_each(|(idx_block, in_block)| {
+            let mut keys: Vec<u64> = Vec::new();
+            let mut perm: Vec<u32> = Vec::new();
+            let mut scratch: Vec<u32> = Vec::new();
+            for inner in 0..inner_size {
+                let mut radix_ok = use_radix;
+                if radix_ok {
+                    keys.clear();
+                    for d in 0..dim_size {
+                        let x = in_block[d * inner_size + inner];
+                        if x.is_nan() {
+                            radix_ok = false;
+                            break;
+                        }
+                        let k = sort_radix_key_f32(x);
+                        keys.push(u64::from(if descending { !k } else { k }));
+                    }
+                }
+
+                if radix_ok {
+                    sort_radix_perm(&keys, &mut perm, &mut scratch);
+                    for (out_d, &p) in perm.iter().enumerate() {
+                        idx_block[out_d * inner_size + inner] = p as usize;
+                    }
+                    continue;
+                }
+
+                let mut lane: Vec<(usize, f32)> = (0..dim_size)
+                    .map(|d| (d, in_block[d * inner_size + inner]))
+                    .collect();
+                if descending {
+                    lane.sort_by(|a, b| nan_greatest_cmp_f32(b.1, a.1));
+                } else {
+                    lane.sort_by(|a, b| nan_greatest_cmp_f32(a.1, b.1));
+                }
+                for (out_d, (orig_d, _)) in lane.into_iter().enumerate() {
+                    idx_block[out_d * inner_size + inner] = orig_d;
+                }
+            }
+        });
+    Ok(indices)
+}
+
 pub fn topk_tensor_contiguous_f32(
     input: &[f32],
     meta: &TensorMeta,
@@ -36599,6 +36750,39 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn argsort_only_matches_sort_indices_on_radix_paths() {
+        // argsort is allowed to skip materialising sorted values, but it must
+        // preserve the exact original-index permutation returned by full sort.
+        let (rows, cols) = (6usize, 512usize);
+        let numel = rows * cols;
+        let data_f64: Vec<f64> = (0..numel)
+            .map(|i| match i % 7 {
+                0 => 0.0,
+                1 => -0.0,
+                2 => -((i % 23) as f64) * 0.25,
+                _ => ((i * 2654435761usize) % 211) as f64 * 0.125,
+            })
+            .collect();
+        let data_f32: Vec<f32> = data_f64.iter().map(|&x| x as f32).collect();
+        let meta_f64 = TensorMeta::from_shape(vec![rows, cols], DType::F64, Device::Cpu);
+        let meta_f32 = TensorMeta::from_shape(vec![rows, cols], DType::F32, Device::Cpu);
+
+        for desc in [false, true] {
+            let (_, sort_idx_f64) =
+                super::sort_tensor_contiguous_f64(&data_f64, &meta_f64, 1, desc).unwrap();
+            let argsort_idx_f64 =
+                super::argsort_tensor_contiguous_f64(&data_f64, &meta_f64, 1, desc).unwrap();
+            assert_eq!(argsort_idx_f64, sort_idx_f64, "f64 desc={desc}");
+
+            let (_, sort_idx_f32) =
+                super::sort_tensor_contiguous_f32(&data_f32, &meta_f32, 1, desc).unwrap();
+            let argsort_idx_f32 =
+                super::argsort_tensor_contiguous_f32(&data_f32, &meta_f32, 1, desc).unwrap();
+            assert_eq!(argsort_idx_f32, sort_idx_f32, "f32 desc={desc}");
         }
     }
 

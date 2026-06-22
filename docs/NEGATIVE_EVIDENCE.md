@@ -133,7 +133,17 @@ profile that can plausibly close the remaining ~7.5x.
   RADIX sort (order-preserving key) PARALLEL over lanes — NOT a stdlib comparison sort — yet FT sort_dim
   [4000,4000] = 233ms vs PyTorch 87ms (2.67x slower), [20000,2000] 588 vs 206ms (2.85x). The radix
   key-computation + perm-tracking + index-output overhead loses to PyTorch's highly-tuned introsort.
-  Confirmed loss, different mechanism than selection's nth_element wall. diff/roll/
+  UPDATE 2026-06-22 — argsort-only lever SHIPPED (frankentorch-kgs4.148): `tensor_argsort` no longer
+  routes through full `tensor_sort` and then discards the sorted values. Added f64/f32 argsort-only
+  kernels that reuse the same comparison/radix permutation logic and write only indices; kernel/API
+  tests prove exact index parity with full sort. Same-host head-to-head (local torch 2.12 venv, warm
+  `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a`; `argsort_only_h2h`, 2 reps):
+  [4000,4000] argsort FT
+  `259.707ms -> 182.913ms` (1.42x internal), PyTorch `131.702/130.437ms`, residual `1.97x -> 1.40x`
+  slower; [20000,2000] FT `654.541ms -> 441.364ms` (1.48x internal), PyTorch `289.031/288.529ms`,
+  residual `2.26x -> 1.53x` slower. Keep: not a PyTorch win, but it removes dead value materialization
+  from argsort and materially narrows the measured gap. Sort values still remain the full radix/introsort
+  loss. diff/roll/
   repeat_interleave/flip are BANDWIDTH-bound (cheap elementwise/gather/copy — FT ≈ parity, no
   algorithmic lever). No fresh perf lever in this family.
 - renorm MEASURED LOSS 2.40x (2026-06-22, was assumed "bandwidth ≈parity"): FT tensor_renorm has NO
