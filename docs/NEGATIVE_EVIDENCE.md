@@ -49,15 +49,17 @@ is explicitly satisfied.
   [2000,64,64] FT 60.9ms vs 317ms = **5.2x** (FT Taylor scaling-squaring vs PyTorch's batched Padé).
   Both existing wins (batched-eigh / b3o90 native paths), documented. matrix_power^4 36ms / lu_solve
   64ms = PyTorch bmm/getrs-moderate (not probed for FT, likely ~parity/loss like the getrf class).
-- getrs-ONLY class is NOT an FT win (completes the linalg surface map, 2026-06-22): the ops that are
-  ONLY a triangular/backsolve given a precomputed factor — cholesky_solve, lu_solve, solve_triangular —
-  are FT's weak spot. tensor_cholesky_solve is 2-D ONLY (errors on batched 3-D = a FEATURE gap; PyTorch
-  batches it ~46ms). PyTorch's getrs is only MODERATE (cholesky_solve 46ms, lu_solve 64ms — NOT
-  gesdd/geev-slow), and FT's standalone substitution is the slow path (see the solve_triangular 2.67x
-  loss + tri-solve finding). So FT wins the FULL solve/inv (fused LU+solve amortises) and the
-  DECOMPOSITIONS (gesdd/geev/syev/geqrf slow) but NOT the bare-getrs class. THREE-WAY LINALG RULE now
-  complete: FT WINS decompositions+full-solve (5-27x); LOSES factorizations det/cholesky/lu (getrf/potrf
-  fast); NEUTRAL/loss on bare-getrs cholesky_solve/lu_solve/triangular_solve (substitution-bound). Done.
+- cholesky_solve no-grad batched f64 is now a narrow FT WIN (cod-b, frankentorch-c026s, 2026-06-22):
+  wired `tensor_cholesky_solve` for contiguous no-grad f64 factors `[batch...,n,n]` and RHS
+  `[batch...,n,nrhs]`/`[batch...,n]` through `cholesky_solve_batched_contiguous_f64`. RCH `ovh-a`
+  release probe: `[20000,16,16]` FT `30.391ms` vs recorded PyTorch `~46ms` = `0.66x` FT/PyTorch
+  (`1.51x` faster); `[5000,32,32]` FT `32.193ms` vs recorded PyTorch `~84ms` = `0.38x`
+  (`2.61x` faster). Worker/local torch unavailable, so ratio uses this file's prior PyTorch scan.
+- remaining getrs-ONLY class is mostly NOT an FT win (updated 2026-06-22): `solve_triangular` is a
+  confirmed loss at k>=16 and `lu_solve` remains unprobed/moderate; `cholesky_solve` is the one no-grad
+  batched f64 exception above. Grad paths for cholesky_solve/lu_solve are still WALLED by torch/MKL
+  backward. THREE-WAY LINALG RULE now: FT WINS decompositions+full-solve+batched no-grad cholesky_solve;
+  LOSES factorizations det/cholesky/lu (getrf/potrf fast); avoid standalone triangular solve.
 
 ## 2026-06-21 - batched cholesky/det/inv/solve - FT 2-D-only (torch-parity FEATURE gap + perf opportunity, filed qe48n)
 
@@ -5206,6 +5208,24 @@ ORACLE-EXACT: matrix norms are gauge-free, FT grad-sum matches PyTorch to all pr
 (e.g. nuc 1.598800e5, spectral 2.014831e4). VERIFIED: test
 `tensor_matrix_norm_batched_grad_matches_per_plane_2d` (nuc + spectral) GREEN on RCH `hz2`;
 `ft-conformance --profile release` GREEN. Score vs PyTorch: `6W / 0L / 0N`.
+
+## 2026-06-22 - POSITIVE: batched f64 cholesky_solve no-grad feature/perf gap closed (cod-b)
+
+Candidate bead `frankentorch-c026s` targeted the remaining `tensor_cholesky_solve` feature gap:
+contiguous no-grad f64 batched factors `[batch...,n,n]` with RHS `[batch...,n,nrhs]` or
+`[batch...,n]`. Implementation adds one parallel per-plane substitution kernel and keeps grad inputs on
+the existing 2-D autograd path.
+
+Evidence:
+- Correctness: `cargo test -p ft-kernel-cpu cholesky_solve_batched_matches_per_matrix_2d` GREEN on
+  RCH `ovh-a`; lower/upper batched output matches the existing per-matrix 2-D kernel to `1e-12`.
+- API parity: `cargo test -p ft-api cholesky_solve_batched_no_grad_matches_per_plane -- --nocapture`
+  GREEN on RCH `ovh-a`; batched API output matches per-plane 2-D `tensor_cholesky_solve`.
+- Perf probe: `cargo test -p ft-api --release cholesky_solve_batched_h2h_probe -- --ignored
+  --nocapture` before removing the temporary probe measured FT `[20000,16,16]` = `30.391ms` and
+  `[5000,32,32]` = `32.193ms`. The `ovh-a` worker and local Python lacked torch, so ratios use the
+  earlier PyTorch scan in this file (`cholesky_solve 46-84ms`): FT/PyTorch `0.66x` at k16 (`1.51x`
+  faster) and `0.38x` at k32 (`2.61x` faster). KEEP.
 
 ## 2026-06-22 - NEGATIVE: cdist / solve_triangular / cholesky_solve GRAD are torch-fused/MKL-WALLED (probe sweep)
 

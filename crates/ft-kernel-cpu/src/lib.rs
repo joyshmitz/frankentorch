@@ -16502,6 +16502,98 @@ pub fn cholesky_solve_contiguous_f64(
     Ok(x)
 }
 
+fn cholesky_solve_one_inplace_f64(
+    factor: &[f64],
+    x: &mut [f64],
+    n: usize,
+    num_rhs: usize,
+    upper: bool,
+) {
+    if upper {
+        for i in 0..n {
+            for k in 0..i {
+                let u_ki = factor[k * n + i];
+                for rhs in 0..num_rhs {
+                    x[i * num_rhs + rhs] -= u_ki * x[k * num_rhs + rhs];
+                }
+            }
+            let diag = factor[i * n + i];
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] /= diag;
+            }
+        }
+        for i in (0..n).rev() {
+            for k in (i + 1)..n {
+                let u_ik = factor[i * n + k];
+                for rhs in 0..num_rhs {
+                    x[i * num_rhs + rhs] -= u_ik * x[k * num_rhs + rhs];
+                }
+            }
+            let diag = factor[i * n + i];
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] /= diag;
+            }
+        }
+    } else {
+        for i in 0..n {
+            for k in 0..i {
+                let l_ik = factor[i * n + k];
+                for rhs in 0..num_rhs {
+                    x[i * num_rhs + rhs] -= l_ik * x[k * num_rhs + rhs];
+                }
+            }
+            let diag = factor[i * n + i];
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] /= diag;
+            }
+        }
+        for i in (0..n).rev() {
+            for k in (i + 1)..n {
+                let l_ki = factor[k * n + i];
+                for rhs in 0..num_rhs {
+                    x[i * num_rhs + rhs] -= l_ki * x[k * num_rhs + rhs];
+                }
+            }
+            let diag = factor[i * n + i];
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] /= diag;
+            }
+        }
+    }
+}
+
+/// Batched f64 Cholesky solve for contiguous `factor=[batch,n,n]` and
+/// `b=[batch,n,num_rhs]` storage.
+///
+/// This folds the 2-D `cholesky_solve` substitution into one parallel kernel so
+/// the public API can support PyTorch-style batched no-grad inputs without
+/// allocating per-plane metadata or tape nodes. Each plane preserves the same
+/// row/RHS loop order as the scalar kernel. frankentorch-c026s.
+#[must_use]
+pub fn cholesky_solve_batched_contiguous_f64(
+    factors: &[f64],
+    b: &[f64],
+    batch: usize,
+    n: usize,
+    num_rhs: usize,
+    upper: bool,
+) -> Vec<f64> {
+    let mut out = vec![0.0_f64; batch * n * num_rhs];
+    if batch == 0 || n == 0 || num_rhs == 0 {
+        return out;
+    }
+    let rhs_plane = n * num_rhs;
+    let factor_plane = n * n;
+    out.par_chunks_mut(rhs_plane)
+        .enumerate()
+        .for_each(|(bi, x)| {
+            x.copy_from_slice(&b[bi * rhs_plane..(bi + 1) * rhs_plane]);
+            let factor = &factors[bi * factor_plane..(bi + 1) * factor_plane];
+            cholesky_solve_one_inplace_f64(factor, x, n, num_rhs, upper);
+        });
+    out
+}
+
 /// BLAS-3 blocked triangular solve A·X = B for the large multi-RHS regime. `a` is
 /// a row-major n×n triangular matrix (lower if `!upper`, upper if `upper`), `b` and
 /// the return are row-major n×num_rhs. Blocks the single substitution into row
@@ -39444,6 +39536,69 @@ mod tests {
         // x = A^-1 @ b = [-0.125, 0.75]
         assert!((x[0] - (-0.125)).abs() < 1e-10);
         assert!((x[1] - 0.75).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cholesky_solve_batched_matches_per_matrix_2d() {
+        let (batch, n, nrhs) = (17usize, 5usize, 3usize);
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let b_meta = TensorMeta::from_shape(vec![n, nrhs], DType::F64, Device::Cpu);
+        let mut lower = vec![0.0_f64; batch * n * n];
+        let mut upper = vec![0.0_f64; batch * n * n];
+        let mut rhs = vec![0.0_f64; batch * n * nrhs];
+        for bi in 0..batch {
+            let mut a = vec![0.0_f64; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    let v = if i == j {
+                        n as f64 + 1.0 + bi as f64 * 0.01
+                    } else {
+                        0.05 / (i + j + 1) as f64
+                    };
+                    a[i * n + j] = v;
+                    a[j * n + i] = v;
+                }
+            }
+            let l = super::cholesky_contiguous_f64(&a, &meta, false).unwrap();
+            let u = super::cholesky_contiguous_f64(&a, &meta, true).unwrap();
+            lower[bi * n * n..(bi + 1) * n * n].copy_from_slice(&l.factor);
+            upper[bi * n * n..(bi + 1) * n * n].copy_from_slice(&u.factor);
+            for i in 0..n {
+                for c in 0..nrhs {
+                    rhs[bi * n * nrhs + i * nrhs + c] =
+                        ((bi + 2 * i + 3 * c + 1) as f64 * 0.017).sin();
+                }
+            }
+        }
+
+        for (upper_flag, factors) in [(false, &lower), (true, &upper)] {
+            let got = super::cholesky_solve_batched_contiguous_f64(
+                factors, &rhs, batch, n, nrhs, upper_flag,
+            );
+            for bi in 0..batch {
+                let factor = super::CholeskyResult {
+                    factor: factors[bi * n * n..(bi + 1) * n * n].to_vec(),
+                    n,
+                };
+                let want = super::cholesky_solve_contiguous_f64(
+                    &factor,
+                    &rhs[bi * n * nrhs..(bi + 1) * n * nrhs],
+                    &b_meta,
+                    upper_flag,
+                )
+                .unwrap();
+                for (g, w) in got[bi * n * nrhs..(bi + 1) * n * nrhs]
+                    .iter()
+                    .zip(want.iter())
+                {
+                    let rel = (g - w).abs() / (w.abs() + 1e-12);
+                    assert!(
+                        rel < 1e-12,
+                        "upper={upper_flag} batch={bi}: got {g}, want {w}, rel {rel:.2e}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
