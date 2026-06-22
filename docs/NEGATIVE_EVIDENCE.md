@@ -4677,3 +4677,35 @@ clean origin-based blobs to avoid unrelated rustfmt churn; UBS on the three touc
 after ~2 minutes with no findings emitted. Score vs PyTorch for this pass: `3W / 0L / 0N`.
 Source disposition: keep. NEXT: remaining batched-linalg gaps are tiny-k `svd`, f32 eig/eigvals native
 storage mirrors only if the cast path becomes allocation-bound, and batched grad coverage for QR/eig.
+
+## 2026-06-21cx - SMALL KEEP / NEGATIVE RATIO: f64 PReLU borrowed-input + channel-parallel backward improves FT but still loses to PyTorch
+
+Targeted the f64 PReLU train-step gap with two autograd-boundary levers: remove the dead
+`FunctionCtx` full-input/weight saves by borrowing immutable tape slices in backward, then split
+the affine NCH backward iteration space into deterministic per-channel reductions. The gradient
+weight reduction preserves the same per-channel summation order as the old serial loop; only
+independent `grad_x` writes and independent channel reductions run in parallel.
+
+MEASURED baseline saved-context serial path on the existing warm
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a` with local torch `2.12.1+cpu`
+after two `rch exec` attempts selected cold `ovh-a` and were stopped to avoid a cold target build:
+  `[32,512,256]` PReLU f64 train step, 8 iters: FT 145.510ms vs PyTorch 34.624ms =
+  `4.20x` slower, checksum rel `1.966e-14`.
+
+MEASURED candidates:
+  borrowed-input only, 8 iters: FT 121.958ms vs PyTorch 37.450ms = `3.26x` slower
+  (`1.19x` faster than FT baseline);
+  borrowed-input + channel-parallel backward, 8 iters: FT 103.712ms vs PyTorch 36.752ms =
+  `2.82x` slower (`1.40x` faster than FT baseline);
+  borrowed-input + channel-parallel backward, 20 iters: FT 93.263ms vs PyTorch 36.136ms =
+  `2.58x` slower.
+
+VERIFIED: `prelu_backward_input_and_weight_and_value_parity` passed in `ft-api`; release-profile
+`ft-conformance` passed (199 lib tests plus bins, integration, smoke, and doctests); `ft-api`
+`clippy --no-deps` for the lib and new example passed. Full clippy is blocked by pre-existing
+`ft-kernel-cpu` lint debt outside this change, and full `rustfmt --check` on the dirty shared
+`ft-api/src/lib.rs` reports unrelated QR formatting drift. UBS on the two touched Rust files was
+stopped after about two minutes with no findings emitted. Score vs PyTorch for this pass:
+`0W / 1L / 0N`. Internal FT score vs current source: `1W / 0L / 0N`. Source disposition:
+small keep, but not a domination claim. NEXT: PReLU still needs a deeper fused train-step primitive
+or a broader tensor-construction/session-overhead lever; do not claim PyTorch parity from this pass.
