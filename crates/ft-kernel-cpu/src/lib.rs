@@ -26554,20 +26554,41 @@ pub fn bmm_tensor_contiguous_f32(
     let rhs_start = rhs_meta.storage_offset();
     let mut out = vec![0.0f32; out_numel];
 
-    // Use optimized GEMM for each batch
-    for b in 0..batch {
-        let lhs_base = lhs_start + b * lhs_batch_stride;
-        let rhs_base = rhs_start + b * rhs_batch_stride;
-        let out_base = b * out_batch_stride;
-        gemm::sgemm(
-            m,
-            k,
-            n,
-            &lhs[lhs_base..],
-            &rhs[rhs_base..],
-            &mut out[out_base..out_base + out_batch_stride],
-        );
+    if out_batch_stride == 0 {
+        return Ok(out);
     }
+
+    if batch < 8 {
+        for b in 0..batch {
+            let lhs_base = lhs_start + b * lhs_batch_stride;
+            let rhs_base = rhs_start + b * rhs_batch_stride;
+            let out_base = b * out_batch_stride;
+            gemm::sgemm(
+                m,
+                k,
+                n,
+                &lhs[lhs_base..lhs_base + lhs_batch_stride],
+                &rhs[rhs_base..rhs_base + rhs_batch_stride],
+                &mut out[out_base..out_base + out_batch_stride],
+            );
+        }
+        return Ok(out);
+    }
+
+    out.par_chunks_exact_mut(out_batch_stride)
+        .enumerate()
+        .for_each(|(b, out_batch)| {
+            let lhs_base = lhs_start + b * lhs_batch_stride;
+            let rhs_base = rhs_start + b * rhs_batch_stride;
+            gemm::sgemm(
+                m,
+                k,
+                n,
+                &lhs[lhs_base..lhs_base + lhs_batch_stride],
+                &rhs[rhs_base..rhs_base + rhs_batch_stride],
+                out_batch,
+            );
+        });
 
     Ok(out)
 }
@@ -30657,12 +30678,12 @@ mod tests {
         acos_tensor_contiguous_f64, add_scalar, add_tensor_broadcast_f64,
         add_tensor_contiguous_f64, argmax_dim_tensor_contiguous_f64,
         argmin_dim_tensor_contiguous_f64, asin_scalar, asin_tensor_contiguous_f64, atan_scalar,
-        atan_tensor_contiguous_f64, bmm_tensor_contiguous_f64, cat_tensor_contiguous_f32,
-        cat_tensor_contiguous_f64, ceil_scalar, ceil_tensor_contiguous_f64, clamp_scalar,
-        clamp_tensor_contiguous_f64, cos_scalar, cos_tensor_contiguous_f64, cosh_scalar,
-        cosh_tensor_contiguous_f64, div_scalar, div_tensor_contiguous_f64,
-        dot_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64, exp_scalar,
-        exp_tensor_contiguous_f64, expand_tensor_contiguous_f64, expm1_scalar,
+        atan_tensor_contiguous_f64, bmm_tensor_contiguous_f32, bmm_tensor_contiguous_f64,
+        cat_tensor_contiguous_f32, cat_tensor_contiguous_f64, ceil_scalar,
+        ceil_tensor_contiguous_f64, clamp_scalar, clamp_tensor_contiguous_f64, cos_scalar,
+        cos_tensor_contiguous_f64, cosh_scalar, cosh_tensor_contiguous_f64, div_scalar,
+        div_tensor_contiguous_f64, dot_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64,
+        exp_scalar, exp_tensor_contiguous_f64, expand_tensor_contiguous_f64, expm1_scalar,
         expm1_tensor_contiguous_f64, floor_scalar, floor_tensor_contiguous_f64,
         gather_tensor_contiguous_f64, ge_scalar, ge_tensor_contiguous_f64, gelu_scalar,
         gelu_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64,
@@ -31618,6 +31639,26 @@ mod tests {
 
         let out = bmm_tensor_contiguous_f64(&lhs, &rhs, &lhs_meta, &rhs_meta)
             .expect("offset bmm should succeed");
+
+        assert_eq!(
+            out,
+            vec![34.0, 37.0, 78.0, 85.0, 166.0, 177.0, 226.0, 241.0]
+        );
+    }
+
+    #[test]
+    fn bmm_tensor_contiguous_f32_respects_storage_offsets_and_batch_order() {
+        let lhs_meta =
+            TensorMeta::from_shape(vec![2, 2, 2], DType::F32, Device::Cpu).with_storage_offset(1);
+        let rhs_meta =
+            TensorMeta::from_shape(vec![2, 2, 2], DType::F32, Device::Cpu).with_storage_offset(2);
+        let lhs = vec![99.0_f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let rhs = vec![
+            77.0_f32, 88.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0,
+        ];
+
+        let out = bmm_tensor_contiguous_f32(&lhs, &rhs, &lhs_meta, &rhs_meta)
+            .expect("offset f32 bmm should succeed");
 
         assert_eq!(
             out,

@@ -36,6 +36,54 @@ now flips from a PyTorch loss to a modest PyTorch win on both measured shapes.
 This does not change `tensor_sort`; it only removes dead value materialization
 for wrapper callers that ask for argsort indices only.
 
+## 2026-06-22 - KEEP: f32 batched matmul batch-parallel bmm reopens N-D f32 at k>=16
+
+Bead `frankentorch-dxjn9`, assignee `cod-b`, agent `IvoryDeer`. Prior entries
+`2026-06-21co/cp` correctly rejected the first f32 N-D matmul extension because
+the f32 bmm kernel serialized per-plane `sgemm` calls and made
+`[10000,8,16,16]` `59.1 ms` vs PyTorch `18.8 ms` (`3.14x` slower), with
+`[10000,8,4,4]` still `11.77x` slower.
+
+Lever shipped: make contiguous f32 batched matmul parallel over batch planes,
+matching the f64 scheduling shape while preserving the same `sgemm` per-plane
+math; then reopen the no-grad identical-batch N-D matmul fast path for f32.
+Autograd, broadcasted batches, mixed dtypes, and non-contiguous tensors stay on
+the existing general routes.
+
+Measured with crate-scoped commands only and warm
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`:
+
+- FT after, RCH `vmi1149989`:
+  `rch exec -- env CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b cargo run --release -p ft-api --example bmm_tiny_h2h`
+  - f32 3-D `[100000,4,4]`: `2.641 ms`
+  - f32 3-D `[20000,16,16]`: `2.609 ms`
+  - f32 3-D `[10000,32,32]`: `4.865 ms`
+  - f32 4-D `[10000,8,4,4]`: `1.467 ms`
+  - f32 4-D `[10000,8,16,16]`: `7.394 ms`
+- PyTorch comparator, local `.venv-oracle` torch `2.12.0+cpu`, 32 threads:
+  - f32 4-D `[10000,8,4,4]`: min `0.527 ms`, median `0.586 ms`
+  - f32 4-D `[10000,8,16,16]`: min `12.718 ms`, median `14.489 ms`
+
+Ratios and disposition:
+
+- `[10000,8,16,16]`: FT/PyTorch min ratio `7.394 / 12.718 = 0.58x`,
+  so FT is `1.72x` faster (`1.96x` faster vs median). This flips the old
+  `3.14x slower` row into a win and cuts FT time `59.1 -> 7.394 ms`
+  (`7.99x` internal).
+- `[10000,8,4,4]`: FT/PyTorch min ratio `1.467 / 0.527 = 2.78x` slower
+  (`2.50x` slower vs median). This materially narrows the old `11.77x` loss
+  but does not beat PyTorch's tiny-MKL path.
+- Direct f32 3-D kernel/API rows also improve vs the prior direct-bmm ledger:
+  `[100000,4,4]` `8.6 -> 2.641 ms` (`3.26x` internal), `[20000,16,16]`
+  `6.3 -> 2.609 ms` (`2.41x` internal).
+
+Decision: KEEP. The old blanket "f32 N-D matmul loses" bound is now too broad:
+the f32 route is a real win for k>=16 high-batch N-D matmul after batch-parallel
+f32 bmm scheduling. The k=4 residual remains a PyTorch tiny-matrix win; do not
+retry k=4 through another routing-only lever. Further k=4 work needs a lower
+per-plane f32 microkernel or explicit acceptance that MKL's tiny `sgemm` path is
+the wall.
+
 ## 2026-06-22 - KEEP (internal), PyTorch loss: f32 cdist p=2 no-grad fused route
 
 Bead `frankentorch-jpn1d`, assignee `cod-b`, agent `IvoryDeer`. The f64
