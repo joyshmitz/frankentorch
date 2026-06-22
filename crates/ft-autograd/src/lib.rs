@@ -11284,29 +11284,31 @@ impl TensorTape {
                             }
                         }
                     } else {
+                        // Route the general (non-all-ones) 2-D matmul backward through the FAST,
+                        // adaptively-PARALLEL GEMM kernels instead of naive serial scalar triple-loops
+                        // (the all-ones fast path above is preserved bit-exact for goldens). dgemm/dgemm_bt
+                        // auto-dispatch to parallel for large shapes. matmul is tolerance-parity.
+                        // grad_lhs[M,K] = incoming[M,N] @ rhs[K,N]^T  (dgemm_bt; rhs already in [K,N]=[n,k]).
+                        // grad_rhs[K,N] = lhs[M,K]^T @ incoming[M,N]  (transpose lhs O(MK), then dgemm).
+                        // frankentorch matmul2d-bwd-fast.
+                        lhs_contrib = ft_kernel_cpu::matmul_rhs_transposed_contiguous_f64(
+                            m, n, k, &incoming, &rhs_values,
+                        )
+                        .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+                        let mut lhs_t = vec![0.0_f64; k * m];
                         for row in 0..m {
                             for inner in 0..k {
-                                let mut acc = 0.0;
-                                for col in 0..n {
-                                    let grad_out = incoming[row * n + col];
-                                    let rhs_value = rhs_values[inner * n + col];
-                                    acc += grad_out * rhs_value;
-                                }
-                                lhs_contrib[row * k + inner] = acc;
+                                lhs_t[inner * m + row] = lhs_values[row * k + inner];
                             }
                         }
-
-                        for inner in 0..k {
-                            for col in 0..n {
-                                let mut acc = 0.0;
-                                for row in 0..m {
-                                    let lhs_value = lhs_values[row * k + inner];
-                                    let grad_out = incoming[row * n + col];
-                                    acc += lhs_value * grad_out;
-                                }
-                                rhs_contrib[inner * n + col] = acc;
-                            }
-                        }
+                        let lhs_t_meta =
+                            ft_core::TensorMeta::from_shape(vec![k, m], DType::F64, ft_core::Device::Cpu);
+                        let inc_meta =
+                            ft_core::TensorMeta::from_shape(vec![m, n], DType::F64, ft_core::Device::Cpu);
+                        rhs_contrib = ft_kernel_cpu::matmul_tensor_contiguous_f64(
+                            &lhs_t, &incoming, &lhs_t_meta, &inc_meta,
+                        )
+                        .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
                     }
 
                     Self::accumulate_tensor_gradient(lhs, &mut grads[lhs.0], &lhs_contrib)?;

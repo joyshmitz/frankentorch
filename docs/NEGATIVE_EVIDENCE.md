@@ -6159,3 +6159,17 @@ INTERNAL (before→after, RAYON=64): [20000,16] 222→134.9ms, [10000,32] 615→
 ft-api matmul 19/19 + batched_grad 18/18 GREEN (rayon-over-batch changes no arithmetic). matmul backward is
 the most-executed training primitive (every linear layer). (ft-conformance gate is the known sel7 red,
 unrelated; this is verified via the per-crate lib suites.) Score vs PyTorch: 1W (n=16 clean) / 0L. AGENT cc.
+
+## 2026-06-22 - FIX (catastrophic latent bug): 2-D matmul BACKWARD general path was naive serial — 220-272x internal speedup
+
+FT's 2-D matmul backward had an all-ones FAST path (for sum() goldens) but a NAIVE SERIAL SCALAR triple-loop
+for the GENERAL (non-uniform incoming grad) path — which is hit by EVERY REAL training loss (cross-entropy/
+MSE give non-uniform upstream grads). It was CATASTROPHIC: [2048,2048,2048] grad = 70,725ms (70.7s!),
+[4096,1024,4096] = 189,272ms (189s!). FIXED: route grad_lhs through matmul_rhs_transposed (dgemm_bt) and
+grad_rhs through transpose+matmul (dgemm) — both auto-dispatch to PARALLEL for large shapes.
+INTERNAL (RAYON=64): 70725→321.4ms (220x), 189272→695.9ms (272x). vs torch BLAS (sq loss, 64t): torch
+195.5/360.7ms → FT now 0.61x/0.52x (was 0.0028x = 362x SLOWER; gap narrowed from 362x to 1.6x). The
+remaining 1.6x is FT's gemm vs torch BLAS (the deep e4yuj packed-GEMM lever). BIT-TOLERANCE (all-ones golden
+path preserved bit-exact; general path matmul tolerance-parity): ft-autograd 476/476, ft-api matmul 19/19 +
+batched_grad 18/18 GREEN. This was a severe training-perf bug (dense-layer grad unusable for real losses).
+(ft-conformance gate = known sel7 red, unrelated.) AGENT cc.
