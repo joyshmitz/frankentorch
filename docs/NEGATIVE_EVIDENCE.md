@@ -5303,3 +5303,18 @@ Net ~0-gain-to-loss → reverted the eigh source change per the campaign rule. g
 (pinv_hermitian gradient is gauge-free) in all cases — correctness fine, perf not a win. Kept a
 correctness test (tensor_linalg_pinv_hermitian_batched_grad_matches_per_plane_2d, general-pinv path).
 pinv_hermitian grad WALLED. AGENT cc.
+
+## 2026-06-22 - WIN: f32 batched cond + matrix_norm (nuc/spec) GRADIENT = 3.5-5.7x vs PyTorch
+
+Extends the f64 cond (0e692074) and matrix_norm (6cd43c96) batched-grad wins to f32 (the dominant
+ML dtype). torch f32 also loops gesdd per plane; FT routes f32 through the f64 batched svdvals grad
+(cast) — the cast is O(numel) cheap vs the decomposition, so the batch-parallel win survives.
+
+MEASURED (examples/cond_matrixnorm_f32_grad_h2h.rs, fwd+bwd step, loss=sum), FT on RCH hz2 vs
+PyTorch 2.12.0 local f32 (mixed-location):
+  cond  [20000,8] 4.67x  [8000,16] 3.54x  [3000,32] 5.57x
+  nuc   [20000,8] 4.31x  [8000,16] 4.15x  [3000,32] 5.69x
+  spec  [20000,8] 5.19x  [8000,16] 4.03x  [3000,32] 5.04x
+f32 grad-sums match the f64 oracle values to printed digits (cond -2.525130e4 etc.). VERIFIED: test
+tensor_linalg_cond_matrixnorm_f32_batched_grad_matches_f64_cast GREEN on RCH hz2; ft-conformance
+--profile release GREEN. TOLERANCE-parity (f32, via f64 batched svdvals). Score vs PyTorch: 9W / 0L / 0N.
