@@ -5491,3 +5491,14 @@ VERIFIED: test tensor_linalg_qr_complete_square_batched_grad_matches_reduced (co
 passed). grad-sum differs from torch by the qr R-diagonal sign convention (FT vs LAPACK geqrf) — a gauge
 difference, not a bug; correctness via the complete==reduced internal test. Score vs PyTorch: 3W / 0L / 0N.
 This completes the mode-coverage extensions (full-square svd + complete-square qr). AGENT cc.
+
+## 2026-06-22 - WIN (lstsq_under f32) + MARGINAL (svd/pinv wide f32): f32 shape-extension grad mirrors
+
+f32 mirrors of the shape-extension grads (route through the f64 batched grad via cast). MEASURED
+(examples/shape_ext_f32_grad_h2h.rs), FT on RCH hz2 vs PyTorch 2.12.0 local f32 (mixed-location):
+  lstsq_under [20000,4,8] 2.59x  [8000,8,16] 1.62x  [3000,16,32] 1.53x  -> WIN
+  svd_wide    [20000,4,8] 1.37x  [8000,8,16] 1.12x  [3000,16,32] 1.19x  -> MARGINAL (mixed-location)
+  pinv_wide   [20000,4,8] 1.80x  [8000,8,16] 1.12x  [3000,16,32] 1.03x  -> MARGINAL->PARITY at n=32
+f32 ratios are compressed vs f64 (torch f32 gesdd/gelsd/gelsd is cheaper than f64, and FT pays the
+f32->f64 cast). KEEP lstsq_under f32 as a win; svd_wide/pinv_wide f32 marginal (not claimed). No source
+change (f32 routes through the existing f64 batched grad paths; correctness inherited). AGENT cc.
