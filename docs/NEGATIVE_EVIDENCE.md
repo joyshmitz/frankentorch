@@ -39,6 +39,15 @@ is explicitly satisfied.
   (feature + perf), needs owner sign-off and likely BlackThrush linalg-crate coordination. Filed
   as **frankentorch-qe48n** with the baselines. (matrix_exp/eig/svd/eigvalsh/svdvals batched paths
   are already shipped wins — the batched-linalg PERF vein is harvested for the ops that batch.)
+- SCAN/CUMULATIVE + MISC op scan COMPLETE (2026-06-21, don't re-scan): PyTorch-only timing of the
+  slowest scan/misc ops @[4000,4000] dim=1 (or 20M): cummax 268ms, sort 282 / argsort 349ms, cummin
+  156, logcumsumexp 158, cumsum 105, cumprod 116, diff 96, renorm 139, repeat_interleave 165 (20M),
+  roll 124 (20M), flip 56. COVERAGE: the SCAN family is fully covered/won — FT cummax_dim measured
+  86ms = 3.1x FASTER than PyTorch's 268ms (dedicated parallel-over-lanes kernel; cummin/cumsum/cumprod/
+  logcumsumexp same family, all shipped parallel). sort/argsort are SORT/partition-walled (same wall as
+  selection — Rust stdlib sort vs PyTorch's tuned introsort/nth_element, see quantile note). diff/roll/
+  renorm/repeat_interleave/flip are BANDWIDTH-bound (cheap elementwise/gather/copy — FT ≈ parity, no
+  algorithmic lever). No fresh perf lever in this family.
 - quantile_dim single-q no-grad was 5.7x SLOW (silent) — routed to the parallel quickselect fast path
   → 5x internal, PARITY with PyTorch (not yet a win): a selection-op scan found PyTorch's `quantile` is
   SORT-based + slow (73ms / 190ms @[4000,4000]/[20000,2000], dim=1) while its `median` is introselect-
