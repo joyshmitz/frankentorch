@@ -5779,3 +5779,16 @@ n=32 150.2/149.9ms, n=48 92.3/87.5ms):
   [500,96,48]  FT 45.6ms vs torch 87.5ms  = 1.92x faster
 No-grad; FT lstsq forward is the shipped/validated kernel (its grad 5dc2f8bc is oracle-exact). No source
 change. Standout at n=32 (5.49x) where torch's lstsq driver path is slow. Score vs PyTorch: 3W/0L/0N. AGENT cc.
+
+## 2026-06-22 - WIN (clean, contention-verified): batched svdvals & pinv FORWARD (no-grad) = 2.86-7.61x
+
+Extends the structural insight beyond geev: torch's batched SVD (gesdd) on CPU is ALSO effectively SERIAL
+over the batch (~0.15ms/plane × 2000 = 300ms for svdvals n=64 — no batch parallelism); FT parallelizes the
+per-plane svd over the batch (rayon). svd-based no-grad forwards at high batch, CONTENTION-VERIFIED (pgrep
+clean, torch stable low-variance min-of-4), FT on RCH hz2 vs PyTorch 8-thread local (mixed-location convention):
+  svdvals [2000,32] 7.20x  [2000,64] 5.61x  [1000,96] 4.09x  (FT 8.4/53.4/83.0 vs torch 60.5/299.3/339.5)
+  pinv    [2000,32] 7.61x  [2000,64] 4.74x  [1000,96] 2.86x  (FT 28.4/148.6/232.9 vs torch 216.1/704.1/666.6)
+The win = FT's parallel-over-batch vs torch's serial LAPACK loop (amplified by FT-worker core count vs
+torch 8-thread; the structural serial-vs-parallel advantage is the core of it). No-grad, shipped/validated
+kernels (svdvals/pinv used by their grads). No source change. CONFIRMS: torch CPU batched factorizations
+(geev/gesdd) loop serially → high-batch parallel wins. Score vs PyTorch: 6W/0L/0N. AGENT cc.
