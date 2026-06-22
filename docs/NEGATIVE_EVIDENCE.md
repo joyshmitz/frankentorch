@@ -5228,3 +5228,22 @@ eigvals/matrix_exp/lstsq/pinv/cond/matrix_norm). Remaining grad gaps are torch-f
 MKL-batched (inv/solve/cholesky/lu/trsm/getrs), potrf/getrf-fast (det/slogdet/cholesky), or
 matmul-MKL (matrix_power). Next durable perf needs a genuinely different (non-linalg, non-fused)
 regime. AGENT cc. Score: 0W / 0L / 3N (negative map).
+
+## 2026-06-22 - NEGATIVE: special-function elementwise grads are PARITY-WALLED (both parallelize)
+
+Probed the expensive elementwise special functions as a fresh non-linalg regime (torch fwd+bwd,
+local 2.12.0, N=4M f64): digamma bwd 22ms, polygamma(2) fwd 169ms/bwd 189ms, erfinv bwd 31ms,
+i0 bwd 33ms, lgamma bwd 25ms — all expensive but torch PARALLELIZES them elementwise. FT already
+parallelizes the same family (par_map_f64 forward + par_zip_map_f64 backward, verified in
+polygamma/zeta/etc.), so FT ≈ torch = PARITY, no vs-PyTorch win. `zeta` backward is the lone
+serial FT map BUT torch raises NotImplementedError for zeta's derivative (no comparison; FT has a
+feature torch lacks, not a perf win). Compute-bound elementwise vein CONFIRMED harvested.
+
+FRONTIER STATUS (2026-06-22, after 9 batched-grad wins): the CPU-winnable surface vs PyTorch —
+where FT's parallel-over-batch beats torch's serial per-plane LAPACK/driver loop — is
+COMPREHENSIVELY HARVESTED. Every fresh probe now lands on a wall: torch-fused (cdist), MKL-batched
+(inv/solve/cholesky/lu/trsm/getrs/matmul), potrf/getrf-fast (det/slogdet/chol), or
+parallel-elementwise parity (special fns). The genuinely-remaining levers are DEEP and constraint-
+walled: packed-panel Goto/BLIS GEMM (MKL-territory, big/risky), tolerance-SIMD-exp for f32 SDPA
+(needs the parity-policy decision), caching allocator for norm/pool train-steps (binary-choice,
+axis closed per 9pafs). No quick disk-neutral vs-PyTorch win remains in the probed space. AGENT cc.
