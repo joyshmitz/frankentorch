@@ -41,6 +41,11 @@ is explicitly satisfied.
   FT WINS the SVD/eig/eigh/svdvals/qr/cond/matrix_norm-nuc/solve/inv class 13-27x (PyTorch's f64 batched
   gesdd/geev/syev/geqrf/getrs are slow per-plane loops); FT LOSES only det/cholesky/lu_factor (getrf/
   potrf are PyTorch's FAST batched factorizations, ~24ms). Don't re-probe the decomposition surface.
+- lstsq + matrix_exp batched also confirmed WINS (2026-06-22): lstsq [2000,128×64] FT 148ms vs PyTorch
+  2629ms = **17.7x** (PyTorch's SVD-based batched gelsd is very slow; FT uses batched-QR); matrix_exp
+  [2000,64,64] FT 60.9ms vs 317ms = **5.2x** (FT Taylor scaling-squaring vs PyTorch's batched Padé).
+  Both existing wins (batched-eigh / b3o90 native paths), documented. matrix_power^4 36ms / lu_solve
+  64ms = PyTorch bmm/getrs-moderate (not probed for FT, likely ~parity/loss like the getrf class).
 
 ## 2026-06-21 - batched cholesky/det/inv/solve - FT 2-D-only (torch-parity FEATURE gap + perf opportunity, filed qe48n)
 
