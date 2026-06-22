@@ -23,6 +23,17 @@ is explicitly satisfied.
   hand-written SIMD (manual intrinsics, per-lane pivot masks) or wiring an external small-LU — both
   beyond a clean safe-Rust lever. kgs4.160/161 (solve+inv, win small/large k) stand as-is.
 
+## 2026-06-22 - SVD-based batched linalg - FT WINS 23-27x (existing, documented; PyTorch's f64 batched SVD is the slow part)
+- Measured a batch of 2000×64×64 f64 matrices. PyTorch's SVD-based ops are ALL ~450-500ms (its f64
+  batched SVD/svdvals is slow): svdvals 482ms, matrix_norm(nuc) 498, matrix_norm(ord=2, spectral) 490,
+  cond 472, matrix_rank 454. (Non-SVD: matrix_norm(fro) 0.24ms, slogdet 21ms — LU/elementwise, fast.)
+- FT WINS HUGELY (no code change — the peer "batched-eigh" campaign's fast batched svdvals + simple
+  composition): **svdvals FT 18.5ms = 26.1x faster**, **matrix_norm(nuc) 18.6ms = 26.7x**, **cond 20.0ms
+  = 23.7x**. matrix_norm(ord=2/spectral)=max(svdvals) and matrix_rank=count(svdvals>tol) compose the
+  same fast svdvals → same ~26x class. These are among FT's biggest PyTorch wins — FT's batched
+  Golub-Reinsch/eigh-based svdvals (deferred-Givens replay, see [[project_svd_deferred_replay_vein]])
+  crushes PyTorch's per-plane LAPACK gesdd loop at f64. Don't re-probe; SVD-based linalg is a FT win.
+
 ## 2026-06-21 - batched cholesky/det/inv/solve - FT 2-D-only (torch-parity FEATURE gap + perf opportunity, filed qe48n)
 
 - Probe: matrix_exp wins 9.8-31x at tiny-k/huge-B because PyTorch loops there even with a batched
