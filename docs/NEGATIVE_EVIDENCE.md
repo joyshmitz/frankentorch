@@ -5445,3 +5445,17 @@ local (mixed-location):
 VERIFIED: test tensor_linalg_qr_wide_batched_grad_matches_finite_difference (sum(R) grad vs central
 FD within 1e-4+1e-3|x|) GREEN on RCH hz2; ft-conformance GREEN. Score vs PyTorch: 3W / 0L / 0N.
 Completes the uncovered-shape grad extensions (underdetermined lstsq + wide svd + wide qr). AGENT cc.
+
+## 2026-06-22 - WIN: batched WIDE (m<n) pinv GRADIENT = 1.33-2.33x vs PyTorch, ORACLE-EXACT
+
+Standalone measurement of the wide (m<n) pinv grad path (Aᵀ(AAᵀ)⁻¹ wide branch, shipped with the
+batched pinv grad in 5dc2f8bc; the standalone pinv win 0a48b897 measured only TALL m>=n). torch's
+wide pinv loops gesdd. MEASURED (examples/pinv_wide_grad_h2h.rs, fwd+bwd step, loss=sum(A⁺⊙A⁺)),
+FT on RCH hz2 vs PyTorch 2.12.0 local (mixed-location):
+  [20000,4,8]  FT 38.2ms  vs torch 89.0ms  = 2.33x faster
+  [8000,8,16]  FT 65.3ms  vs torch 117.9ms = 1.81x faster
+  [3000,16,32] FT 122.4ms vs torch 162.6ms = 1.33x faster
+ORACLE-EXACT: full-rank pinv is gauge-free, FT grad-sum matches torch to all printed digits
+(-1.973994e4 etc.). No source change (wide branch already shipped; correctness covered by the
+underdetermined-lstsq test which routes through pinv's wide branch). Score vs PyTorch: 3W / 0L / 0N.
+AGENT cc.
