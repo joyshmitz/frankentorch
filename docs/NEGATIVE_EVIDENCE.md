@@ -4,6 +4,40 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-22 - WIN: no-grad dim0 topk small-k selector beats PyTorch
+
+Bead `frankentorch-ycna3`, assignee `cod-a`, agent `QuietMeadow`. The existing
+topk kernel parallelizes over outer contiguous blocks. For `dim=0` on a tall
+matrix, `outer_size == 1`, so `[262144,64] k=8` ran the 64 independent columns
+serially and allocated a full `(index,value)` lane for every column.
+
+Lever shipped: add a narrow ft-api no-grad fast path for contiguous dim-0 f64/f32
+topk when `rows >= 1024`, `inner_size >= 2`, and `k <= 64`. It parallelizes over
+columns and uses a streaming small-k selector, preserving the same total order
+as the tracked kernel: NaNs rank above non-NaNs for largest, and ties break by
+original index. Grad-enabled inputs still use the existing `TensorNodeOp::TopK`
+path, so backward semantics are unchanged.
+
+Same-host head-to-head, local torch `2.12.1+cpu`, warm
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a`, command
+`cargo +nightly-2026-06-09 run --release -p ft-api --example topk_dim0_h2h`,
+shape `[262144,64]`, `k=8`, `dim=0`, largest+sorted, checksums exact:
+
+- Baseline current tree: FT `135.076 ms` vs PyTorch `36.061 ms` =
+  `3.75x SLOWER`.
+- Rejected intermediate full-lane parallel select: FT `32.211 ms` vs PyTorch
+  `25.614 ms` = `1.26x SLOWER`; good internal speedup but still not the best
+  lever for small k.
+- Kept small-k streaming selector: FT `13.288 ms` vs PyTorch `33.534 ms` =
+  `2.52x FASTER`.
+
+Decision: KEEP. Internal speedup is `10.17x` against baseline, and the measured
+row flips from a clear PyTorch loss to a PyTorch win. Proof:
+`session_topk_dim0_nograd_fast_path_matches_tracked_topk` compares the fast path
+against the existing tracked topk route on a 2048-row dim-0 tensor with ties,
+NaN, and infinity; values match by bits and indices match exactly. Existing
+backward remains on the tracked route and is covered by `session_topk_backward`.
+
 ## 2026-06-22 - WIN: public argsort_tensor wrapper now uses argsort-only kernels
 
 Bead `frankentorch-9q7mq`, assignee `cod-a`, agent `QuietMeadow`. The
