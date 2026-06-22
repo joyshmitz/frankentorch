@@ -39,6 +39,18 @@ is explicitly satisfied.
   (feature + perf), needs owner sign-off and likely BlackThrush linalg-crate coordination. Filed
   as **frankentorch-qe48n** with the baselines. (matrix_exp/eig/svd/eigvalsh/svdvals batched paths
   are already shipped wins — the batched-linalg PERF vein is harvested for the ops that batch.)
+- BATCHED-LINALG COVERAGE MAP COMPLETE (2026-06-21 PyTorch-only scan, don't re-scan): measured every
+  slow PyTorch batched linalg op at [20000,16,16]/[5000,32,32] to find the dispatch-overhead weakness.
+  Slowest PyTorch ops: pinv 690-1174ms, lstsq 159-255ms, qr 92-108ms, cholesky_solve 46-84ms,
+  lu_solve-prefact 34-89ms, matrix_power3 15-18ms (fast). COVERAGE: pinv/qr/svd/eig/eigh already have
+  FT batched no-grad fast paths (peer "batched-eigh" campaign — pinv_batched/qr_batched_contiguous_f64,
+  win 2.9-10x); solve/inv mine (kgs4.160/161); lstsq covered (batched-QR fast path, test
+  tensor_linalg_lstsq_batched_qr_matches_looping_2d). LOSSES (getrf/potrf/getrs-class, don't implement):
+  det/cholesky (getrf/potrf — PyTorch batches well), solve_triangular + cholesky_solve (getrs/2-TRSM —
+  FT's standalone substitution loses to PyTorch's batched trsm at k≥16, see below; cholesky_solve f64 is
+  a primitive-autograd 2-sweep op, same wall). matrix_power = bmm (MKL-walled). NET: the batched-linalg
+  perf vein is fully harvested team-wide — every slow PyTorch batched op is either an FT win or a
+  characterized factorization/trsm-class loss. No remaining batched-linalg lever.
 - batched solve_triangular CONFIRMED LOSS (tried + reverted): the getrs insight predicted that the
   PUREST triangular-solve op (no factorization) would win even bigger than solve/inv. WRONG. Built
   `tri_solve_batched_contiguous_f64` (parallel per-matrix fwd/back substitution) + wired a no-grad
