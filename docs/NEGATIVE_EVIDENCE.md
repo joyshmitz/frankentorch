@@ -116,6 +116,13 @@ is explicitly satisfied.
   still 6.4x slower than PyTorch's 3.56ms — FT's GEMM + session I/O (tensor_variable out [P,R]=32MB +
   read-back) vs PyTorch's tight fused/in-place; that residual is the session-arena floor again, not the
   op. pdist p=2 ALSO SHIPPED (same fused pattern): FT 19.3ms vs PyTorch 8.34ms = 2.32x slower (residual smaller than cdist's 6.4x — pdist output is the condensed vector, not [N,N]); bit-exact (8 pdist + 199 conformance). Batched (3-D) cdist p=2 still composed.
+- pairwise_distance fused — TRIED + REVERTED (2026-06-22): added a no-grad f64 fused path (inline
+  per-row ‖x1−x2‖_p + eps, no diff materialisation). REVERTED unshipped for two reasons: (1) NO lib
+  test matches "pairwise" — couldn't verify bit-exactness (the cdist/pdist/normalize/renorm fuses were
+  all gated by passing lib tests; this had no gate), and (2) measured 156ms vs the composed path's ~55ms
+  = a REGRESSION, almost certainly the in-loop `if p2 {d*d} else {powf}` branch defeating SIMD
+  vectorisation of the reduction. Near-parity op (1.16x) so low value anyway. If revisited: add a lib
+  test first + hoist the p2 branch out of the k-loop (two specialised loops).
 - quantile_dim single-q no-grad was 5.7x SLOW (silent) — routed to the parallel quickselect fast path
   → 5x internal, PARITY with PyTorch (not yet a win): a selection-op scan found PyTorch's `quantile` is
   SORT-based + slow (73ms / 190ms @[4000,4000]/[20000,2000], dim=1) while its `median` is introselect-
