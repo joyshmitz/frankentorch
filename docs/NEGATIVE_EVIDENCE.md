@@ -39,6 +39,18 @@ is explicitly satisfied.
   (feature + perf), needs owner sign-off and likely BlackThrush linalg-crate coordination. Filed
   as **frankentorch-qe48n** with the baselines. (matrix_exp/eig/svd/eigvalsh/svdvals batched paths
   are already shipped wins — the batched-linalg PERF vein is harvested for the ops that batch.)
+- batched solve_triangular CONFIRMED LOSS (tried + reverted): the getrs insight predicted that the
+  PUREST triangular-solve op (no factorization) would win even bigger than solve/inv. WRONG. Built
+  `tri_solve_batched_contiguous_f64` (parallel per-matrix fwd/back substitution) + wired a no-grad
+  f64 left fast path. Bit-exact-to-tol (reconstruction test, rel 1e-12). Measured: only k=4 wins
+  (FT 7.8ms vs PyTorch 20ms = 2.6x); LOSES k≥16 (k16 FT 83ms vs 39ms, k32 81 vs 51, k64 129 vs 46).
+  PyTorch's batched trsm is decently optimized (32-51ms), NOT the easy win the standalone numbers
+  suggested. Divide-hoist (1 reciprocal/row vs m divides) didn't help (83→83ms) — the substitution
+  itself is the wall, not the divides. So solve/inv win NOT because PyTorch's trsm is beatable but
+  because PyTorch's FULL solve (getrf + 2×getrs + batched dispatch, 96ms@k32) carries more total
+  overhead than FT's fused LU+solve. Reverted (only-k4 win doesn't clear the bar; FT already has a
+  working batched tri-solve via the autograd per-slice path). LESSON: the getrs insight explains the
+  solve/inv wins retrospectively but does NOT generalize to standalone trsm.
 - det/cholesky CONFIRMED LOSSES (measured, don't implement): PyTorch det/slogdet are FAST at all
   k (k4 1.0ms / k16 8.6ms / k32 8.4ms / k64 13ms), unlike solve/inv. ROOT CAUSE (the key insight):
   det needs only the LU FACTORIZATION (getrf), which PyTorch batches efficiently; solve/inv ALSO do
