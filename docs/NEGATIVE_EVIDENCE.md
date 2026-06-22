@@ -6019,3 +6019,15 @@ scales to more cores: unpinned FT 12.3/24.2/12.1ms → vs torch 32t (49.1/98.2/7
 8t (102.7/191.0/89.3) = 7.4-8.4x. No source change (shipped tensor_matmul handles n-D). Foundational for
 attention. Score vs PyTorch: 3W/0L/0N. AGENT cc. (Note: ft-conformance gate is the known sel7 red; this is
 example+docs only, no source change, so no gate needed.)
+
+## 2026-06-22 - NEGATIVE: batched matmul GRAD (bmm backward) is NOT a win — FT autograd backward is slow
+
+Probed matmul GRAD (the training primitive: C=bmm(A,B); sum().backward() → grad_A=gC@Bᵀ, grad_B=Aᵀ@gC)
+at tiny-n high-batch, thread-matched (RAYON_NUM_THREADS=64). FT: [20000,16] 222.3ms, [10000,32] 614.9ms,
+[5000,64] 2160.4ms. torch (64t): [20000,16] 198.7ms (n=32/64 erratic/timed out — likely contention or a
+pathological backward path). At the one clean point FT LOSES 0.89x (n=16); FT also SCALES BADLY (n=64
+bmm-grad 2160ms vs n=64 bmm FORWARD ~17ms = 127x — FT's autograd matmul BACKWARD is the bottleneck:
+per-plane transposes (Bᵀ, Aᵀ) + tape/save_for_backward overhead, NOT the matmul FLOPs). So the tiny-matmul
+WIN is FORWARD-ONLY (forward 1.1-1.58x thread-matched); the GRAD does not benefit. NOT shipped as a win.
+FUTURE LEVER (not a current win): optimize FT's batched matmul backward (avoid the explicit batched
+transposes — fuse into the matmul kernel as gemm_bt/gemm_at; reduce tape clones). AGENT cc.
