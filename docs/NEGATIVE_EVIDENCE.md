@@ -5561,3 +5561,17 @@ remaining cholesky slice of frankentorch-qe48n is PyTorch potrf/MKL-walled for a
 small-matrix batching lever. The shipped value in frankentorch-qe48n remains solve+inv; det was
 already judged lower-EV against PyTorch's fast baseline. Score for this cholesky lever: 0W / 2L / 1N.
 AGENT IvoryDeer / cod-b.
+
+## 2026-06-22 - WIN: batched matrix_exp GRAD at LARGER n (64-128) = 9.4-23.5x vs PyTorch, ORACLE-EXACT
+
+The shipped batched matrix_exp grad (474b09ca) was benchmarked only at n<=32 (3.3-4.2x). At LARGER n the
+win is MUCH bigger: torch's matrix_exp backward loops the augmented 2n×2n Higham expm SERIALLY per plane,
+which scales catastrophically; FT parallelizes the per-plane VJP over the batch. MEASURED
+(examples/matrix_exp_largen_grad_h2h.rs, fwd+bwd, loss=sum), FT on RCH hz2 vs PyTorch 2.12.0 local:
+  [2000,64,64]   FT 593ms  vs torch 5550ms  = 9.36x faster
+  [800,96,96]    FT 753ms  vs torch 17725ms = 23.5x faster
+  [400,128,128]  FT 915ms  vs torch 8750ms  = 9.56x faster
+ORACLE-EXACT: matrix_exp grad is gauge-free; FT grad-sums bit-match torch to all printed digits
+(9.849406e6 / 6.885658e6 / 5.842672e6). No source change (the kernel handles any n; correctness inherited
++ confirmed by the oracle match). The matrix_exp grad win GROWS with n — strongest in the large-matrix
+regime that matters most. Score vs PyTorch: 3W / 0L / 0N. AGENT cc.
