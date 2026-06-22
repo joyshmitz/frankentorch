@@ -3,7 +3,9 @@ use ft_api::FrankenTorchSession; use ft_core::{ExecutionMode, DType};
 fn main() {
     for (bb,k) in [(100000usize,4usize),(20000,16)] {
         let mut data=vec![0.0f64; bb*k*k];
-        for i in 0..bb*k*k { data[i]=(((i*2654435761usize)%9973) as f64)*0.001 - 5.0; }
+        for (i, v) in data.iter_mut().enumerate() {
+            *v = (((i * 2654435761usize) % 9973) as f64) * 0.001 - 5.0;
+        }
         for b in 0..bb { for i in 0..k { data[b*k*k+i*k+i]+=(k+10) as f64; } }
         let run=|op:&str| -> (f64,f64) {
             let mut best=f64::INFINITY; let mut chk=0.0;
@@ -44,14 +46,14 @@ print("MS",sorted(ts)[0]); print("CHK",chk)
 "#);
             let python=std::env::var("PYTORCH_PYTHON").unwrap_or("python3".into());
             print!("k={k} {op} f32: FT {ft_ms:.1}ms chk {chk:.4e}");
-            if let Ok(o)=Command::new(&python).arg("-c").arg(&pysrc).output() { if o.status.success() {
-                let s=String::from_utf8_lossy(&o.stdout);
-                let g=|p:&str| s.lines().find_map(|l| l.strip_prefix(p).and_then(|v| v.trim().parse::<f64>().ok()));
-                if let (Some(p),Some(pc))=(g("MS "),g("CHK ")) {
-                    let rel=(chk-pc).abs()/(pc.abs()+1e-6); let rr=p/ft_ms;
-                    println!(" | torch {p:.1}ms chk {pc:.4e} | {} | {}", if rel<1e-3 {"OK"} else {"DIFF"}, if rr>=1.0 {format!("FT {rr:.2}x FASTER")} else {format!("{:.2}x slower",1.0/rr)});
-                }
-            } else { eprintln!("\n{}", String::from_utf8_lossy(&o.stderr)); }} else { println!(); }
+            let Ok(o)=Command::new(&python).arg("-c").arg(&pysrc).output() else { println!(); continue; };
+            if !o.status.success() { eprintln!("\n{}", String::from_utf8_lossy(&o.stderr)); continue; }
+            let s=String::from_utf8_lossy(&o.stdout);
+            let g=|p:&str| s.lines().find_map(|l| l.strip_prefix(p).and_then(|v| v.trim().parse::<f64>().ok()));
+            if let (Some(p),Some(pc))=(g("MS "),g("CHK ")) {
+                let rel=(chk-pc).abs()/(pc.abs()+1e-6); let rr=p/ft_ms;
+                println!(" | torch {p:.1}ms chk {pc:.4e} | {} | {}", if rel<1e-3 {"OK"} else {"DIFF"}, if rr>=1.0 {format!("FT {rr:.2}x FASTER")} else {format!("{:.2}x slower",1.0/rr)});
+            }
         }
     }
 }

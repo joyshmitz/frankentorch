@@ -36,13 +36,13 @@ w=torch.linalg.eigvalsh(S); _,R=torch.linalg.qr(G)
 print("EM",em); print("ESUM",w.double().sum().item()); print("QM",qm); print("RSQ",(R.double()**2).sum().item())
 "#);
         let python=std::env::var("PYTORCH_PYTHON").unwrap_or("python3".into());
-        if let Ok(o)=Command::new(&python).arg("-c").arg(&py).output() { if o.status.success() {
-            let s=String::from_utf8_lossy(&o.stdout);
-            let g=|p:&str| s.lines().find_map(|l| l.strip_prefix(p).and_then(|v| v.trim().parse::<f64>().ok()));
-            let (em,es,qm,rs)=(g("EM ").unwrap(),g("ESUM ").unwrap(),g("QM ").unwrap(),g("RSQ ").unwrap());
-            println!("k={k} f32 eigvalsh: FT {eb:.1} vs {em:.1}ms = {:.2}x ({}) | qr: FT {qb:.1} vs {qm:.1}ms = {:.2}x ({})",
-                em/eb, if (esum-es).abs()/(es.abs()+1e-6)<1e-3 {"OK"} else {"DIFF"},
-                qm/qb, if (rsq-rs).abs()/(rs.abs()+1e-6)<1e-3 {"OK"} else {"DIFF"});
-        } else { eprintln!("{}", String::from_utf8_lossy(&o.stderr)); }}
+        let Ok(o)=Command::new(&python).arg("-c").arg(&py).output() else { continue; };
+        if !o.status.success() { eprintln!("{}", String::from_utf8_lossy(&o.stderr)); continue; }
+        let s=String::from_utf8_lossy(&o.stdout);
+        let g=|p:&str| s.lines().find_map(|l| l.strip_prefix(p).and_then(|v| v.trim().parse::<f64>().ok()));
+        let (em,es,qm,rs)=(g("EM ").unwrap(),g("ESUM ").unwrap(),g("QM ").unwrap(),g("RSQ ").unwrap());
+        println!("k={k} f32 eigvalsh: FT {eb:.1} vs {em:.1}ms = {:.2}x ({}) | qr: FT {qb:.1} vs {qm:.1}ms = {:.2}x ({})",
+            em/eb, if (esum-es).abs()/(es.abs()+1e-6)<1e-3 {"OK"} else {"DIFF"},
+            qm/qb, if (rsq-rs).abs()/(rs.abs()+1e-6)<1e-3 {"OK"} else {"DIFF"});
     }
 }

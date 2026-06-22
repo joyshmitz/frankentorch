@@ -75,12 +75,22 @@ fn complex_abs_backward_matches_torch() {
     assert_close(
         "B re",
         s.tensor_gradient(&rep, re).unwrap(),
-        &[0.6, 0.707106781, -0.707106781, 0.707106781],
+        &[
+            0.6,
+            std::f64::consts::FRAC_1_SQRT_2,
+            -std::f64::consts::FRAC_1_SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+        ],
     );
     assert_close(
         "B im",
         s.tensor_gradient(&rep, im).unwrap(),
-        &[0.8, 0.707106781, 0.707106781, -0.707106781],
+        &[
+            0.8,
+            std::f64::consts::FRAC_1_SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+            -std::f64::consts::FRAC_1_SQRT_2,
+        ],
     );
 }
 

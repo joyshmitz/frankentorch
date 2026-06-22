@@ -33,10 +33,10 @@ print("MS",sorted(ts)[0])
 "#);
         let python=std::env::var("PYTORCH_PYTHON").unwrap_or("python3".into());
         print!("k={k}: FT {best:.1}ms (grad-2A err {err:.1e})");
-        if let Ok(o)=Command::new(&python).arg("-c").arg(&pysrc).output() { if o.status.success() {
-            if let Some(p)=String::from_utf8_lossy(&o.stdout).lines().find_map(|l| l.strip_prefix("MS ").and_then(|v| v.trim().parse::<f64>().ok())) {
-                let rr=p/best; println!(" | torch {p:.1}ms | {}", if rr>=1.0 {format!("FT {rr:.2}x FASTER")} else {format!("FT {:.2}x slower",1.0/rr)});
-            }
-        } else { eprintln!("\n{}", String::from_utf8_lossy(&o.stderr)); }}
+        let Ok(o)=Command::new(&python).arg("-c").arg(&pysrc).output() else { continue; };
+        if !o.status.success() { eprintln!("\n{}", String::from_utf8_lossy(&o.stderr)); continue; }
+        if let Some(p)=String::from_utf8_lossy(&o.stdout).lines().find_map(|l| l.strip_prefix("MS ").and_then(|v| v.trim().parse::<f64>().ok())) {
+            let rr=p/best; println!(" | torch {p:.1}ms | {}", if rr>=1.0 {format!("FT {rr:.2}x FASTER")} else {format!("FT {:.2}x slower",1.0/rr)});
+        }
     }
 }

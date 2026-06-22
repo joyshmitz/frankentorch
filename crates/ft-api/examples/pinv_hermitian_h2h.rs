@@ -3,7 +3,7 @@ use ft_api::FrankenTorchSession; use ft_core::ExecutionMode;
 fn main() {
     for (bb,k) in [(100000usize,4usize),(20000,16),(4000,32)] {
         let mut data=vec![0.0f64; bb*k*k];
-        for x in 0..bb*k*k { data[x]=(((x*2654435761usize)%9973) as f64)*0.001-5.0; }
+        for (x, v) in data.iter_mut().enumerate() { *v=(((x*2654435761usize)%9973) as f64)*0.001-5.0; }
         for b in 0..bb { for i in 0..k { for j in (i+1)..k { let s=(data[b*k*k+i*k+j]+data[b*k*k+j*k+i])*0.5; data[b*k*k+i*k+j]=s; data[b*k*k+j*k+i]=s; }} for i in 0..k { data[b*k*k+i*k+i]+=(k+10) as f64; } }
         let mut best=f64::INFINITY; let mut iderr=0.0;
         for _ in 0..5 {
@@ -29,10 +29,9 @@ print("MS",sorted(ts)[0])
 "#);
         let python=std::env::var("PYTORCH_PYTHON").unwrap_or("python3".into());
         print!("k={k}: FT {best:.1}ms (A@pinv-I err {iderr:.1e})");
-        if let Ok(o)=Command::new(&python).arg("-c").arg(&pysrc).output() { if o.status.success() {
-            if let Some(p)=String::from_utf8_lossy(&o.stdout).lines().find_map(|l| l.strip_prefix("MS ").and_then(|v| v.trim().parse::<f64>().ok())) {
-                let rr=p/best; println!(" | torch {p:.1}ms | {}", if rr>=1.0 {format!("FT {rr:.2}x FASTER")} else {format!("FT {:.2}x slower",1.0/rr)});
-            }
-        }}
+        if let Ok(o)=Command::new(&python).arg("-c").arg(&pysrc).output() && o.status.success()
+            && let Some(p)=String::from_utf8_lossy(&o.stdout).lines().find_map(|l| l.strip_prefix("MS ").and_then(|v| v.trim().parse::<f64>().ok())) {
+            let rr=p/best; println!(" | torch {p:.1}ms | {}", if rr>=1.0 {format!("FT {rr:.2}x FASTER")} else {format!("FT {:.2}x slower",1.0/rr)});
+        }
     }
 }

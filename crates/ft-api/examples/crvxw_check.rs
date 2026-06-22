@@ -21,7 +21,7 @@ fn main() {
     // lower 2x2 (torch row-major flatten)
     all &= run(
         "LO2",
-        vec![1.41421356, 0.0, 0.35355339, 1.17260394],
+        vec![std::f64::consts::SQRT_2, 0.0, 0.35355339, 1.17260394],
         2,
         vec![1.0, 2.0],
         false,
@@ -30,7 +30,7 @@ fn main() {
     // upper 2x2
     all &= run(
         "UP2",
-        vec![1.41421356, 0.35355339, 0.0, 1.17260394],
+        vec![std::f64::consts::SQRT_2, 0.35355339, 0.0, 1.17260394],
         2,
         vec![1.0, 2.0],
         true,

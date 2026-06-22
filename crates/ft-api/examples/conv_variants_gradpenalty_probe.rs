@@ -8,6 +8,7 @@ use ft_api::FrankenTorchSession;
 use ft_autograd::{AutogradError, BackwardOptions, TensorNodeId};
 use ft_core::ExecutionMode;
 
+#[allow(clippy::too_many_arguments)]
 fn gp(
     name: &str,
     xv: Vec<f64>,

@@ -25,7 +25,9 @@ fn par(incoming: &[f64], x: &[f64]) -> Vec<f64> {
 
 fn bench(label: &str, n: usize) {
     let nthreads = rayon::current_num_threads();
-    let x: Vec<f64> = (0..n).map(|i| ((i % 6283) as f64) * 0.001 - 3.14).collect();
+    let x: Vec<f64> = (0..n)
+        .map(|i| ((i % 6283) as f64) * 0.001 - std::f64::consts::PI)
+        .collect();
     let incoming: Vec<f64> = (0..n).map(|i| 1.0 + ((i % 5) as f64) * 0.1).collect();
     let want = serial(&incoming, &x);
     let got = par(&incoming, &x);

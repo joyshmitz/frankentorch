@@ -4,7 +4,7 @@ fn main() {
     let nrhs=4usize;
     for (bb,k) in [(100000usize,4usize),(20000,16),(4000,32)] {
         let mut a=vec![0.0f64; bb*k*k];
-        for x in 0..bb*k*k { a[x]=(((x*2654435761usize)%9973) as f64)*0.001-5.0; }
+        for (x, value) in a.iter_mut().enumerate().take(bb*k*k) { *value=(((x*2654435761usize)%9973) as f64)*0.001-5.0; }
         for b in 0..bb { for d in 0..k { a[b*k*k+d*k+d]+=(2*k) as f64; } }
         let bm:Vec<f64>=(0..bb*k*nrhs).map(|x| (((x*40503usize)%7919) as f64)*0.01-3.0).collect();
         let mut best=f64::INFINITY; let mut err=0.0;
@@ -33,10 +33,10 @@ print("MS",sorted(ts)[0])
 "#);
         let python=std::env::var("PYTORCH_PYTHON").unwrap_or("python3".into());
         print!("k={k}: FT {best:.1}ms (A@X-B err {err:.1e})");
-        if let Ok(o)=Command::new(&python).arg("-c").arg(&pysrc).output() { if o.status.success() {
-            if let Some(p)=String::from_utf8_lossy(&o.stdout).lines().find_map(|l| l.strip_prefix("MS ").and_then(|v| v.trim().parse::<f64>().ok())) {
-                let rr=p/best; println!(" | torch {p:.1}ms | {}", if rr>=1.0 {format!("FT {rr:.2}x FASTER")} else {format!("FT {:.2}x slower",1.0/rr)});
-            }
-        }}
+        if let Ok(o)=Command::new(&python).arg("-c").arg(&pysrc).output()
+            && o.status.success()
+            && let Some(p)=String::from_utf8_lossy(&o.stdout).lines().find_map(|l| l.strip_prefix("MS ").and_then(|v| v.trim().parse::<f64>().ok())) {
+            let rr=p/best; println!(" | torch {p:.1}ms | {}", if rr>=1.0 {format!("FT {rr:.2}x FASTER")} else {format!("FT {:.2}x slower",1.0/rr)});
+        }
     }
 }

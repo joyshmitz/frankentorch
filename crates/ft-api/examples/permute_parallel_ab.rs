@@ -131,7 +131,7 @@ fn main() {
     // (5) expand/broadcast materialize: [N,1,D] -> [N,M,D] (hot: bias/mean/var
     // broadcast in norm op-graphs).
     let (en, em, ed) = (256usize, 256usize, 256usize);
-    let ev: Vec<f64> = (0..en * 1 * ed)
+    let ev: Vec<f64> = (0..en * ed)
         .map(|i| (i % 1009) as f64 * 0.001)
         .collect();
     let expand_op = |pool: &ThreadPool| -> f64 {

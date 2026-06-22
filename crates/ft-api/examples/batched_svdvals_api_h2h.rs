@@ -26,13 +26,13 @@ s=torch.linalg.svdvals(A); print("MS",sorted(ts)[0]); print("SSUM",s.sum().item(
 "#);
         let python=std::env::var("PYTORCH_PYTHON").unwrap_or("python3".into());
         print!("B={bb} k={k}: FT {best:.1} ms  ssum {ssum:.5e}");
-        if let Ok(o)=Command::new(&python).arg("-c").arg(&pysrc).output() { if o.status.success() {
-            let s=String::from_utf8_lossy(&o.stdout);
-            let g=|p:&str| s.lines().find_map(|l| l.strip_prefix(p).and_then(|v| v.trim().parse::<f64>().ok()));
-            if let (Some(p),Some(ps))=(g("MS "),g("SSUM ")) {
-                let rel=(ssum-ps).abs()/(ps.abs()+1e-9); let rr=p/best;
-                println!("  | PyTorch {p:.1} ms  ssum {ps:.5e} | {} | {}", if rel<1e-6 {"MATCH"} else {"DIFF"}, if rr>=1.0 {format!("FT {rr:.2}x FASTER")} else {format!("FT {:.2}x slower",1.0/rr)});
-            }
-        } else { eprintln!("\n{}", String::from_utf8_lossy(&o.stderr)); }} else { println!(); }
+        let Ok(o)=Command::new(&python).arg("-c").arg(&pysrc).output() else { println!(); continue; };
+        if !o.status.success() { eprintln!("\n{}", String::from_utf8_lossy(&o.stderr)); continue; }
+        let s=String::from_utf8_lossy(&o.stdout);
+        let g=|p:&str| s.lines().find_map(|l| l.strip_prefix(p).and_then(|v| v.trim().parse::<f64>().ok()));
+        if let (Some(p),Some(ps))=(g("MS "),g("SSUM ")) {
+            let rel=(ssum-ps).abs()/(ps.abs()+1e-9); let rr=p/best;
+            println!("  | PyTorch {p:.1} ms  ssum {ps:.5e} | {} | {}", if rel<1e-6 {"MATCH"} else {"DIFF"}, if rr>=1.0 {format!("FT {rr:.2}x FASTER")} else {format!("FT {:.2}x slower",1.0/rr)});
+        }
     }
 }

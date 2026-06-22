@@ -24,13 +24,13 @@ r=torch.matmul(A,Bm); print("MS",sorted(ts)[0]); print("CHK", r.reshape(-1)[::99
 "#);
         let python=std::env::var("PYTORCH_PYTHON").unwrap_or("python3".into());
         print!("matmul k={k}: FT {best:.1}ms chk {chk:.4e}",);
-        if let Ok(o)=Command::new(&python).arg("-c").arg(&py).output() { if o.status.success() {
-            let s=String::from_utf8_lossy(&o.stdout);
-            let g=|p:&str| s.lines().find_map(|l| l.strip_prefix(p).and_then(|v| v.trim().parse::<f64>().ok()));
-            if let (Some(p),Some(pc))=(g("MS "),g("CHK ")) {
-                let rel=(chk-pc).abs()/(pc.abs()+1e-9); let rr=p/best;
-                println!(" | torch {p:.1}ms chk {pc:.4e} | {} | {}", if rel<1e-9 {"MATCH"} else {"DIFF"}, if rr>=1.0 {format!("FT {rr:.2}x FASTER")} else {format!("FT {:.2}x slower",1.0/rr)});
-            }
-        }}
+        let Ok(o)=Command::new(&python).arg("-c").arg(&py).output() else { continue; };
+        if !o.status.success() { continue; }
+        let s=String::from_utf8_lossy(&o.stdout);
+        let g=|p:&str| s.lines().find_map(|l| l.strip_prefix(p).and_then(|v| v.trim().parse::<f64>().ok()));
+        if let (Some(p),Some(pc))=(g("MS "),g("CHK ")) {
+            let rel=(chk-pc).abs()/(pc.abs()+1e-9); let rr=p/best;
+            println!(" | torch {p:.1}ms chk {pc:.4e} | {} | {}", if rel<1e-9 {"MATCH"} else {"DIFF"}, if rr>=1.0 {format!("FT {rr:.2}x FASTER")} else {format!("FT {:.2}x slower",1.0/rr)});
+        }
     }
 }

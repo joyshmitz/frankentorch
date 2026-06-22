@@ -81,10 +81,10 @@ print("ESUM", w.double().sum().item())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn();
-        if let Ok(child) = child.as_mut() {
-            if let Some(stdin) = child.stdin.as_mut() {
-                let _ = stdin.write_all(pysrc.as_bytes());
-            }
+        if let Ok(child) = child.as_mut()
+            && let Some(stdin) = child.stdin.as_mut()
+        {
+            let _ = stdin.write_all(pysrc.as_bytes());
         }
         if let Ok(output) = child.and_then(|child| child.wait_with_output()) {
             if output.status.success() {

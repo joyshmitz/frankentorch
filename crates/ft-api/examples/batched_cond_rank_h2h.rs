@@ -36,13 +36,13 @@ print("CM",cm); print("CSUM",torch.linalg.cond(CD,2).sum().item())
 print("RM",rm); print("RSUM",torch.linalg.matrix_rank(RD).double().sum().item())
 "#);
         let python=std::env::var("PYTORCH_PYTHON").unwrap_or("python3".into());
-        if let Ok(o)=Command::new(&python).arg("-c").arg(&py).output() { if o.status.success() {
-            let s=String::from_utf8_lossy(&o.stdout);
-            let g=|p:&str| s.lines().find_map(|l| l.strip_prefix(p).and_then(|v| v.trim().parse::<f64>().ok()));
-            let (cm,cs,rm,rs)=(g("CM ").unwrap(),g("CSUM ").unwrap(),g("RM ").unwrap(),g("RSUM ").unwrap());
-            println!("k={k} cond: FT {cb:.1} vs {cm:.1}ms = {:.2}x ({}) | rank: FT {rb:.1} vs {rm:.1}ms = {:.2}x ({} rsum {rsum} vs {rs} shape {rshape:?})",
-                cm/cb, if (csum-cs).abs()/(cs.abs()+1e-9)<1e-3 {"OK".to_string()} else {format!("DIFF {csum:.4e} vs {cs:.4e}")},
-                rm/rb, if (rsum-rs).abs()<0.5 {"OK"} else {"DIFF"});
-        } else { eprintln!("{}", String::from_utf8_lossy(&o.stderr)); }}
+        let Ok(o)=Command::new(&python).arg("-c").arg(&py).output() else { continue; };
+        if !o.status.success() { eprintln!("{}", String::from_utf8_lossy(&o.stderr)); continue; }
+        let s=String::from_utf8_lossy(&o.stdout);
+        let g=|p:&str| s.lines().find_map(|l| l.strip_prefix(p).and_then(|v| v.trim().parse::<f64>().ok()));
+        let (cm,cs,rm,rs)=(g("CM ").unwrap(),g("CSUM ").unwrap(),g("RM ").unwrap(),g("RSUM ").unwrap());
+        println!("k={k} cond: FT {cb:.1} vs {cm:.1}ms = {:.2}x ({}) | rank: FT {rb:.1} vs {rm:.1}ms = {:.2}x ({} rsum {rsum} vs {rs} shape {rshape:?})",
+            cm/cb, if (csum-cs).abs()/(cs.abs()+1e-9)<1e-3 {"OK".to_string()} else {format!("DIFF {csum:.4e} vs {cs:.4e}")},
+            rm/rb, if (rsum-rs).abs()<0.5 {"OK"} else {"DIFF"});
     }
 }

@@ -1,0 +1,383 @@
+  [2m2026-06-22T17:59:50.870753Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSelected worker: ovh-a at ubuntu@51.222.245.56 (2 slots remaining after reservation, speed 50.0)[0m
+    [2;3mat[0m rch/src/hook.rs:921 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:51.735180Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mStarting remote compilation pipeline for frankentorch-kgs4.146-cdist-20260622133636 (hash: 1189dcb35ba1455b)[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:241 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:51.735242Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mPrepared dependency sync manifest for 13 roots[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:263 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:52.568906Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mSyncing project to worker ovh-a...[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:323 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:52.568959Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636 -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636 on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:53.294380Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 725ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:53.294443Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-api -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-api on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:53.807636Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 513ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:53.807716Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-autograd -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-autograd on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:54.298105Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 490ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:54.298179Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-conformance -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-conformance on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:54.780771Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 482ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:54.780847Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-core -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-core on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:55.239440Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 458ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:55.239521Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-data -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-data on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:55.749544Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 510ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:55.749610Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-device -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-device on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:56.244738Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 495ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:56.244797Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-dispatch -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-dispatch on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:56.689521Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 444ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:56.689638Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-kernel-cpu -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-kernel-cpu on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:57.206262Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 516ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:57.206338Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-nn -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-nn on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:57.700232Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 493ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:57.700288Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-optim -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-optim on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:58.170856Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 470ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:58.170920Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-runtime -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-runtime on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:58.660460Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 489ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:58.660520Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-serialize -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-serialize on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:59.135168Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 474ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T17:59:59.135202Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mSync complete: 4827 files, 319476 bytes in 6559ms[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:486 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T18:00:02.333787Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mExecuting command remotely: cargo clippy -p ft-api --all-targets -- -D warnings[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:529 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-22T18:00:02.333845Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRewriting CARGO_TARGET_DIR for remote execution (worker-scoped path): /data/projects/.rch-targets/frankentorch-cod-a -> /data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/.rch-target-ovh-a-pool-f5f6f8c795a8dcc2375945a9c599ca6a[0m
+    [2;3mat[0m rch/src/transfer.rs:799 [2;3mon[0m ThreadId(1)
+
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded anes v0.1.6
+  Downloaded anstyle v1.0.14
+  Downloaded autocfg v1.5.0
+  Downloaded aho-corasick v1.1.4
+  Downloaded bytemuck v1.25.0
+  Downloaded matrixmultiply v0.3.10
+  Downloaded crossbeam-epoch v0.9.18
+  Downloaded criterion v0.5.1
+  Downloaded cast v0.3.0
+  Downloaded regex v1.12.3
+  Downloaded quote v1.0.45
+  Downloaded walkdir v2.5.0
+  Downloaded bytemuck_derive v1.10.2
+  Downloaded crossbeam-deque v0.8.6
+  Downloaded serde v1.0.228
+  Downloaded itoa v1.0.18
+  Downloaded libm v0.2.16
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded once_cell v1.21.4
+  Downloaded plotters-backend v0.3.7
+  Downloaded unicode-ident v1.0.24
+  Downloaded serde_json v1.0.149
+  Downloaded num-complex v0.4.6
+  Downloaded clap_lex v1.1.0
+  Downloaded cfg-if v1.0.4
+  Downloaded clap v4.6.1
+  Downloaded is-terminal v0.4.17
+  Downloaded same-file v1.0.6
+  Downloaded proc-macro2 v1.0.106
+  Downloaded ciborium-io v0.2.2
+  Downloaded tinytemplate v1.2.1
+  Downloaded zerocopy-derive v0.8.48
+  Downloaded rayon-core v1.13.0
+  Downloaded plotters-svg v0.3.7
+  Downloaded num-traits v0.2.19
+  Downloaded zerocopy v0.8.48
+  Downloaded memchr v2.8.0
+  Downloaded syn v2.0.117
+  Downloaded regex-automata v0.4.14
+  Downloaded libc v0.2.185
+  Downloaded rawpointer v0.2.1
+  Downloaded oorandom v11.1.5
+  Downloaded serde_derive v1.0.228
+  Downloaded half v2.7.1
+  Downloaded either v1.15.0
+  Downloaded safe_arch v0.7.4
+  Downloaded ciborium-ll v0.2.2
+  Downloaded rayon v1.12.0
+  Downloaded wide v0.7.33
+  Downloaded zmij v1.0.21
+  Downloaded plotters v0.3.7
+  Downloaded regex-syntax v0.8.10
+  Downloaded itertools v0.10.5
+  Downloaded ciborium v0.2.2
+  Downloaded criterion-plot v0.5.0
+  Downloaded serde_core v1.0.228
+  Downloaded clap_builder v4.6.0
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling autocfg v1.5.0
+   Compiling zerocopy v0.8.48
+   Compiling crossbeam-utils v0.8.21
+    Checking cfg-if v1.0.4
+   Compiling rayon-core v1.13.0
+    Checking either v1.15.0
+   Compiling serde_core v1.0.228
+   Compiling libm v0.2.16
+   Compiling zmij v1.0.21
+   Compiling serde v1.0.228
+    Checking rawpointer v0.2.1
+   Compiling serde_json v1.0.149
+   Compiling libc v0.2.185
+    Checking plotters-backend v0.3.7
+    Checking memchr v2.8.0
+    Checking clap_lex v1.1.0
+    Checking anstyle v1.0.14
+    Checking itoa v1.0.18
+    Checking ciborium-io v0.2.2
+    Checking regex-syntax v0.8.10
+    Checking itertools v0.10.5
+    Checking plotters-svg v0.3.7
+    Checking same-file v1.0.6
+    Checking cast v0.3.0
+    Checking anes v0.1.6
+    Checking clap_builder v4.6.0
+    Checking once_cell v1.21.4
+   Compiling num-traits v0.2.19
+   Compiling matrixmultiply v0.3.10
+    Checking walkdir v2.5.0
+    Checking oorandom v11.1.5
+    Checking crossbeam-epoch v0.9.18
+    Checking crossbeam-deque v0.8.6
+   Compiling syn v2.0.117
+    Checking num-complex v0.4.6
+    Checking plotters v0.3.7
+    Checking regex-automata v0.4.14
+    Checking rayon v1.12.0
+    Checking criterion-plot v0.5.0
+    Checking is-terminal v0.4.17
+    Checking clap v4.6.1
+    Checking regex v1.12.3
+   Compiling bytemuck_derive v1.10.2
+   Compiling zerocopy-derive v0.8.48
+   Compiling serde_derive v1.0.228
+    Checking bytemuck v1.25.0
+    Checking safe_arch v0.7.4
+    Checking wide v0.7.33
+    Checking tinytemplate v1.2.1
+    Checking half v2.7.1
+    Checking ft-core v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-core)
+    Checking ciborium-ll v0.2.2
+    Checking ciborium v0.2.2
+    Checking criterion v0.5.1
+    Checking ft-kernel-cpu v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-kernel-cpu)
+    Checking ft-runtime v0.1.0 (/data/projects/.scratch/frankentorch-kgs4.146-cdist-20260622133636/crates/ft-runtime)
+error: manual implementation of `.is_multiple_of()`
+    --> crates/ft-kernel-cpu/src/lib.rs:3885:31
+     |
+3885 |     debug_assert!(h_kv > 0 && h_q % h_kv == 0);
+     |                               ^^^^^^^^^^^^^^^ help: replace with: `h_q.is_multiple_of(h_kv)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+     = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+
+error: it looks like you're manually copying between slices
+     --> crates/ft-kernel-cpu/src/lib.rs:13060:9
+      |
+13060 | /         for inner in 0..inner_size {
+13061 | |             acc[inner] += src[inner];
+13062 | |             dst[inner] = acc[inner];
+13063 | |         }
+      | |_________^ help: try replacing the loop by: `dst[..inner_size].copy_from_slice(&acc[..inner_size]);`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_memcpy
+      = note: `-D clippy::manual-memcpy` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::manual_memcpy)]`
+
+error: it looks like you're manually copying between slices
+     --> crates/ft-kernel-cpu/src/lib.rs:13530:9
+      |
+13530 | /         for inner in 0..inner_size {
+13531 | |             acc[inner] += src[inner];
+13532 | |             dst[inner] = acc[inner];
+13533 | |         }
+      | |_________^ help: try replacing the loop by: `dst[..inner_size].copy_from_slice(&acc[..inner_size]);`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_memcpy
+
+error: it looks like you're manually copying between slices
+     --> crates/ft-kernel-cpu/src/lib.rs:13618:9
+      |
+13618 | /         for inner in 0..inner_size {
+13619 | |             acc[inner] *= src[inner];
+13620 | |             dst[inner] = acc[inner];
+13621 | |         }
+      | |_________^ help: try replacing the loop by: `dst[..inner_size].copy_from_slice(&acc[..inner_size]);`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_memcpy
+
+error: doc list item without indentation
+     --> crates/ft-kernel-cpu/src/lib.rs:16913:5
+      |
+16913 | /// Batched matrix exponential: input `[..., k, k]` -> `[B*k*k]` (same shape). Parallelizes the verified
+      |     ^
+      |
+      = help: if this is supposed to be its own paragraph, add a blank line
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#doc_lazy_continuation
+      = note: `-D clippy::doc-lazy-continuation` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::doc_lazy_continuation)]`
+help: indent this line
+      |
+16913 | ///    Batched matrix exponential: input `[..., k, k]` -> `[B*k*k]` (same shape). Parallelizes the verified
+      |     +++
+
+error: doc list item without indentation
+     --> crates/ft-kernel-cpu/src/lib.rs:16914:5
+      |
+16914 | /// 2-D [`matrix_exp_contiguous_f64`] over the batch. PyTorch loops its scaling-squaring/Padé per plane
+      |     ^
+      |
+      = help: if this is supposed to be its own paragraph, add a blank line
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#doc_lazy_continuation
+help: indent this line
+      |
+16914 | ///    2-D [`matrix_exp_contiguous_f64`] over the batch. PyTorch loops its scaling-squaring/Padé per plane
+      |     +++
+
+error: doc list item without indentation
+     --> crates/ft-kernel-cpu/src/lib.rs:16915:5
+      |
+16915 | /// (slow for small k); FT parallelizes. Bit-identical to looping the 2-D matrix_exp. (BlackThrush)
+      |     ^
+      |
+      = help: if this is supposed to be its own paragraph, add a blank line
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#doc_lazy_continuation
+help: indent this line
+      |
+16915 | ///    (slow for small k); FT parallelizes. Bit-identical to looping the 2-D matrix_exp. (BlackThrush)
+      |     +++
+
+error: very complex type used. Consider factoring parts into `type` definitions
+     --> crates/ft-kernel-cpu/src/lib.rs:19503:14
+      |
+19503 |     let per: Vec<Option<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)>> = data
+      |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+      = note: `-D clippy::type-complexity` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: manual implementation of `.is_multiple_of()`
+     --> crates/ft-kernel-cpu/src/lib.rs:19896:19
+      |
+19896 |     if kk == 0 || grad_sigma.len() % kk != 0 {
+      |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!grad_sigma.len().is_multiple_of(kk)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+
+error: manual implementation of `.is_multiple_of()`
+     --> crates/ft-kernel-cpu/src/lib.rs:19943:8
+      |
+19943 |     if evecs.len() % total_g != 0 {
+      |        ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!evecs.len().is_multiple_of(total_g)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+
+error: manual implementation of `.is_multiple_of()`
+     --> crates/ft-kernel-cpu/src/lib.rs:19950:18
+      |
+19950 |     if k == 0 || total_g % k != 0 {
+      |                  ^^^^^^^^^^^^^^^^ help: replace with: `!total_g.is_multiple_of(k)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+
+error: very complex type used. Consider factoring parts into `type` definitions
+     --> crates/ft-kernel-cpu/src/lib.rs:22003:6
+      |
+22003 | ) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>), KernelError> {
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+
+error: it looks like you're manually copying between slices
+     --> crates/ft-kernel-cpu/src/lib.rs:27764:9
+      |
+27764 | /         for inner in 0..inner_size {
+27765 | |             acc[inner] += src[inner];
+27766 | |             dst[inner] = acc[inner];
+27767 | |         }
+      | |_________^ help: try replacing the loop by: `dst[..inner_size].copy_from_slice(&acc[..inner_size]);`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_memcpy
+
+error: it looks like you're manually copying between slices
+     --> crates/ft-kernel-cpu/src/lib.rs:27842:9
+      |
+27842 | /         for inner in 0..inner_size {
+27843 | |             acc[inner] += src[inner];
+27844 | |             dst[inner] = acc[inner];
+27845 | |         }
+      | |_________^ help: try replacing the loop by: `dst[..inner_size].copy_from_slice(&acc[..inner_size]);`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_memcpy
+
+error: it looks like you're manually copying between slices
+     --> crates/ft-kernel-cpu/src/lib.rs:27915:9
+      |
+27915 | /         for inner in 0..inner_size {
+27916 | |             acc[inner] *= src[inner];
+27917 | |             dst[inner] = acc[inner];
+27918 | |         }
+      | |_________^ help: try replacing the loop by: `dst[..inner_size].copy_from_slice(&acc[..inner_size]);`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_memcpy
+
+error: could not compile `ft-kernel-cpu` (lib) due to 15 previous errors
+  [2m2026-06-22T18:00:12.633857Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mRemote command finished: exit=101 in 10299ms[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:653 [2;3mon[0m ThreadId(1)
+
+[RCH] remote ovh-a failed (exit 101)

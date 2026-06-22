@@ -8,10 +8,10 @@ use ft_autograd::BackwardOptions;
 use ft_core::ExecutionMode;
 
 fn main() {
-    let xv: Vec<f64> = (0..2 * 1 * 5 * 5)
+    let xv: Vec<f64> = (0..2 * 5 * 5)
         .map(|i| (i % 7) as f64 * 0.1 - 0.3)
         .collect();
-    let wv: Vec<f64> = (0..3 * 1 * 3 * 3)
+    let wv: Vec<f64> = (0..3 * 3 * 3)
         .map(|i| (i % 5) as f64 * 0.2 - 0.4)
         .collect();
     let bv: Vec<f64> = vec![0.1, -0.2, 0.3];

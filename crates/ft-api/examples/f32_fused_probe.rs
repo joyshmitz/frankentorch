@@ -3,7 +3,7 @@ use ft_api::FrankenTorchSession; use ft_core::{ExecutionMode, DType};
 fn main() {
     for (bb,k) in [(100000usize,4usize),(20000,16)] {
         let mut a=vec![0.0f64; bb*k*k];
-        for x in 0..bb*k*k { a[x]=(((x*2654435761usize)%9973) as f64)*0.001-5.0; }
+        for (x, value) in a.iter_mut().enumerate().take(bb*k*k) { *value=(((x*2654435761usize)%9973) as f64)*0.001-5.0; }
         for b in 0..bb { for d in 0..k { a[b*k*k+d*k+d]+=(2*k) as f64; } }
         let rhs:Vec<f64>=(0..bb*k*2).map(|x| (((x*40503usize)%7919) as f64)*0.01-3.0).collect();
         let run=|op:&str| -> f64 {

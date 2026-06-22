@@ -5229,6 +5229,36 @@ MKL-batched (inv/solve/cholesky/lu/trsm/getrs), potrf/getrf-fast (det/slogdet/ch
 matmul-MKL (matrix_power). Next durable perf needs a genuinely different (non-linalg, non-fused)
 regime. AGENT cc. Score: 0W / 0L / 3N (negative map).
 
+## 2026-06-22 - BOLD-VERIFY correction: cdist GRAD fused FT-internal gap closed, residual torch loss remains
+
+Bead `frankentorch-kgs4.146`, assignee `cod-a`, agent `IvoryDeer`. The previous cdist-grad
+"do not pursue" conclusion was too conservative for the FT-internal gap: a narrow f64 custom
+autograd path for `tensor_cdist` p=1 and p=2 removes the broadcasted `[P,R,M]` tape for the
+large-distance rows while preserving the existing p=2 matmul-identity forward and p=1 direct
+Manhattan forward.
+
+Evidence (crate-scoped only, `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a`,
+`cargo run --release -p ft-api --example cdist_grad_h2h`; PyTorch unavailable on RCH and local
+python in this environment, so live run records FT rows and the PyTorch comparison below uses the
+local torch 2.12.0 rows from the immediately preceding probe):
+
+- Same-worker FT before/after on RCH `vmi1149989`, `origin/main` baseline artifact
+  `artifacts/perf/frankentorch-kgs4.146/pass5_baseline_origin_main_vmi_cdist_grad_h2h.log`,
+  after artifact `artifacts/perf/frankentorch-kgs4.146/pass4_after_cdist_grad_h2h.log`:
+  `[1500,1500,8]` p=1 `1097.726ms -> 9.067ms` = `121.1x`; p=2 `205.382ms -> 14.947ms` = `13.7x`.
+  `[1000,1000,16]` p=1 `941.616ms -> 6.065ms` = `155.3x`; p=2 `109.296ms -> 9.923ms` = `11.0x`.
+- Correctness: `cargo check -p ft-api --example cdist_grad_h2h` GREEN; `cargo test -p ft-api cdist
+  --lib -- --nocapture` GREEN, 11 cdist tests including new p=1 two-input gradient propagation.
+- Residual vs PyTorch reference from the prior torch 2.12.0 probe: after FT is still slower on the
+  same rows, approximately p=1 `[1500,1500,8]` `9.067ms` vs torch `7.0ms` = `1.30x slower`;
+  p=2 `[1500,1500,8]` `14.947ms` vs torch `5.1ms` = `2.93x slower`; p=1 `[1000,1000,16]`
+  `6.065ms` vs torch `5.2ms` = `1.17x slower`; p=2 `[1000,1000,16]` `9.923ms` vs torch
+  `2.7ms` = `3.68x slower`.
+
+Decision: KEEP. This is not a PyTorch win, but it is far from a zero-gain lever and converts the
+old 30-230x FT gradient wall into a residual ~1.2-3.7x PyTorch loss. Further cdist work should move
+to deeper kernel-level vectorization/threading; do not repeat graph-level broadcast-removal levers.
+
 ## 2026-06-22 - NEGATIVE: special-function elementwise grads are PARITY-WALLED (both parallelize)
 
 Probed the expensive elementwise special functions as a fresh non-linalg regime (torch fwd+bwd,
