@@ -67,7 +67,14 @@ is explicitly satisfied.
   renorm is niche (mainly embedding max_norm regularization), and (b) PARITY RISK — a fused parallel
   norm reduction won't bit-match the composed path's tensor_sum order (value op → "parity absolute"
   applies), so it needs either exact replication of the composed reduction or a tolerance-policy call.
-  Low-EV given niche+parity; recorded as a flagged lever, not shipped.
+  UPDATE 2026-06-22 — LEVER SHIPPED to PARITY (not a PyTorch win): added a no-grad f64 dim==0 fast path
+  (each dim-0 slice is contiguous → one parallel pass: per-slice `|x|.powf(p)` sum, `sum.powf(1/p)`,
+  conditional scale). Parity held (7 renorm lib tests + 199 conformance pass — the sequential per-slice
+  sum + `powf` match the composed abs→pow→sum→pow path closely enough). FT 334→145ms (2.3x INTERNAL),
+  now PARITY with PyTorch (145 vs 139ms). NOT a PyTorch win: bit-exactness REQUIRES `powf` (tensor_pow
+  defers to libm pow bit-for-bit; `x*x` for p=2 would be ~10x cheaper but diverges + the tncnq torch-
+  match forbids changing tensor_pow) — so the 16M powf calls are the wall, same as PyTorch's own norm.
+  Shipped as a green internal improvement (removes the 2.4x-slower silent gap), like quantile routing.
 - quantile_dim single-q no-grad was 5.7x SLOW (silent) — routed to the parallel quickselect fast path
   → 5x internal, PARITY with PyTorch (not yet a win): a selection-op scan found PyTorch's `quantile` is
   SORT-based + slow (73ms / 190ms @[4000,4000]/[20000,2000], dim=1) while its `median` is introselect-
