@@ -98,13 +98,18 @@ is explicitly satisfied.
   PyTorch only has fast paths for p=1 (8.5ms) and p=2 (3.56ms, the ‖x−y‖²=‖x‖²+‖y‖²−2x·y MATMUL trick);
   general p is slow (p=3 210ms, p=4 249ms, p=0.5 561ms — no trick, O(n·m·d) powf). FT (parallel powf,
   compute-dominated so clears the session floor) WINS general p: **p=3 1.26x, p=4 1.50x, p=0.5 1.79x**
-  faster — an existing win, no change. BUT FT p=2 = 163ms vs PyTorch 3.56ms = **45.77x SLOWER** (FT does
-  naive O(n·m·d); PyTorch uses the GEMM trick). LEVER (high value, 45x, but POLICY-GATED — not done): a
-  p=2 matmul-trick fast path (X@Yᵀ via FT's fast GEMM + ‖·‖² + sqrt) would ~match PyTorch's 3.56ms, but
-  the trick has CATASTROPHIC CANCELLATION for nearby points — FT's naive cdist is MORE accurate, and the
-  trick changes FT's cdist p=2 values (breaks existing accuracy + tests). PyTorch itself gates this
-  (`compute_mode=donot_use_mm_for_euclid_dist`). So matching PyTorch's speed = adopting PyTorch's
-  accuracy downgrade — an owner/parity-policy decision, flagged not shipped. pdist p=2 likely same.
+  faster — an existing win, no change. BUT FT p=2 = 163ms vs PyTorch 3.56ms = **45.77x SLOWER**.
+  CORRECTION (my first note here was WRONG — said "FT does naive, trick is policy-gated by accuracy"):
+  FT cdist p=2 ALREADY USES THE MATMUL TRICK (lib.rs ~9290-9337, d²=‖x1‖²+‖x2‖²−2·x1·x2ᵀ, same accuracy
+  as PyTorch — NOT a policy/accuracy issue). The 45x is COMPOSITION OVERHEAD: the trick is built from
+  ~8+ autograd tape ops (mul×2, matmul, sum_dim×2, unsqueeze×2, EXPAND×2 to [P,R], add, mul_scalar, sub,
+  clamp, sqrt) — each materialising [P,R] + building/discarding tape even in no-grad. General-p has a
+  fused no-grad kernel (cdist_forward_f64, why it wins); p=2 has NONE. LEVER (bit-exact, not policy):
+  a no-grad p=2 fast path = one GEMM (raw matmul kernel) + per-row ‖·‖² + a FUSED assembly pass
+  (out[i,j]=sqrt(max(nx[i]+ny[j]−2·cross[i,j],0))) — same trick math → bit-exact with the composed path,
+  ~16x internal toward PyTorch's ~3.56ms (the GEMM is ~1ms; FT was wasting it in composition). Needs the
+  raw GEMM kernel + sum order to bit-match tensor_matmul/sum_dim. Deferred this turn (fiddly bit-match);
+  flagged as a genuine bit-exact win, NOT accuracy-gated. pdist p=2 same pattern.
 - quantile_dim single-q no-grad was 5.7x SLOW (silent) — routed to the parallel quickselect fast path
   → 5x internal, PARITY with PyTorch (not yet a win): a selection-op scan found PyTorch's `quantile` is
   SORT-based + slow (73ms / 190ms @[4000,4000]/[20000,2000], dim=1) while its `median` is introselect-
