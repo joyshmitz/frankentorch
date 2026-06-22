@@ -159,7 +159,10 @@ is explicitly satisfied.
   trick to the cdist tolerance contract). 163→22.8ms (7.1x internal), removing the 45x loss. Residual:
   still 6.4x slower than PyTorch's 3.56ms — FT's GEMM + session I/O (tensor_variable out [P,R]=32MB +
   read-back) vs PyTorch's tight fused/in-place; that residual is the session-arena floor again, not the
-  op. pdist p=2 ALSO SHIPPED (same fused pattern): FT 19.3ms vs PyTorch 8.34ms = 2.32x slower (residual smaller than cdist's 6.4x — pdist output is the condensed vector, not [N,N]); bit-exact (8 pdist + 199 conformance). Batched (3-D) cdist p=2 ALSO fused (per-batch GEMM loop): composed 90.1ms -> fused 26.6ms (3.4x internal), bit-exact (10 cdist tests); residual 13x vs PyTorch's 2.05ms bmm-trick (8 sequential small GEMMs + session I/O).
+  op. pdist p=2 ALSO SHIPPED (same fused pattern): FT 19.3ms vs PyTorch 8.34ms = 2.32x slower (residual smaller than cdist's 6.4x — pdist output is the condensed vector, not [N,N]); bit-exact (8 pdist + 199 conformance). Batched (3-D) cdist p=2 ALSO fused (per-batch GEMM loop): composed 90.1ms -> fused 26.6ms (3.4x internal), bit-exact (10 cdist tests); residual 13x vs PyTorch's 2.05ms bmm-trick (8 sequential small GEMMs + session I/O). f32 cdist p=2
+  fuse NOT pursued (2026-06-22): no `matmul_rhs_transposed_contiguous_f32` kernel exists (would need a
+  new sgemm-based kernel = kernel-crate work) AND PyTorch f32 cdist p=2 is very tight (1.58ms) so a
+  fused FT f32 path would be a residual loss — low-EV. f64 fused paths (above) are the shipped wins.
 - pairwise_distance fused — TRIED + REVERTED (2026-06-22): added a no-grad f64 fused path (inline
   per-row ‖x1−x2‖_p + eps, no diff materialisation). REVERTED unshipped for two reasons: (1) NO lib
   test matches "pairwise" — couldn't verify bit-exactness (the cdist/pdist/normalize/renorm fuses were
