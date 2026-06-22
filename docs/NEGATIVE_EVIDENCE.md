@@ -75,6 +75,13 @@ is explicitly satisfied.
   defers to libm pow bit-for-bit; `x*x` for p=2 would be ~10x cheaper but diverges + the tncnq torch-
   match forbids changing tensor_pow) — so the 16M powf calls are the wall, same as PyTorch's own norm.
   Shipped as a green internal improvement (removes the 2.4x-slower silent gap), like quantile routing.
+- composed-NORM ops measured (2026-06-22, @[4000,4000]): NOT all composed-norm ops lose like renorm did.
+  cosine_similarity(dim=1) FT 37.84ms vs PyTorch 74.16ms = **FT 1.96x FASTER** (already a win, no change
+  — FT's sub/mul/sum-dot + norm kernels beat PyTorch's F.cosine_similarity; PyTorch's is the slow one).
+  pairwise_distance(p2) FT 55.42ms vs PyTorch 47.60ms = 1.16x slower (composes sub→norm_dim→add = 3
+  passes; near-parity, a fuse-to-1-pass could reach ~parity/slight-win but low-EV at 1.16x). normalize:
+  PyTorch 26ms (fast, not probed). LESSON: measure composed ops individually — cosine_sim's norm
+  composition already beats PyTorch (the "composed = slow" inference from renorm does NOT generalize).
 - quantile_dim single-q no-grad was 5.7x SLOW (silent) — routed to the parallel quickselect fast path
   → 5x internal, PARITY with PyTorch (not yet a win): a selection-op scan found PyTorch's `quantile` is
   SORT-based + slow (73ms / 190ms @[4000,4000]/[20000,2000], dim=1) while its `median` is introselect-
