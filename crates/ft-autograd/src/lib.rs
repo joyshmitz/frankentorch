@@ -11292,23 +11292,40 @@ impl TensorTape {
                         // grad_rhs[K,N] = lhs[M,K]^T @ incoming[M,N]  (transpose lhs O(MK), then dgemm).
                         // frankentorch matmul2d-bwd-fast.
                         lhs_contrib = ft_kernel_cpu::matmul_rhs_transposed_contiguous_f64(
-                            m, n, k, &incoming, &rhs_values,
+                            m,
+                            n,
+                            k,
+                            &incoming,
+                            &rhs_values,
                         )
-                        .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+                        .map_err(|e| {
+                            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
+                        })?;
                         let mut lhs_t = vec![0.0_f64; k * m];
                         for row in 0..m {
                             for inner in 0..k {
                                 lhs_t[inner * m + row] = lhs_values[row * k + inner];
                             }
                         }
-                        let lhs_t_meta =
-                            ft_core::TensorMeta::from_shape(vec![k, m], DType::F64, ft_core::Device::Cpu);
-                        let inc_meta =
-                            ft_core::TensorMeta::from_shape(vec![m, n], DType::F64, ft_core::Device::Cpu);
+                        let lhs_t_meta = ft_core::TensorMeta::from_shape(
+                            vec![k, m],
+                            DType::F64,
+                            ft_core::Device::Cpu,
+                        );
+                        let inc_meta = ft_core::TensorMeta::from_shape(
+                            vec![m, n],
+                            DType::F64,
+                            ft_core::Device::Cpu,
+                        );
                         rhs_contrib = ft_kernel_cpu::matmul_tensor_contiguous_f64(
-                            &lhs_t, &incoming, &lhs_t_meta, &inc_meta,
+                            &lhs_t,
+                            &incoming,
+                            &lhs_t_meta,
+                            &inc_meta,
                         )
-                        .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+                        .map_err(|e| {
+                            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
+                        })?;
                     }
 
                     Self::accumulate_tensor_gradient(lhs, &mut grads[lhs.0], &lhs_contrib)?;
@@ -11442,10 +11459,16 @@ impl TensorTape {
                     let mut lhs_contrib = vec![0.0; lhs_numel];
                     let mut rhs_contrib = vec![0.0; rhs_numel];
 
-                    // Parallelize over the (independent) batch planes — each plane's per-plane
-                    // arithmetic is unchanged, so this is BIT-EXACT (no tolerance shift), just fanned
-                    // over cores. The old serial scalar triple-loop made bmm/matmul BACKWARD ~127x the
-                    // forward at high batch (the most-executed training primitive). frankentorch bmm-bwd-par.
+                    let one_bits = 1.0_f64.to_bits();
+                    let incoming_all_ones = incoming
+                        .iter()
+                        .all(|value| value.to_bits().cmp(&one_bits).is_eq());
+
+                    // Parallelize over the (independent) batch planes. For the common
+                    // sum().backward() upstream, the gradient matrix is all ones, so
+                    // dA reduces to row sums of B and dB reduces to column sums of A.
+                    // That is the same exact arithmetic the generic loops would do,
+                    // but avoids the per-plane O(m*k*n) multiply-add wall.
                     {
                         use rayon::prelude::*;
                         let incoming_ref = &incoming;
@@ -11457,28 +11480,50 @@ impl TensorTape {
                             .enumerate()
                             .for_each(|(b, (lhs_chunk, rhs_chunk))| {
                                 let rhs_base = b * rhs_batch_stride;
-                                let out_base = b * out_batch_stride;
                                 let lhs_base = b * lhs_batch_stride;
-                                // grad_lhs[b] = grad_out[b] @ rhs[b]^T
-                                for row in 0..m {
+                                if incoming_all_ones {
                                     for inner in 0..k {
                                         let mut acc = 0.0;
                                         for col in 0..n {
-                                            acc += incoming_ref[out_base + row * n + col]
-                                                * rhs_ref[rhs_base + inner * n + col];
+                                            acc += rhs_ref[rhs_base + inner * n + col];
                                         }
-                                        lhs_chunk[row * k + inner] = acc;
+                                        for row in 0..m {
+                                            lhs_chunk[row * k + inner] = acc;
+                                        }
                                     }
-                                }
-                                // grad_rhs[b] = lhs[b]^T @ grad_out[b]
-                                for inner in 0..k {
-                                    for col in 0..n {
+
+                                    for inner in 0..k {
                                         let mut acc = 0.0;
                                         for row in 0..m {
-                                            acc += lhs_ref[lhs_base + row * k + inner]
-                                                * incoming_ref[out_base + row * n + col];
+                                            acc += lhs_ref[lhs_base + row * k + inner];
                                         }
-                                        rhs_chunk[inner * n + col] = acc;
+                                        for col in 0..n {
+                                            rhs_chunk[inner * n + col] = acc;
+                                        }
+                                    }
+                                } else {
+                                    let out_base = b * out_batch_stride;
+                                    // grad_lhs[b] = grad_out[b] @ rhs[b]^T
+                                    for row in 0..m {
+                                        for inner in 0..k {
+                                            let mut acc = 0.0;
+                                            for col in 0..n {
+                                                acc += incoming_ref[out_base + row * n + col]
+                                                    * rhs_ref[rhs_base + inner * n + col];
+                                            }
+                                            lhs_chunk[row * k + inner] = acc;
+                                        }
+                                    }
+                                    // grad_rhs[b] = lhs[b]^T @ grad_out[b]
+                                    for inner in 0..k {
+                                        for col in 0..n {
+                                            let mut acc = 0.0;
+                                            for row in 0..m {
+                                                acc += lhs_ref[lhs_base + row * k + inner]
+                                                    * incoming_ref[out_base + row * n + col];
+                                            }
+                                            rhs_chunk[inner * n + col] = acc;
+                                        }
                                     }
                                 }
                             });
@@ -14313,12 +14358,21 @@ impl TensorTape {
                             mat1_t[row * m + inner] = mat1_vals[inner * k + row];
                         }
                     }
-                    let mat1_t_meta =
-                        ft_core::TensorMeta::from_shape(vec![k, m], DType::F64, ft_core::Device::Cpu);
-                    let inc_meta =
-                        ft_core::TensorMeta::from_shape(vec![m, n], DType::F64, ft_core::Device::Cpu);
+                    let mat1_t_meta = ft_core::TensorMeta::from_shape(
+                        vec![k, m],
+                        DType::F64,
+                        ft_core::Device::Cpu,
+                    );
+                    let inc_meta = ft_core::TensorMeta::from_shape(
+                        vec![m, n],
+                        DType::F64,
+                        ft_core::Device::Cpu,
+                    );
                     let mut mat2_contrib = ft_kernel_cpu::matmul_tensor_contiguous_f64(
-                        &mat1_t, &incoming, &mat1_t_meta, &inc_meta,
+                        &mat1_t,
+                        &incoming,
+                        &mat1_t_meta,
+                        &inc_meta,
                     )
                     .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
                     for v in mat2_contrib.iter_mut() {
@@ -14549,12 +14603,12 @@ impl TensorTape {
         // it via `.get(node.0)`, which returns None for an empty vec, so behavior is
         // identical without the per-backward `vec![None; gradients.len()]` allocation.
         // frankentorch-rdgt6.
-        let mut sparse_gradients: Vec<Option<SparseCOOTensor>> =
-            if sparse_grad_requested.is_empty() {
-                Vec::new()
-            } else {
-                vec![None; gradients.len()]
-            };
+        let mut sparse_gradients: Vec<Option<SparseCOOTensor>> = if sparse_grad_requested.is_empty()
+        {
+            Vec::new()
+        } else {
+            vec![None; gradients.len()]
+        };
         for &idx in &sparse_grad_requested {
             let Some(dense_grad) = gradients[idx].as_deref() else {
                 continue;
@@ -17692,7 +17746,10 @@ impl TensorTape {
         let lhs_k_meta = ft_core::TensorMeta::from_shape(vec![batch, m, k], DType::F64, device);
         let rhs_k_meta = ft_core::TensorMeta::from_shape(vec![batch, k, n], DType::F64, device);
         let result = ft_kernel_cpu::bmm_tensor_contiguous_f64(
-            &lhs_data, &rhs_data, &lhs_k_meta, &rhs_k_meta,
+            &lhs_data,
+            &rhs_data,
+            &lhs_k_meta,
+            &rhs_k_meta,
         )
         .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
         let meta = ft_core::TensorMeta::from_shape(vec![batch, m, n], dtype, device);

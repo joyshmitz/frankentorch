@@ -6226,3 +6226,27 @@ grad_mat2 via transpose+matmul (dgemm), both auto-parallel, ×alpha. AFTER (RAYO
 e4yuj packed-GEMM lever). BIT-TOLERANCE: ft-autograd 476/476 GREEN. This was a severe latent training bug
 (nn.Linear backward unusable for real training). Not a vs-torch WIN (still 0.21-0.35x) but removes a
 catastrophic pathology + makes Linear training usable. (ft-conformance gate = known sel7 red, unrelated.) AGENT cc.
+
+## 2026-06-22 - WIN: bmm/matmul BACKWARD sum-upstream shortcut = 1.18-1.40x internal, 1.39x vs torch clean row
+
+Targeted `frankentorch-e4yuj.1` (cod-b/IvoryDeer) after the parallel BMM-backward keep above: the common
+`C=bmm(A,B); sum().backward()` training primitive still sent an all-ones upstream gradient through the
+generic rank-3 `Bmm` backward triple loops. Added the same exact all-ones shortcut already used by 2-D
+`MatMul` backward: per batch, `grad_A` becomes row sums of `B` fanned across rows, and `grad_B` becomes
+column sums of `A` fanned across columns. Generic non-ones upstream gradients stay on the old path.
+
+Same-worker proof (`rch` ovh-a, `RAYON_NUM_THREADS=64`, warm
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`,
+`cargo run --release -p ft-api --example bmm_grad_tiny_h2h`):
+  `[20000,16]` 155.5ms -> 131.8ms = 1.18x internal
+  `[10000,32]` 315.2ms -> 249.6ms = 1.26x internal
+  `[5000,64]`  706.2ms -> 503.2ms = 1.40x internal
+
+Fresh PyTorch clean row (`.venv-oracle` torch 2.12.0+cpu, 64 threads, same n=16 fixture): torch 183.1ms,
+FT after 131.8ms = 1.39x faster. Larger torch n=32/64 rows were not rerun because the prior clean probe
+already found them unreliable/pathological (>200s per run); FT after completes in 249.6/503.2ms.
+Correctness/proof: `cargo fmt -p ft-autograd -- --check`, `cargo test -p ft-autograd
+bmm_backward_grads_match_finite_diff_nonsquare`, `cargo test -p ft-api bmm_backward_grads_match_torch`,
+`cargo check -p ft-autograd`, and `cargo clippy -p ft-autograd --lib -- -D warnings` all GREEN with
+crate-scoped commands. Score vs PyTorch: 1W (fresh n=16 clean) / 0L / 0N. Source disposition: KEEP.
+AGENT IvoryDeer/cod-b.
