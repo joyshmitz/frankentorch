@@ -4,6 +4,43 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-23 - NEGATIVE (reverted): sort values radix index-width/scratch microlevers regress
+
+Bead `frankentorch-kgs4`, assignee `cod-a`, agent `QuietMeadow`. The current
+open sort-values residual is still the full value+index radix route:
+`[4000,4000]` dim1 FT `233 ms` vs PyTorch `87 ms` = `2.67x SLOWER`, and
+`[20000,2000]` dim1 FT `588 ms` vs PyTorch `206 ms` = `2.85x SLOWER`.
+
+Lever tried and reverted: specialize the radix permutation for lanes with
+`len <= u16::MAX`, storing temporary permutation indices as `u16`, and avoid
+zero-filling scratch buffers before every radix pass. This targeted the
+key-computation/perm-tracking overhead called out by the residual row without
+changing ordering semantics.
+
+Same-host criterion A/B used detached clean worktrees and warm
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a`, command
+`cargo bench -p ft-kernel-cpu --bench sort_bench --
+sort_f64_8192x1024_dim1 --warm-up-time 1 --measurement-time 3 --sample-size 10
+--noplot`:
+
+- Baseline at `1c4bde0f`: `[24.479 ms 24.627 ms 24.878 ms]`.
+- `u16` permutation plus scratch no-zero: `[25.731 ms 26.521 ms 27.992 ms]`
+  = `1.08x` slower by point estimate.
+- Scratch no-zero alone: `[26.461 ms 27.011 ms 27.811 ms]` = `1.10x`
+  slower by point estimate.
+
+RCH also confirmed that worker drift made remote comparisons non-decisive for
+this specific reject: baseline selected `vmi1152480`
+`[42.610 ms 43.603 ms 44.791 ms]`; candidate runs selected `vmi1153651`
+`[78.539 ms 85.684 ms 95.447 ms]` and `ovh-a`
+`[52.076 ms 64.695 ms 75.285 ms]`. The same-host baseline/candidate worktrees
+are the acceptance evidence.
+
+Decision: REVERT. Do not retry radix permutation index-width changes or scratch
+zero-fill microlevers for sort values. The remaining sort-values gap needs a
+different algorithmic lever, a lower-level lane profile that proves a new
+hotspot, or acceptance that PyTorch's tuned sort is the wall.
+
 ## 2026-06-22 - WIN: no-grad dim0 topk small-k selector beats PyTorch
 
 Bead `frankentorch-ycna3`, assignee `cod-a`, agent `QuietMeadow`. The existing
