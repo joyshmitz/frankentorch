@@ -60,6 +60,51 @@ files from pre-existing ft-api rustfmt drift; that accidental formatting churn
 is preserved separately in `stash@{0}` as `cod-a-accidental-ft-api-fmt-churn`
 and is not part of this commit.
 
+## 2026-06-23 - NEGATIVE (reverted): cdist p=2 f32 packed-B panel no reliable gain
+
+Bead/thread `frankentorch-kgs4`, assignee `cod-b`, agent `QuietMeadow`.
+The tracker was not claimable because `.beads/issues.jsonl` contains duplicate
+id `frankentorch-kgs4.150`, so `br ready --json` and
+`br list --status in_progress --json` both failed with `CONFIG_ERROR`. Per the
+contended-tracker rule, this pass proceeded and records the revert here.
+
+Measured residual: no-grad `cdist(x1, x2, p=2)` f32, shape
+`2000x2000x100`, still trails PyTorch after the prior fused
+`sgemm_bt` + in-place assembly keep. Same-worker FT baseline on RCH
+`vmi1149989`, warm
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`, command
+`cargo bench -p ft-api --bench cdist_bench --
+cdist_p2_f32_fused/2000x2000x100 --warm-up-time 1 --measurement-time 3
+--sample-size 10 --noplot`, measured:
+
+- Baseline FT Criterion interval: `[5.3975 ms 6.9195 ms 8.9179 ms]`.
+- Local PyTorch comparator from `.venv-oracle`, torch `2.12.0+cpu`, 32
+  threads, same deterministic sine/cosine inputs: min `1.3921 ms`, median
+  `1.4731 ms`, p95 `1.5740 ms`, checksum `35011956.0`.
+- Baseline ratio by FT midpoint vs PyTorch min: `4.97x SLOWER`
+  (`6.9195 / 1.3921`).
+
+Lever tried and reverted: in f32 `sgemm_bt_2d_parallel`, pack each
+transposed-RHS N tile into contiguous logical `[k,bj]` panel storage before
+calling `matrixmultiply`, mirroring the normal-RHS 2-D GEMM panel layout. The
+candidate preserved the existing bit-exactness gate:
+`cargo test -p ft-kernel-cpu gemm_2d_parallel_is_bit_exact_vs_serial --
+--nocapture` passed on RCH `vmi1149989`.
+
+Candidate Criterion result with the same cdist command and worker:
+
+- Candidate interval: `[5.7609 ms 5.9075 ms 6.1350 ms]`.
+- Criterion change: `[-25.483% -5.6081% +18.849%]`, `p = 0.69`.
+- Criterion verdict: no change in performance detected.
+- Candidate ratio by FT midpoint vs PyTorch min would be `4.24x SLOWER`
+  (`5.9075 / 1.3921`), but this was not reliable enough to ship.
+
+Decision: REVERT. Do not retry f32 `sgemm_bt_2d_parallel` B-panel packing for
+this cdist row unless a lower-level profile isolates strided-B reads as the
+dominant cost and a same-worker Criterion run gives a statistically significant
+win. The remaining residual is still PyTorch's tight f32 cdist kernel versus
+FT's `sgemm_bt`, sqrt assembly, and session/output materialization.
+
 ## 2026-06-23 - WIN: BatchNorm2d f32 scalar-loss identity skips annihilated scans
 
 Bead/thread `frankentorch-kgs4`, assignee `cod-a`, agent `QuietMeadow`.

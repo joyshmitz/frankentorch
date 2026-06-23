@@ -1,0 +1,11 @@
+Command:
+AGENT_NAME=QuietMeadow CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b rch exec -- cargo bench -p ft-api --bench cdist_bench -- cdist_p2_f32_fused/2000x2000x100 --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot
+
+RCH worker: vmi1149989
+
+Result:
+cdist_p2_f32_fused/2000x2000x100
+  time: [5.3975 ms 6.9195 ms 8.9179 ms]
+  Found 2 outliers among 10 measurements (20.00%): 2 high severe
+
+Source state: pre-candidate main at 852dc6fb80b5b783990ecd1db4de571fbfec4210.

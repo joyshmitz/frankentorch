@@ -1,0 +1,13 @@
+Command:
+AGENT_NAME=QuietMeadow RCH_WORKER=vmi1149989 RCH_REQUIRE_REMOTE=1 CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b rch exec -- cargo test -p ft-kernel-cpu gemm_2d_parallel_is_bit_exact_vs_serial -- --nocapture
+
+RCH worker: vmi1149989
+
+Result:
+running 1 test
+test gemm::tile_iso_tests::gemm_2d_parallel_is_bit_exact_vs_serial ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 538 filtered out; finished in 2.16s
+
+Candidate under test:
+temporary f32 sgemm_bt_2d_parallel panel-packing experiment. This source change was reverted after the cdist benchmark verdict showed no statistically significant improvement.
