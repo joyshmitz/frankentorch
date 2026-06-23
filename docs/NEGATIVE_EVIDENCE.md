@@ -6424,3 +6424,14 @@ FT tensor_linalg_matrix_rank (batched svdvals + count) SCALES: @8 24.1ms, @32 9.
 erratically worse at 64t → false). matrix_rank inherits the sound batched-svdvals decomposition-forward vein.
 No source change (FT already batched-parallel); correctness ft-api matrix_rank 4/4 GREEN. Example+ledger only.
 AGENT cc.
+
+## 2026-06-23 - ★WIN (thread-matched): linalg.cond(p=2) 4.5x@8 / 5.2x@32 — torch saturates, FT scales. pinv = LOSS.
+
+torch.linalg.cond(p=2) (B=200 n=96, SVD-based) SATURATES: @8 95.0ms, @32 94.9ms (FLAT, clean low-variance).
+FT tensor_linalg_cond(p=2) (batched svdvals + max/min ratio) SCALES: @8 20.9ms, @32 18.3ms → 4.5x@8, 5.2x@32.
+Same sound batched-svdvals saturation vein as matrix_rank (936f9cf4). No source change; cond 2/2 green.
+NEGATIVE — pinv: torch.linalg.pinv @8 251ms / @32 289ms (saturates) but FT tensor_linalg_pinv @8 1024.8ms /
+@32 733.5ms = 0.25x/0.39x LOSS. pinv needs the FULL SVD (U,S,V) + reconstruct (V S⁻¹ Uᵀ); FT's batched
+full-SVD-WITH-VECTORS + reconstruct is slower than torch's looped gesdd here (svdvals-only is fast, but
+forming+applying U/V is not). So the svdvals-saturation win extends to VALUE-ONLY composites (matrix_rank, cond,
+matrix_norm 2/nuc) but NOT to vector-reconstruction composites (pinv). Example+ledger only. AGENT cc.
