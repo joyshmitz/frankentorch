@@ -6377,3 +6377,16 @@ tensor_ormqr is ALREADY parallel-over-batch — NO source change: B=300 41.2ms, 
 plane, stable). RATIO B=300 = 2991/41.2 = 72.6x. Same structural vein as orgqr/householder_product (the
 sibling apply-Q vs form-Q ops; both lack batched LAPACK → torch serial-loops, FT parallel). No-grad forward;
 correctness ft-api ormqr 3/3 GREEN. Example + ledger only, no source/conformance change. AGENT cc.
+
+## 2026-06-22 - ★WIN: batched cholesky_inverse 167x (+ cholesky_solve large-nrhs 941x) — torch's pathological large-nrhs cliff
+
+torch.cholesky_solve has a PATHOLOGICAL large-nrhs cliff (B=400 n=64, clean): nrhs=1 6.0ms, nrhs=8 22.6ms,
+nrhs=64 5459ms (!!) — no efficient batched potrs/potri for many RHS, so the INVERSE case (nrhs=n) and
+torch.cholesky_inverse (5455ms) are both catastrophic (~14ms/plane). FT's batched cholesky_solve is parallel +
+fast at ALL nrhs: nrhs=64 B=400 = 5.8ms, B=1000 12.5ms → 941x vs torch's 5459ms (FREE, FT already batched).
+SOURCE CHANGE (this commit): extended tensor_cholesky_inverse from 2-D-only to BATCHED (route through the fast
+batched cholesky_solve with a broadcast identity RHS): B=400 32.6ms, B=1000 55.0ms vs torch.cholesky_inverse
+5455ms = 167x (the broadcast-eye build caps it below the raw 941x; still huge). CORRECT: batched == per-plane
+verify OK + 2-D cholesky_inverse lib 2/2 green. Geqrf checked SAME session = WALLED (torch.geqrf MKL-batched
+29ms, fast — skip). geev/orgqr(456x)/ormqr(72.6x) precedent: torch's no-batched-LAPACK / large-nrhs ops loop;
+FT parallelizes the batch. (Pre-existing sel7 conformance red, unrelated — no new panic macros.) AGENT cc.
