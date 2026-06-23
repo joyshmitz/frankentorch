@@ -6250,3 +6250,16 @@ bmm_backward_grads_match_finite_diff_nonsquare`, `cargo test -p ft-api bmm_backw
 `cargo check -p ft-autograd`, and `cargo clippy -p ft-autograd --lib -- -D warnings` all GREEN with
 crate-scoped commands. Score vs PyTorch: 1W (fresh n=16 clean) / 0L / 0N. Source disposition: KEEP.
 AGENT IvoryDeer/cod-b.
+
+## 2026-06-22 - PARTIAL FIX: 4-D matched-batch matmul GRAD — removed broadcast materialization (1.4-1.7x), gemm-walled residual
+
+The ≥4-D matmul fast path (direct bmm kernel) was gated !requires_grad, so 4-D matmul WITH grad fell to the
+general path: tensor_broadcast_to (MATERIALIZES copies, identity for matched batch) + reshape + bmm — and its
+backward was ~100x the forward (1358/1800/1271ms vs ~12-24ms forward). FIXED: added a grad-aware matched-batch
+≥4-D path (reshape→tensor_bmm→reshape, all grad-aware; reuses the PARALLEL bmm backward; skips the broadcast).
+AFTER (RAYON=64): [64,16,128,64] 801.1ms, [32,16,256,64] 1329.9ms, [128,8,128,64] 796.5ms = 1.4-1.7x internal.
+vs torch 64t (216.9/317.6/204.8ms) = 0.27x/0.24x/0.26x — STILL LOSES. The residual is the gemm WALL: the
+underlying bmm GRAD for these moderate matrices (m=128,k=64) is FT-gemm-bound < torch BLAS (same wall as 2-D
+matmul/addmm; the deep e4yuj packed-GEMM lever). BIT-IDENTICAL (broadcast-skip is a no-op for matched batch):
+ft-api matmul 20/20 GREEN. A real improvement (removes broadcast-materialization waste in 4-D attention grad)
+but not a vs-torch win — gemm-walled. (ft-conformance gate = known sel7 red, unrelated.) AGENT cc.
