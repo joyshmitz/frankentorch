@@ -43,6 +43,18 @@ residue probe on the smaller direct shape produced max `dx` `7.32e-8` and max
 `dweight` `2.52e-4`, confirming the removed work is numerical residue rather
 than semantic gradient signal.
 
+Cod-b rebase verification: independently targeted the same gap before seeing
+this upstream landing, then dropped the duplicate source deltas as zero-gain
+after `origin/main` already contained the API-side identity. Same-worker
+verification on `vmi1152480`, warm
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`, measured
+ordinary BatchNorm2d f32 sum at `[25.445 ms 25.742 ms 26.258 ms]` and the
+scalar row at `[21.966 ms 22.473 ms 22.748 ms]`. The local PyTorch sidecar
+(`torch 2.12.1+cpu`, `FT_GAUNTLET_ITERS=100`, 32 threads) measured
+`7.333 ms/iter`, narrowing the scalar FT/PyTorch ratio from `3.33x SLOWER`
+(`24.436 / 7.333`) to `3.06x SLOWER` (`22.473 / 7.333`) under the cod-b
+measurement setup.
+
 Decision: KEEP. Gates: `cargo test -p ft-api functional_batch_norm2d_f32 --lib
 -- --nocapture` passed 6/0; `cargo check -p ft-api --all-targets` passed;
 `cargo clippy -p ft-api --all-targets -- -D warnings` passed after a mechanical
