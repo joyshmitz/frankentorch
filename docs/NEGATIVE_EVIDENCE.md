@@ -4,6 +4,40 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-23 - WIN: no-grad normalize builds output from borrowed input
+
+Bead `frankentorch-session-output-materialization-floor-fhnhg`, assignee
+`cod-a`, agent `QuietMeadow`. The materialization-floor target was the residual
+`tensor_normalize` no-grad f64 dim1 gap after the fused normalize kernel:
+old evidence had `[4000,4000]` still around `5.4x` slower than PyTorch.
+
+Lever shipped: in the contiguous no-grad f64 `tensor_normalize` fast path, borrow
+the input tensor's contiguous values and fill a fresh output buffer directly.
+The prior path used `tensor_values(input)` as the output seed, cloning the full
+input before immediately overwriting every element. Grad-enabled tensors still
+take the tracked `TensorNodeOp::Normalize` path, so backward semantics are
+unchanged.
+
+Same-host head-to-head, local torch `2.12.0+cpu`, warm
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a`, command
+`PYTORCH_PYTHON=/data/projects/frankentorch/.venv-oracle/bin/python
+NORMALIZE_H2H_REPS=3 cargo run --release -p ft-api --example normalize_h2h`,
+shape `[4000,4000]`, `p=2`, `dim=1`, `eps=1e-12`:
+
+- Baseline before the library edit: FT `717.755 ms` vs PyTorch `14.900 ms` =
+  `48.17x SLOWER`, checksum relative error `4.863e-14`.
+- Candidate after clone elision: FT `7.435 ms` vs PyTorch `14.976 ms` =
+  `2.01x FASTER`, checksum relative error `4.863e-14`.
+- Final replay after the harness clippy fix: FT `8.237 ms` vs PyTorch
+  `16.393 ms` = `1.99x FASTER`,
+  checksum relative error `4.863e-14`.
+
+Decision: KEEP. The final replay internal speedup is `87.14x`
+(`717.755 / 8.237`), and the measured row flips from a large PyTorch loss to a
+PyTorch win in the same harness. Proof:
+`cargo test -p ft-api normalize --lib -- --nocapture` passes 11 normalize tests,
+including gradient coverage through the tracked path.
+
 ## 2026-06-23 - NEGATIVE (reverted): sort values radix index-width/scratch microlevers regress
 
 Bead `frankentorch-kgs4`, assignee `cod-a`, agent `QuietMeadow`. The current
