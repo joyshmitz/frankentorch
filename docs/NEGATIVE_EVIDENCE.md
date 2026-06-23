@@ -4,6 +4,45 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-23 - NEGATIVE (reverted): cdist p=2 f32 borrowed-input clone elision no-gain
+
+Bead/thread `frankentorch-kgs4`, assignee `cod-a`, agent `QuietMeadow`.
+The tracker was not claimable in this pass because `.beads/issues.jsonl`
+contains duplicate id `frankentorch-kgs4.150`, so `br ready` and
+`br list --status in_progress --json` both failed with `CONFIG_ERROR`.
+Per the contended-tracker rule, this entry records the attempted lever and
+revert.
+
+Measured residual: no-grad `cdist(x1, x2, p=2)` f32, shape
+`2000x2000x100`, still spends enough time in the fused route to trail PyTorch.
+Same-host baseline used warm
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a`, command
+`cargo bench -p ft-api --bench cdist_bench --
+cdist_p2_f32_fused/2000x2000x100 --warm-up-time 1 --measurement-time 3
+--sample-size 10 --noplot`:
+
+- Baseline FT Criterion interval: `[4.6576 ms 4.7313 ms 4.8137 ms]`.
+- PyTorch local comparator, torch `2.12.0+cpu`, 32 threads:
+  min `1.4025 ms`, median `1.4694 ms`, checksum `35011956.0`.
+- Baseline ratio by FT midpoint vs PyTorch min: `3.37x SLOWER`.
+
+Lever tried and reverted: in the contiguous no-grad f32 fast path, borrow
+`DenseTensor::contiguous_values_f32()` for both inputs instead of cloning via
+`tensor_values_f32()`. This avoided two input materializations before the fused
+norm/matmul/output assembly path and did not alter grad-enabled behavior.
+
+Candidate Criterion result with the same command:
+
+- Candidate interval: `[4.4570 ms 4.6889 ms 5.1817 ms]`.
+- Criterion change: `[-4.5206% +2.3878% +9.7707%]`, `p = 0.55`.
+- Criterion verdict: no change in performance detected.
+
+Decision: REVERT. The two input clones are not the limiting cost for this row;
+do not retry cdist p=2 f32 input-clone elision unless a lower-level profile
+first proves materialization has become dominant. The next credible cdist pass
+needs to target raw SGEMM/threading, output assembly, or session-output overhead
+with a fresh same-worker profile.
+
 ## 2026-06-23 - WIN: no-grad normalize builds output from borrowed input
 
 Bead `frankentorch-session-output-materialization-floor-fhnhg`, assignee
