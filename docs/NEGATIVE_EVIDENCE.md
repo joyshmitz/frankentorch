@@ -6300,3 +6300,17 @@ underlying bmm GRAD for these moderate matrices (m=128,k=64) is FT-gemm-bound < 
 matmul/addmm; the deep e4yuj packed-GEMM lever). BIT-IDENTICAL (broadcast-skip is a no-op for matched batch):
 ft-api matmul 20/20 GREEN. A real improvement (removes broadcast-materialization waste in 4-D attention grad)
 but not a vs-torch win — gemm-walled. (ft-conformance gate = known sel7 red, unrelated.) AGENT cc.
+
+## 2026-06-22 - ★WIN 55-456x: householder_product (orgqr) — torch loops orgqr serially, FT parallel-over-batch
+
+torch.linalg.householder_product (aka torch.orgqr) — form Q from QR reflectors — has NO batched LAPACK orgqr,
+so torch loops it ~serially per plane with catastrophic + ERRATIC overhead: B=200 n=64 measured 11858ms then
+19115ms (clean low-variance [19285,19115,19292,19586]); B=500 4377ms; B>=500-2000 frequently TIMES OUT (>90-
+120s). ~9-96ms/PLANE for a tiny n=64 orgqr (~87-960x the expected ~0.1ms). FT tensor_householder_product is
+ALREADY parallel-over-batch (rayon per-plane) — NO source change: B=200 41.9ms, B=500 76.6ms, B=2000 310.3ms
+(~0.16-0.21ms/plane, STABLE + scales linearly). RATIO: same-batch B=200 (clean torch 19115ms) = 456x;
+conservative (torch's fastest per-plane B=500 8.75ms) = 57x. Pick 55x+ as the honest floor — torch is so erratic
+the exact multiple swings 55-456x but FT (42-310ms) vs torch (4.4-19s) is unambiguous. This is the SAME
+structural story as the decomposition FORWARDS (geev/gesdd/syevd/geqrf/gelsd loop serially; FT parallelizes the
+batch) — orgqr was the LAST untested no-batched-LAPACK op. No-grad forward; correctness ft-api householder_product
+2/2 + orgqr 3/3 GREEN. No source change → no conformance gate touched. AGENT cc.
