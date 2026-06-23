@@ -1,0 +1,16 @@
+Command:
+AGENT_NAME=QuietMeadow CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b rch exec -- cargo bench -p ft-api --bench cdist_bench -- pdist_f32_p2_mm/512x64 --warm-up-time 2 --measurement-time 6 --sample-size 20 --noplot
+
+Candidate:
+Direct strict-upper-triangle f32 p=2 row-pair kernel using f32x8; reverted.
+
+Worker:
+vmi1149989
+
+Initial candidate result:
+pdist_f32_p2_mm/512x64  time:   [1.0313 ms 1.0905 ms 1.1573 ms]
+
+Repeat candidate result:
+pdist_f32_p2_mm/512x64  time:   [785.43 us 881.74 us 1.0271 ms]
+                        change: [-22.628% -8.9087% +5.0100%] (p = 0.26 > 0.05)
+                        No change in performance detected.

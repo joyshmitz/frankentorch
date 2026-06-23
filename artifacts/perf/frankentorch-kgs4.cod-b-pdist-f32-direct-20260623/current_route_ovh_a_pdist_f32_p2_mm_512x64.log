@@ -1,0 +1,18 @@
+Command:
+AGENT_NAME=QuietMeadow CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b rch exec -- cargo bench -p ft-api --bench cdist_bench -- pdist_f32_p2_mm/512x64 --warm-up-time 2 --measurement-time 6 --sample-size 20 --noplot
+
+Worker:
+ovh-a
+
+Pre-candidate result:
+pdist_f32_p2_mm/512x64  time:   [881.65 us 887.85 us 894.61 us]
+
+Post-revert result:
+pdist_f32_p2_mm/512x64  time:   [891.74 us 896.33 us 900.84 us]
+                        change: [-0.5593% +0.6585% +1.9244%] (p = 0.36 > 0.05)
+                        No change in performance detected.
+
+Post-revert outliers:
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) low severe
+  1 (5.00%) high mild

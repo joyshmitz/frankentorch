@@ -57,6 +57,60 @@ indexing, token-comparison heuristics, etc.); its internal formatting, clippy,
 cargo check, test-build, audit, and deny subchecks were clean, with no
 changed-hunk-specific issue identified.
 
+## 2026-06-23 - NEGATIVE (reverted): pdist p=2 f32 direct upper-triangle kernel no reliable gain
+
+Bead/thread `frankentorch-kgs4`, assignee `cod-b`, agent `QuietMeadow`.
+The tracker remains contended: `br ready --json` and
+`br list --status in_progress --json` fail with `CONFIG_ERROR` on duplicate id
+`frankentorch-kgs4.150`, so this pass proceeded under the contended-tracker
+rule after `bv --robot-triage` still ranked `frankentorch-kgs4` as the active
+perf lane.
+
+Measured residual: no-grad `tensor_pdist(x, p=2)` for contiguous f32 input,
+shape `512x64`. This cod-b pass began before the cod-a direct-condensed-output
+commit reached the local checkout. The then-current SGEMM route computed row
+norms, called `ft_kernel_cpu::matmul_rhs_transposed_contiguous_f32`, and
+assembled the strict upper triangle from the Gram matrix. Same-worker
+current-route Criterion on RCH `ovh-a`, warm
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`, command
+`cargo bench -p ft-api --bench cdist_bench --
+pdist_f32_p2_mm/512x64 --warm-up-time 2 --measurement-time 6 --sample-size 20
+--noplot`, measured:
+
+- Pre-candidate current route: `[881.65 us 887.85 us 894.61 us]`.
+- Post-revert current route: `[891.74 us 896.33 us 900.84 us]`.
+- Criterion verdict on the post-revert run: no change in performance detected.
+
+PyTorch sidecar for the same `512x64` f32 shape, torch `2.12.0+cpu`, 32
+threads, local `.venv-oracle/bin/python`, reported `min=0.042981 ms`,
+`p50=0.044830 ms`, `p95=0.050466 ms`, checksum `883173.937500`. For that local
+source state, using the post-revert FT midpoint, the FT/PyTorch ratio was
+`20.86x SLOWER` (`0.89633 / 0.042981`).
+
+Lever tried and reverted: replace the f32 p=2 no-grad Gram route with a direct
+strict-upper-triangle row-pair kernel in `ft-kernel-cpu`, using `f32x8`
+accumulation for each pair and avoiding the full `N x N` Gram matrix. The
+candidate preserved the focused behavior gate:
+`cargo test -p ft-api pdist_p2_f32_fused_nograd_matches_composed_path --lib --
+--nocapture` passed after the revert on RCH `ovh-a` (`1 passed; 2372
+filtered`).
+
+Candidate Criterion runs did not clear the keep bar:
+
+- Initial candidate on RCH `vmi1149989`: `[1.0313 ms 1.0905 ms 1.1573 ms]`,
+  ratio `25.37x SLOWER` vs PyTorch min.
+- Repeat candidate on RCH `vmi1149989`: `[785.43 us 881.74 us 1.0271 ms]`,
+  Criterion change `[-22.628% -8.9087% +5.0100%]`, `p = 0.26`; verdict:
+  no change in performance detected. Ratio by midpoint was `20.51x SLOWER`
+  vs PyTorch min, but this is not a statistically reliable win and was not a
+  same-worker comparison against the `ovh-a` current-route baseline.
+
+Decision: REVERT. Do not retry this `Vec<Vec<f32>>` direct row-pair kernel for
+`pdist_f32_p2_mm/512x64`. A retry must first show, with lower-level same-worker
+evidence, that a flat/preallocated or blocked direct kernel beats the shipped
+SGEMM upper-triangle path by a statistically significant margin while preserving
+the no-grad/grad split.
+
 ## 2026-06-23 - WIN: pdist f32 p=2 no-grad uses SGEMM upper-triangle assembly
 
 Bead/thread `frankentorch-kgs4`, assignee `cod-a`, agent `QuietMeadow`.
