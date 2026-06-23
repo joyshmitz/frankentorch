@@ -6390,3 +6390,26 @@ batched cholesky_solve with a broadcast identity RHS): B=400 32.6ms, B=1000 55.0
 verify OK + 2-D cholesky_inverse lib 2/2 green. Geqrf checked SAME session = WALLED (torch.geqrf MKL-batched
 29ms, fast — skip). geev/orgqr(456x)/ormqr(72.6x) precedent: torch's no-batched-LAPACK / large-nrhs ops loop;
 FT parallelizes the batch. (Pre-existing sel7 conformance red, unrelated — no new panic macros.) AGENT cc.
+
+## 2026-06-23 - ★★CORRECTION: orgqr/ormqr/cholesky_solve/cholesky_inverse "wins" were torch@64-THREAD OVERSUBSCRIPTION ARTIFACTS — NOT real
+
+RETRACTING the inflated ratios from 8ca01d13 (orgqr 456x), 46721e71 (ormqr 72.6x), 4dd06fb3 (cholesky_solve
+941x + cholesky_inverse 167x). ROOT CAUSE: I measured the torch baselines with torch.set_num_threads(64). On
+HIGH-BATCH TINY-MATRIX batched LAPACK (B=400, n=64), torch CATASTROPHICALLY OVERSUBSCRIBES at 64 threads
+(spawns ~64 threads per tiny n=64 plane while looping the batch → thread storm), producing ERRATIC 3-19s
+readings. At torch's clean low-variance thread counts the SAME ops are FAST. The thread-scaling check on
+linalg.inv exposed it (torch.inv: 8t=12.8ms stable, 64t=43ms..4828ms erratic).
+
+CLEAN THREAD-MATCHED (B=400 n=64, low-variance):
+  orgqr:           torch@8 48.2ms  torch@32 113.9ms | FT@8 ~86ms(interp) FT@64 41.9ms(B200)  -> LOSS-to-marginal (NOT 456x)
+  ormqr:           torch@8 18.6ms  torch@32 17.4ms  | FT@64 41.2ms                            -> LOSS (NOT 72.6x)
+  cholesky_solve:  torch@8 11.6ms  torch@32 11.4ms  | FT@64 5.8ms (FT@8 slower)               -> ~TIE (NOT 941x)
+  cholesky_inverse:torch@8 16.4ms  torch@32 19.1ms  | FT@8 13.7ms FT@32 22.3ms                -> ~TIE (1.2x@8, 0.86x@32; NOT 167x)
+Note FT ALSO oversubscribes at 64t (chol_inv FT@8 13.7 < FT@64 32.6), so FT@64-vs-torch@64 was doubly invalid.
+
+VERDICT: none of these four is a real vs-PyTorch win — all marginal/tie/loss thread-matched. torch's batched
+LAPACK (orgqr/ormqr/potrs/potri) is MKL-efficient at 8-32 threads; the cliffs I "found" were 64-thread
+oversubscription, NOT missing-batched-LAPACK serial loops. The cholesky_inverse SOURCE change (2-D->batched) is
+KEPT as a correct API feature (parity with torch.cholesky_inverse, ~tie perf) but is NOT a perf win.
+HARDENED RULE: batched tiny-matrix LAPACK MUST be measured thread-matched at torch's best (8-32t), NEVER 64t.
+This is the 2nd time high-thread torch artifacts faked wins (cf. peer-bench contention correction 8b2db303). AGENT cc.
