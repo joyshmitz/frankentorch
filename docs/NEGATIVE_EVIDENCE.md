@@ -6443,3 +6443,14 @@ nuc 91.5/95.1ms, ord=-2 90.0/95.1ms. FT tensor_matrix_norm (batched svdvals fast
 ord=2 @8 24.1/@32 20.6ms (4.0x/4.7x), nuc @8 20.8/@32 16.9ms (4.4x/5.6x), -2 @8 20.8/@32 16.4ms (4.3x/5.8x).
 Third confirmation of the VALUE-ONLY svdvals-saturation win (after matrix_rank 5.8x, cond 5.2x). No source
 change; matrix_norm 8/8 green. Example+ledger only. AGENT cc.
+
+## 2026-06-23 - eigvals WIN 3.9x@32 / 8.9x@8 (geev value-only, thread-matched) + WALLS: ldl_factor/lu/slogdet
+
+eigvals (geev non-symmetric eigenvalues, B=150 n=96): torch SATURATES @8 217.5ms / @32 222.4ms (flat clean).
+FT tensor_linalg_eigvals: @8 24.3ms (8.9x), @32 57.0ms (3.9x). WIN confirms the geev value-only vein at clean
+thread-matched regime (sibling of eigvalsh/svdvals). ⚠️ FT-side finding: FT eigvals OVERSUBSCRIBES @32 (24→57ms)
+— minor future FT-threading micro-lever (cap nested rayon / better batch-chunking for moderate B). eigvals 1/1 green.
+WALLS (torch MKL-batched-fast, NOT winnable — don't re-probe, B=150 n=96 @8/@32): ldl_factor 7.0/7.1ms,
+lu(P,L,U) 2.5/1.4ms, slogdet 1.6/0.7ms (all getrf/sytrf-batched). Confirms: only the EXPENSIVE iterative
+decompositions (geev/syevd/gesdd → eigvals/eigh/svdvals + their value-only composites) saturate+win; the
+CHEAP direct factorizations (getrf/potrf/sytrf → lu/cholesky/ldl/slogdet/det) are MKL-batched walls. AGENT cc.
