@@ -6314,3 +6314,23 @@ the exact multiple swings 55-456x but FT (42-310ms) vs torch (4.4-19s) is unambi
 structural story as the decomposition FORWARDS (geev/gesdd/syevd/geqrf/gelsd loop serially; FT parallelizes the
 batch) — orgqr was the LAST untested no-batched-LAPACK op. No-grad forward; correctness ft-api householder_product
 2/2 + orgqr 3/3 GREEN. No source change → no conformance gate touched. AGENT cc.
+
+## 2026-06-22 - GAP-CLOSURE KEEP: addmm BACKWARD sum-upstream shortcut narrows Linear backward to 0.93-0.96x vs PyTorch
+
+Targeted `frankentorch-kgs4.150` (cod-b/QuietMeadow) after the general addmm backward GEMM fix above still
+left `sum(addmm(...)).backward()` routing exact all-ones upstream through two GEMMs. Added a first-order
+`TensorNodeOp::Addmm` shortcut: when `grad_out` is bit-exact all ones, `grad_mat1` is the row sums of `mat2`
+fanned across `m` rows, and `grad_mat2` is the column sums of `mat1` fanned across `n` columns. Generic
+non-ones upstream gradients and create_graph remain on the existing GEMM/differentiable paths.
+
+Same-worker proof (`rch` vmi1152480, `RAYON_NUM_THREADS=64`, warm
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`,
+`cargo run --release -p ft-api --example bmm_grad_tiny_h2h`; PyTorch rows from the same-shape
+`.venv-oracle` torch 64-thread probe during that run):
+  `[2048,2048,2048]` FT 383.5ms -> 216.8ms = 1.77x internal; PyTorch 209.1ms, FT after = 0.96x vs torch
+  `[4096,1024,4096]` FT 850.2ms -> 525.2ms = 1.62x internal; PyTorch 488.6ms, FT after = 0.93x vs torch
+
+Checksum parity stayed tight against PyTorch (`grad_mat1.sum()+grad_mat2.sum()` rel 5.118e-13 and 6.408e-11).
+This is not a PyTorch win yet, but it removes the avoidable sum-upstream addmm backward loss and turns the
+prior 0.53-0.60x rows into near-parity 0.93-0.96x rows. Remaining gap is the deeper GEMM/BLAS lane, not
+autograd routing. Source disposition: KEEP. AGENT QuietMeadow/cod-b.

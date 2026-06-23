@@ -14336,48 +14336,121 @@ impl TensorTape {
                     // `mat2_vals[col + inner*n]` indexed mat2[inner,col] = the WRONG
                     // transpose, giving grad_out @ mat2 — only correct for symmetric
                     // mat2. Caught by the create_graph vs regular-backward cross-check.)
-                    // addmm = nn.Linear's primitive (bias + mat1@mat2); its mat1/mat2 grads had NO
-                    // all-ones fast path, so the naive serial triple-loops were slow for EVERY loss.
-                    // Route through the fast adaptively-parallel GEMM kernels (matmul tolerance-parity).
-                    // grad_mat1[m,k] = alpha * (incoming[m,n] @ mat2[k,n]^T)  (dgemm_bt).
-                    // grad_mat2[k,n] = alpha * (mat1[m,k]^T @ incoming[m,n])  (transpose + dgemm).
-                    // frankentorch addmm-bwd-fast.
-                    let mut mat1_contrib = ft_kernel_cpu::matmul_rhs_transposed_contiguous_f64(
-                        m, n, k, &incoming, &mat2_vals,
-                    )
-                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
-                    for v in mat1_contrib.iter_mut() {
-                        *v *= alpha;
-                    }
+                    let one_bits = 1.0_f64.to_bits();
+                    let incoming_all_ones = incoming.iter().all(|grad| grad.to_bits() == one_bits);
+
+                    let mat1_contrib = if incoming_all_ones {
+                        use rayon::prelude::*;
+
+                        let row_sums: Vec<f64> = if mat2_vals.len() >= 32_768 {
+                            mat2_vals
+                                .par_chunks(n)
+                                .map(|row| alpha * row.iter().sum::<f64>())
+                                .collect()
+                        } else {
+                            mat2_vals
+                                .chunks(n)
+                                .map(|row| alpha * row.iter().sum::<f64>())
+                                .collect()
+                        };
+
+                        let mut contrib = vec![0.0_f64; m * k];
+                        if contrib.len() >= 32_768 {
+                            contrib
+                                .par_chunks_mut(k)
+                                .for_each(|row| row.copy_from_slice(&row_sums));
+                        } else {
+                            for row in contrib.chunks_mut(k) {
+                                row.copy_from_slice(&row_sums);
+                            }
+                        }
+                        contrib
+                    } else {
+                        // Route generic upstream gradients through the adaptively-parallel GEMM kernels.
+                        // grad_mat1[m,k] = alpha * (incoming[m,n] @ mat2[k,n]^T)  (dgemm_bt).
+                        let mut contrib = ft_kernel_cpu::matmul_rhs_transposed_contiguous_f64(
+                            m, n, k, &incoming, &mat2_vals,
+                        )
+                        .map_err(|e| {
+                            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
+                        })?;
+                        for v in contrib.iter_mut() {
+                            *v *= alpha;
+                        }
+                        contrib
+                    };
                     Self::accumulate_tensor_gradient(mat1, &mut grads[mat1.0], &mat1_contrib)?;
 
                     // d/d(mat2): alpha * mat1^T @ grad_out => [k,m] @ [m,n] = [k,n]
-                    let mut mat1_t = vec![0.0_f64; k * m];
-                    for inner in 0..m {
-                        for row in 0..k {
-                            mat1_t[row * m + inner] = mat1_vals[inner * k + row];
+                    let mat2_contrib = if incoming_all_ones {
+                        use rayon::prelude::*;
+
+                        let col_sums: Vec<f64> = if m * k >= 32_768 {
+                            (0..k)
+                                .into_par_iter()
+                                .map(|inner| {
+                                    let mut acc = 0.0;
+                                    for row in 0..m {
+                                        acc += mat1_vals[row * k + inner];
+                                    }
+                                    alpha * acc
+                                })
+                                .collect()
+                        } else {
+                            (0..k)
+                                .map(|inner| {
+                                    let mut acc = 0.0;
+                                    for row in 0..m {
+                                        acc += mat1_vals[row * k + inner];
+                                    }
+                                    alpha * acc
+                                })
+                                .collect()
+                        };
+
+                        let mut contrib = vec![0.0_f64; k * n];
+                        if contrib.len() >= 32_768 {
+                            contrib
+                                .par_chunks_mut(n)
+                                .zip(col_sums.par_iter().copied())
+                                .for_each(|(row, sum)| row.fill(sum));
+                        } else {
+                            for (row, sum) in contrib.chunks_mut(n).zip(col_sums.iter().copied()) {
+                                row.fill(sum);
+                            }
                         }
-                    }
-                    let mat1_t_meta = ft_core::TensorMeta::from_shape(
-                        vec![k, m],
-                        DType::F64,
-                        ft_core::Device::Cpu,
-                    );
-                    let inc_meta = ft_core::TensorMeta::from_shape(
-                        vec![m, n],
-                        DType::F64,
-                        ft_core::Device::Cpu,
-                    );
-                    let mut mat2_contrib = ft_kernel_cpu::matmul_tensor_contiguous_f64(
-                        &mat1_t,
-                        &incoming,
-                        &mat1_t_meta,
-                        &inc_meta,
-                    )
-                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
-                    for v in mat2_contrib.iter_mut() {
-                        *v *= alpha;
-                    }
+                        contrib
+                    } else {
+                        let mut mat1_t = vec![0.0_f64; k * m];
+                        for inner in 0..m {
+                            for row in 0..k {
+                                mat1_t[row * m + inner] = mat1_vals[inner * k + row];
+                            }
+                        }
+                        let mat1_t_meta = ft_core::TensorMeta::from_shape(
+                            vec![k, m],
+                            DType::F64,
+                            ft_core::Device::Cpu,
+                        );
+                        let inc_meta = ft_core::TensorMeta::from_shape(
+                            vec![m, n],
+                            DType::F64,
+                            ft_core::Device::Cpu,
+                        );
+                        let mut contrib = ft_kernel_cpu::matmul_tensor_contiguous_f64(
+                            &mat1_t,
+                            &incoming,
+                            &mat1_t_meta,
+                            &inc_meta,
+                        )
+                        .map_err(|e| {
+                            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
+                        })?;
+                        for v in contrib.iter_mut() {
+                            *v *= alpha;
+                        }
+                        contrib
+                    };
                     Self::accumulate_tensor_gradient(mat2, &mut grads[mat2.0], &mat2_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
