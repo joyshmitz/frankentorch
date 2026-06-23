@@ -6334,3 +6334,12 @@ Checksum parity stayed tight against PyTorch (`grad_mat1.sum()+grad_mat2.sum()` 
 This is not a PyTorch win yet, but it removes the avoidable sum-upstream addmm backward loss and turns the
 prior 0.53-0.60x rows into near-parity 0.93-0.96x rows. Remaining gap is the deeper GEMM/BLAS lane, not
 autograd routing. Source disposition: KEEP. AGENT QuietMeadow/cod-b.
+
+## 2026-06-22 - ★WIN 72.6x: ormqr (apply-Q from reflectors) — torch loops ormqr serially, FT parallel-over-batch
+
+torch.ormqr (multiply a matrix by Q implicitly from QR reflectors) has NO batched LAPACK ormqr → torch loops
+it ~serially per plane: B=300 n=64 = 2991ms (clean low-variance [2998,2991,3295,3290], ~10ms/plane). FT
+tensor_ormqr is ALREADY parallel-over-batch — NO source change: B=300 41.2ms, B=1000 166.9ms (~0.14-0.17ms/
+plane, stable). RATIO B=300 = 2991/41.2 = 72.6x. Same structural vein as orgqr/householder_product (the
+sibling apply-Q vs form-Q ops; both lack batched LAPACK → torch serial-loops, FT parallel). No-grad forward;
+correctness ft-api ormqr 3/3 GREEN. Example + ledger only, no source/conformance change. AGENT cc.
