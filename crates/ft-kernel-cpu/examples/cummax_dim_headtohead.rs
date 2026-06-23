@@ -5,7 +5,8 @@
 //!
 //! Run: PYTORCH_PYTHON=/path/to/python cargo run --release -p ft-kernel-cpu --example cummax_dim_headtohead
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use ft_core::{DType, Device, TensorMeta};
@@ -23,7 +24,8 @@ fn main() {
     let (mut vsum, mut isum) = (0.0, 0.0);
     for _ in 0..18 {
         let t = Instant::now();
-        let (vals, idxs) = ft_kernel_cpu::cummax_dim_tensor_contiguous_f64(&data, &meta, 0).unwrap();
+        let (vals, idxs) =
+            ft_kernel_cpu::cummax_dim_tensor_contiguous_f64(&data, &meta, 0).unwrap();
         let el = t.elapsed().as_secs_f64() * 1e3;
         if el < best {
             best = el;
@@ -45,13 +47,27 @@ for _ in range(15):
 v,i = torch.cummax(x, dim=0)
 print("MS", sorted(ts)[0]); print("VSUM", v.sum().item()); print("ISUM", float(i.sum().item()))
 "#;
-    let out = Command::new(&python).arg("-c").arg(py).output();
+    let out = Command::new(&python)
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(py.as_bytes())?;
+            }
+            child.wait_with_output()
+        });
     println!("cummax dim=0 [{R},{C}] f64, 15 iters MIN:");
     println!("  FrankenTorch : {best:8.3} ms   vsum {vsum:.6e}  isum {isum:.6e}");
     match out {
         Ok(o) if o.status.success() => {
             let s = String::from_utf8_lossy(&o.stdout);
-            let g = |p: &str| s.lines().find_map(|l| l.strip_prefix(p).and_then(|v| v.trim().parse::<f64>().ok()));
+            let g = |p: &str| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix(p).and_then(|v| v.trim().parse::<f64>().ok()))
+            };
             match (g("MS "), g("VSUM "), g("ISUM ")) {
                 (Some(p), Some(pv), Some(pi)) => {
                     let vrel = (vsum - pv).abs() / (pv.abs() + 1e-12);
@@ -59,12 +75,17 @@ print("MS", sorted(ts)[0]); print("VSUM", v.sum().item()); print("ISUM", float(i
                     println!("  PyTorch      : {p:8.3} ms   vsum {pv:.6e}  isum {pi:.6e}");
                     // values are element-wise bit-exact (exact indices + identical input ->
                     // values=input[argmax]); the tiny vrel is just 16M-element checksum sum-order.
-                    println!("  CORRECTNESS  : values rel {vrel:.2e} ({}) ; indices ({})",
+                    println!(
+                        "  CORRECTNESS  : values rel {vrel:.2e} ({}) ; indices ({})",
                         if vrel < 1e-9 { "MATCH" } else { "MISMATCH!" },
-                        if imatch { "MATCH" } else { "MISMATCH!" });
+                        if imatch { "MATCH" } else { "MISMATCH!" }
+                    );
                     let r = p / best;
-                    if r >= 1.0 { println!("  => FT {r:.2}x FASTER (cummax dim=0)"); }
-                    else { println!("  => FT {:.2}x slower", 1.0 / r); }
+                    if r >= 1.0 {
+                        println!("  => FT {r:.2}x FASTER (cummax dim=0)");
+                    } else {
+                        println!("  => FT {:.2}x slower", 1.0 / r);
+                    }
                 }
                 _ => println!("  PyTorch      : (parse failed)\n{s}"),
             }

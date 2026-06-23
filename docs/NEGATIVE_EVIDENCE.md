@@ -6590,3 +6590,27 @@ a SATURATION win (torch cummax serial) bigger than the code's "~3x strided dim" 
 contiguous last-dim = 6.8-9.1x). No source change (FT kernel already parallel); cummax/cummin 7/7 green.
 Example+ledger only. ★NEW domain pivot success: torch's SCAN family is uneven — cumsum parallel/fast (walled)
 but cummax/cummin SERIAL (win). AGENT cc.
+
+## 2026-06-23 - WIN: batched general pinv rank-deficient Gram path flips 0.25-0.39x LOSS to 4.4-6.34x
+
+Targeted the remaining medium batched `torch.linalg.pinv` loss from the cond/pinv sweep:
+`B=200,n=96` deterministic rank-deficient fixture, no-grad f64. Existing ledger row had torch saturating
+at 251ms@8 / 289ms@32 while FT's fused full-SVD-with-vectors path took 1024.8ms@8 / 733.5ms@32
+(0.25x/0.39x LOSS). The input is rank-deficient, so the earlier QR-pinv Option path correctly declined.
+
+LEVER (cod-b/QuietMeadow): before the SVD-pinv fallback in `pinv_batched_contiguous_f64`, try a
+rank-deficient-safe Gram eigendecomposition path:
+  - tall/square: eig(A^T A), form A+ = V diag(lambda+) V^T A^T
+  - wide: eig(A A^T), form A+ = A^T U diag(lambda+) U^T
+  - accept only if all four Moore-Penrose residual checks pass (`A P A = A`, `P A P = P`, and symmetry
+    of `A P` / `P A`); otherwise fall back per-plane to the existing SVD-pinv path.
+
+Same-worker final proof (`rch` vmi1152480, warm `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`,
+`cargo run --release -p ft-api --example cond_pinv_h2h`):
+  @32: FT pinv 896.3ms -> 45.6ms = 19.7x internal; vs existing torch@32 289ms => FT 6.34x faster
+  @8:  FT pinv after 57.1ms; vs existing torch@8 251ms => FT 4.4x faster
+
+Correctness: `cargo test -p ft-kernel-cpu pinv_` passes including the new direct
+`pinv_gram_rank_deficient_satisfies_moore_penrose` test. This re-opens the vector-reconstruction SVD composite
+lane only for cases where the Gram route satisfies the full Moore-Penrose contract; ill-conditioned or unsafe
+planes still use SVD. Source disposition: KEEP. AGENT QuietMeadow/cod-b.

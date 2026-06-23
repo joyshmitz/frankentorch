@@ -3747,21 +3747,25 @@ pub fn sdpa_forward_f64(
     // across the pool (the causal case especially, where late blocks carry more work).
     // Head-heavy inputs already saturate the outer split, so keep the serial inner loop.
     if num_bh < rayon::current_num_threads() && seq_q > BR {
-        out.par_chunks_mut(o_stride).enumerate().for_each(|(bh, o_chunk)| {
-            o_chunk
-                .par_chunks_mut(BR * d_v)
-                .enumerate()
-                .for_each(|(blk, o_block)| block(bh, blk * BR, o_block));
-        });
+        out.par_chunks_mut(o_stride)
+            .enumerate()
+            .for_each(|(bh, o_chunk)| {
+                o_chunk
+                    .par_chunks_mut(BR * d_v)
+                    .enumerate()
+                    .for_each(|(blk, o_block)| block(bh, blk * BR, o_block));
+            });
     } else {
-        out.par_chunks_mut(o_stride).enumerate().for_each(|(bh, o_chunk)| {
-            let mut q0 = 0;
-            while q0 < seq_q {
-                let br = (q0 + BR).min(seq_q) - q0;
-                block(bh, q0, &mut o_chunk[q0 * d_v..(q0 + br) * d_v]);
-                q0 += br;
-            }
-        });
+        out.par_chunks_mut(o_stride)
+            .enumerate()
+            .for_each(|(bh, o_chunk)| {
+                let mut q0 = 0;
+                while q0 < seq_q {
+                    let br = (q0 + BR).min(seq_q) - q0;
+                    block(bh, q0, &mut o_chunk[q0 * d_v..(q0 + br) * d_v]);
+                    q0 += br;
+                }
+            });
     }
     out
 }
@@ -3834,21 +3838,25 @@ pub fn sdpa_forward_masked_f64(
     // blocks across the pool. For head-heavy inputs the outer split already saturates, so
     // keep the cheaper serial inner loop (one reused scores buffer, no extra task overhead).
     if num_bh < rayon::current_num_threads() && seq_q > BR {
-        out.par_chunks_mut(o_stride).enumerate().for_each(|(bh, o_chunk)| {
-            o_chunk
-                .par_chunks_mut(BR * d_v)
-                .enumerate()
-                .for_each(|(blk, o_block)| block(bh, blk * BR, o_block));
-        });
+        out.par_chunks_mut(o_stride)
+            .enumerate()
+            .for_each(|(bh, o_chunk)| {
+                o_chunk
+                    .par_chunks_mut(BR * d_v)
+                    .enumerate()
+                    .for_each(|(blk, o_block)| block(bh, blk * BR, o_block));
+            });
     } else {
-        out.par_chunks_mut(o_stride).enumerate().for_each(|(bh, o_chunk)| {
-            let mut q0 = 0;
-            while q0 < seq_q {
-                let br = (q0 + BR).min(seq_q) - q0;
-                block(bh, q0, &mut o_chunk[q0 * d_v..(q0 + br) * d_v]);
-                q0 += br;
-            }
-        });
+        out.par_chunks_mut(o_stride)
+            .enumerate()
+            .for_each(|(bh, o_chunk)| {
+                let mut q0 = 0;
+                while q0 < seq_q {
+                    let br = (q0 + BR).min(seq_q) - q0;
+                    block(bh, q0, &mut o_chunk[q0 * d_v..(q0 + br) * d_v]);
+                    q0 += br;
+                }
+            });
     }
     out
 }
@@ -3938,21 +3946,25 @@ pub fn sdpa_forward_masked_gqa_f64(
     // scores alloc per block either way; no extra task overhead). Same guard as the dense
     // f64/f32 flash kernels.
     if num_bh < rayon::current_num_threads() && seq_q > BR {
-        out.par_chunks_mut(o_stride).enumerate().for_each(|(bh, o_chunk)| {
-            o_chunk
-                .par_chunks_mut(BR * d_v)
-                .enumerate()
-                .for_each(|(blk, o_block)| block(bh, blk * BR, o_block));
-        });
+        out.par_chunks_mut(o_stride)
+            .enumerate()
+            .for_each(|(bh, o_chunk)| {
+                o_chunk
+                    .par_chunks_mut(BR * d_v)
+                    .enumerate()
+                    .for_each(|(blk, o_block)| block(bh, blk * BR, o_block));
+            });
     } else {
-        out.par_chunks_mut(o_stride).enumerate().for_each(|(bh, o_chunk)| {
-            let mut q0 = 0;
-            while q0 < seq_q {
-                let br = (q0 + BR).min(seq_q) - q0;
-                block(bh, q0, &mut o_chunk[q0 * d_v..(q0 + br) * d_v]);
-                q0 += br;
-            }
-        });
+        out.par_chunks_mut(o_stride)
+            .enumerate()
+            .for_each(|(bh, o_chunk)| {
+                let mut q0 = 0;
+                while q0 < seq_q {
+                    let br = (q0 + BR).min(seq_q) - q0;
+                    block(bh, q0, &mut o_chunk[q0 * d_v..(q0 + br) * d_v]);
+                    q0 += br;
+                }
+            });
     }
     out
 }
@@ -4019,21 +4031,25 @@ pub fn sdpa_forward_f32(
     // Few heads but many cores: also split each head's independent BR-row blocks across the
     // pool (same guard/rationale as the f64 kernel; head-heavy inputs keep the serial loop).
     if num_bh < rayon::current_num_threads() && seq_q > BR {
-        out.par_chunks_mut(o_stride).enumerate().for_each(|(bh, o_chunk)| {
-            o_chunk
-                .par_chunks_mut(BR * d_v)
-                .enumerate()
-                .for_each(|(blk, o_block)| block(bh, blk * BR, o_block));
-        });
+        out.par_chunks_mut(o_stride)
+            .enumerate()
+            .for_each(|(bh, o_chunk)| {
+                o_chunk
+                    .par_chunks_mut(BR * d_v)
+                    .enumerate()
+                    .for_each(|(blk, o_block)| block(bh, blk * BR, o_block));
+            });
     } else {
-        out.par_chunks_mut(o_stride).enumerate().for_each(|(bh, o_chunk)| {
-            let mut q0 = 0;
-            while q0 < seq_q {
-                let br = (q0 + BR).min(seq_q) - q0;
-                block(bh, q0, &mut o_chunk[q0 * d_v..(q0 + br) * d_v]);
-                q0 += br;
-            }
-        });
+        out.par_chunks_mut(o_stride)
+            .enumerate()
+            .for_each(|(bh, o_chunk)| {
+                let mut q0 = 0;
+                while q0 < seq_q {
+                    let br = (q0 + BR).min(seq_q) - q0;
+                    block(bh, q0, &mut o_chunk[q0 * d_v..(q0 + br) * d_v]);
+                    q0 += br;
+                }
+            });
     }
     out
 }
@@ -4971,7 +4987,7 @@ fn rms_norm_backward_f64_generic(
             }
         }
         dw
-        });
+    });
     (dx, dweight)
 }
 
@@ -5955,7 +5971,14 @@ pub fn conv2d_backward_f32(
     let mut dweight = vec![0.0f32; out_ch * patch_width];
     gemm::sgemm(out_ch, flat, patch_width, &dout_t, &panel, &mut dweight);
     let mut dpanel = vec![0.0f32; flat * patch_width];
-    gemm::sgemm(flat, out_ch, patch_width, &dout_flat, weight_flat, &mut dpanel);
+    gemm::sgemm(
+        flat,
+        out_ch,
+        patch_width,
+        &dout_flat,
+        weight_flat,
+        &mut dpanel,
+    );
     let dpadded = conv2d_col2im_f32(&dpanel, batch, in_ch, ph, pw, kh, kw, oh, ow, sh, sw);
     let dbias = if has_bias {
         let mut db = vec![0.0f32; out_ch];
@@ -6395,27 +6418,24 @@ pub fn depthwise_conv2d_backward_f64(
     // dweight: parallel over channels (each channel's [kh,kw] accumulates over all
     // n,oy,ox; disjoint per-channel write region).
     let mut dweight = vec![0.0f64; channels * wsz];
-    dweight
-        .par_chunks_mut(wsz)
-        .enumerate()
-        .for_each(|(c, dw)| {
-            for n in 0..batch {
-                let plane = n * channels + c;
-                let db = &dout[plane * outplane..plane * outplane + outplane];
-                let pb = &padded[plane * inplane..plane * inplane + inplane];
-                for oy in 0..oh {
-                    for ox in 0..ow {
-                        let g = db[oy * ow + ox];
-                        for kr in 0..kh {
-                            let row = (oy * sh + kr) * pw + ox * sw;
-                            for kc in 0..kw {
-                                dw[kr * kw + kc] += g * pb[row + kc];
-                            }
+    dweight.par_chunks_mut(wsz).enumerate().for_each(|(c, dw)| {
+        for n in 0..batch {
+            let plane = n * channels + c;
+            let db = &dout[plane * outplane..plane * outplane + outplane];
+            let pb = &padded[plane * inplane..plane * inplane + inplane];
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let g = db[oy * ow + ox];
+                    for kr in 0..kh {
+                        let row = (oy * sh + kr) * pw + ox * sw;
+                        for kc in 0..kw {
+                            dw[kr * kw + kc] += g * pb[row + kc];
                         }
                     }
                 }
             }
-        });
+        }
+    });
     // dbias: per-channel sum of dout.
     let dbias = if has_bias {
         let mut db = vec![0.0f64; channels];
@@ -6480,27 +6500,24 @@ pub fn depthwise_conv2d_backward_f32(
             }
         });
     let mut dweight = vec![0.0f32; channels * wsz];
-    dweight
-        .par_chunks_mut(wsz)
-        .enumerate()
-        .for_each(|(c, dw)| {
-            for n in 0..batch {
-                let plane = n * channels + c;
-                let db = &dout[plane * outplane..plane * outplane + outplane];
-                let pb = &padded[plane * inplane..plane * inplane + inplane];
-                for oy in 0..oh {
-                    for ox in 0..ow {
-                        let g = db[oy * ow + ox];
-                        for kr in 0..kh {
-                            let row = (oy * sh + kr) * pw + ox * sw;
-                            for kc in 0..kw {
-                                dw[kr * kw + kc] += g * pb[row + kc];
-                            }
+    dweight.par_chunks_mut(wsz).enumerate().for_each(|(c, dw)| {
+        for n in 0..batch {
+            let plane = n * channels + c;
+            let db = &dout[plane * outplane..plane * outplane + outplane];
+            let pb = &padded[plane * inplane..plane * inplane + inplane];
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let g = db[oy * ow + ox];
+                    for kr in 0..kh {
+                        let row = (oy * sh + kr) * pw + ox * sw;
+                        for kc in 0..kw {
+                            dw[kr * kw + kc] += g * pb[row + kc];
                         }
                     }
                 }
             }
-        });
+        }
+    });
     let dbias = if has_bias {
         let mut db = vec![0.0f32; channels];
         db.par_iter_mut().enumerate().for_each(|(c, dbc)| {
@@ -7686,9 +7703,7 @@ pub fn max_pool3d_backward_f64(
     sw: usize,
 ) -> Vec<f64> {
     if kd == 2 && kh == 2 && kw == 2 && sd == 2 && sh == 2 && sw == 2 {
-        return max_pool3d_backward_2x2s2_f64(
-            dout, input, batch, ch, id, ih, iw, od, oh, ow,
-        );
+        return max_pool3d_backward_2x2s2_f64(dout, input, batch, ch, id, ih, iw, od, oh, ow);
     }
 
     let mut din = vec![0.0f64; batch * ch * id * ih * iw];
@@ -8074,7 +8089,7 @@ pub fn avg_pool2d_backward_f32(
                     }
                 }
             }
-    });
+        });
     dp
 }
 
@@ -13662,7 +13677,12 @@ pub fn cumsum_backward_tensor_contiguous_f64(
 /// Cache-friendly d-outer/inner-inner walk over a CONTIGUOUS inner run, mirroring
 /// [`cumsum_lane_block_f64`] but iterating `d` in reverse. Bit-exact per lane. (BlackThrush)
 #[inline]
-fn cumsum_backward_lane_block_f64(block: &[f64], out: &mut [f64], dim_size: usize, inner_size: usize) {
+fn cumsum_backward_lane_block_f64(
+    block: &[f64],
+    out: &mut [f64],
+    dim_size: usize,
+    inner_size: usize,
+) {
     if inner_size == 1 {
         let mut acc = 0.0;
         for d in (0..dim_size).rev() {
@@ -14102,7 +14122,11 @@ pub fn argsort_tensor_contiguous_f64(
     let (outer_size, inner_size, _) =
         checked_dim_loop_sizes(shape, dim, "argsort shape volume overflow")?;
     let numel = checked_mul(
-        checked_mul(outer_size, dim_size, "argsort shape multiplication overflow")?,
+        checked_mul(
+            outer_size,
+            dim_size,
+            "argsort shape multiplication overflow",
+        )?,
         inner_size,
         "argsort shape multiplication overflow",
     )?;
@@ -15041,7 +15065,14 @@ pub fn lu_solve_batched_contiguous_f64(
                 let bi = ci * chunk_mats + local;
                 lu.copy_from_slice(&a[bi * n * n..(bi + 1) * n * n]);
                 let x = &mut ochunk[local * n * m..(local + 1) * n * m];
-                lu_solve_one_inplace_f64(&mut lu, &mut piv, &b[bi * n * m..(bi + 1) * n * m], x, n, m);
+                lu_solve_one_inplace_f64(
+                    &mut lu,
+                    &mut piv,
+                    &b[bi * n * m..(bi + 1) * n * m],
+                    x,
+                    n,
+                    m,
+                );
             }
         });
     out
@@ -15051,7 +15082,14 @@ pub fn lu_solve_batched_contiguous_f64(
 /// row-major COPY of A, overwritten) in place, then solve A·x = b into `x` (n×m). `piv`/`lu`
 /// are caller-owned scratch reused across a batch chunk. Doolittle (multipliers in lower),
 /// matches torch's `linalg.solve` (LU + partial pivot) to fp tolerance.
-fn lu_solve_one_inplace_f64(lu: &mut [f64], piv: &mut [usize], b: &[f64], x: &mut [f64], n: usize, m: usize) {
+fn lu_solve_one_inplace_f64(
+    lu: &mut [f64],
+    piv: &mut [usize],
+    b: &[f64],
+    x: &mut [f64],
+    n: usize,
+    m: usize,
+) {
     for (i, p) in piv.iter_mut().enumerate() {
         *p = i;
     }
@@ -19117,43 +19155,45 @@ pub fn lstsq_batched_contiguous_f64(
     out.par_chunks_mut(x_plane)
         .zip(a.par_chunks(a_plane))
         .zip(b.par_chunks(b_plane))
-        .for_each(|((o, ap), bp)| match svd_contiguous_f64(ap, &pmeta, false) {
-            Ok(r) => {
-                let u = &r.u; // [m, kk]
-                let s = &r.s; // [kk]
-                let vh = &r.vh; // [kk, n]
-                let smax = s.first().copied().unwrap_or(0.0);
-                let tol = (m.max(n) as f64) * f64::EPSILON * smax;
-                // z[i][c] = σ⁺_i · Σ_p U[p][i]·B[p][c]   (scaled Uᵀ B), [kk, nrhs]
-                let mut z = vec![0.0f64; kk * nrhs];
-                for i in 0..kk {
-                    let sp = if s[i] > tol { 1.0 / s[i] } else { 0.0 };
-                    for c in 0..nrhs {
-                        let mut acc = 0.0;
-                        for p in 0..m {
-                            acc += u[p * kk + i] * bp[p * nrhs + c];
+        .for_each(
+            |((o, ap), bp)| match svd_contiguous_f64(ap, &pmeta, false) {
+                Ok(r) => {
+                    let u = &r.u; // [m, kk]
+                    let s = &r.s; // [kk]
+                    let vh = &r.vh; // [kk, n]
+                    let smax = s.first().copied().unwrap_or(0.0);
+                    let tol = (m.max(n) as f64) * f64::EPSILON * smax;
+                    // z[i][c] = σ⁺_i · Σ_p U[p][i]·B[p][c]   (scaled Uᵀ B), [kk, nrhs]
+                    let mut z = vec![0.0f64; kk * nrhs];
+                    for i in 0..kk {
+                        let sp = if s[i] > tol { 1.0 / s[i] } else { 0.0 };
+                        for c in 0..nrhs {
+                            let mut acc = 0.0;
+                            for p in 0..m {
+                                acc += u[p * kk + i] * bp[p * nrhs + c];
+                            }
+                            z[i * nrhs + c] = acc * sp;
                         }
-                        z[i * nrhs + c] = acc * sp;
+                    }
+                    // X[a][c] = Σ_i V[a][i]·z[i][c] = Σ_i vh[i][a]·z[i][c]
+                    for a2 in 0..n {
+                        for c in 0..nrhs {
+                            let mut acc = 0.0;
+                            for i in 0..kk {
+                                acc += vh[i * n + a2] * z[i * nrhs + c];
+                            }
+                            o[a2 * nrhs + c] = acc;
+                        }
                     }
                 }
-                // X[a][c] = Σ_i V[a][i]·z[i][c] = Σ_i vh[i][a]·z[i][c]
-                for a2 in 0..n {
-                    for c in 0..nrhs {
-                        let mut acc = 0.0;
-                        for i in 0..kk {
-                            acc += vh[i * n + a2] * z[i * nrhs + c];
-                        }
-                        o[a2 * nrhs + c] = acc;
+                Err(e) => {
+                    let mut g = first_err.lock().unwrap();
+                    if g.is_none() {
+                        *g = Some(e);
                     }
                 }
-            }
-            Err(e) => {
-                let mut g = first_err.lock().unwrap();
-                if g.is_none() {
-                    *g = Some(e);
-                }
-            }
-        });
+            },
+        );
     if let Some(e) = first_err.into_inner().unwrap() {
         return Err(e);
     }
@@ -19189,30 +19229,39 @@ pub fn pinv_batched_contiguous_f64(
     let first_err = std::sync::Mutex::new(None);
     out.par_chunks_mut(plane_out)
         .zip(data.par_chunks(plane_in))
-        .for_each(|(o, pl)| match svd_contiguous_f64(pl, &pmeta, false) {
-            Ok(r) => {
-                let u = &r.u; // [m, kk] row-major
-                let s = &r.s; // [kk] descending
-                let vh = &r.vh; // [kk, n] row-major
-                let smax = s.first().copied().unwrap_or(0.0);
-                let tol = (m.max(n) as f64) * f64::EPSILON * smax;
-                let mut sp = vec![0.0f64; kk];
-                for i in 0..kk {
-                    if s[i] > tol {
-                        sp[i] = 1.0 / s[i];
-                    }
-                }
-                // pinv[a][b] = Σ_i V[a][i]·σ⁺_i·Uᵀ[i][b] = Σ_i vh[i][a]·σ⁺_i·u[b][i],  a∈0..n, b∈0..m.
-                for a in 0..n {
-                    for b in 0..m {
-                        let mut acc = 0.0;
-                        for i in 0..kk {
-                            acc += vh[i * n + a] * sp[i] * u[b * kk + i];
+        .for_each(|(o, pl)| match pinv_gram_contiguous_f64(pl, m, n) {
+            Ok(Some(pinv)) => o.copy_from_slice(&pinv),
+            Ok(None) => match svd_contiguous_f64(pl, &pmeta, false) {
+                Ok(r) => {
+                    let u = &r.u; // [m, kk] row-major
+                    let s = &r.s; // [kk] descending
+                    let vh = &r.vh; // [kk, n] row-major
+                    let smax = s.first().copied().unwrap_or(0.0);
+                    let tol = (m.max(n) as f64) * f64::EPSILON * smax;
+                    let mut sp = vec![0.0f64; kk];
+                    for i in 0..kk {
+                        if s[i] > tol {
+                            sp[i] = 1.0 / s[i];
                         }
-                        o[a * m + b] = acc;
+                    }
+                    // pinv[a][b] = Σ_i V[a][i]·σ⁺_i·Uᵀ[i][b] = Σ_i vh[i][a]·σ⁺_i·u[b][i],  a∈0..n, b∈0..m.
+                    for a in 0..n {
+                        for b in 0..m {
+                            let mut acc = 0.0;
+                            for i in 0..kk {
+                                acc += vh[i * n + a] * sp[i] * u[b * kk + i];
+                            }
+                            o[a * m + b] = acc;
+                        }
                     }
                 }
-            }
+                Err(e) => {
+                    let mut g = first_err.lock().unwrap();
+                    if g.is_none() {
+                        *g = Some(e);
+                    }
+                }
+            },
             Err(e) => {
                 let mut g = first_err.lock().unwrap();
                 if g.is_none() {
@@ -19224,6 +19273,160 @@ pub fn pinv_batched_contiguous_f64(
         return Err(e);
     }
     Ok(out)
+}
+
+fn pinv_gram_contiguous_f64(
+    data: &[f64],
+    m: usize,
+    n: usize,
+) -> Result<Option<Vec<f64>>, KernelError> {
+    if m == 0 || n == 0 {
+        return Ok(None);
+    }
+    if m >= n {
+        pinv_gram_tall_contiguous_f64(data, m, n)
+    } else {
+        pinv_gram_wide_contiguous_f64(data, m, n)
+    }
+}
+
+fn pinv_gram_tall_contiguous_f64(
+    data: &[f64],
+    m: usize,
+    n: usize,
+) -> Result<Option<Vec<f64>>, KernelError> {
+    let mut gram = vec![0.0f64; n * n];
+    gemm::dgemm_tb(n, m, n, data, data, &mut gram);
+    symmetrize_square_in_place(&mut gram, n);
+    let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+    let eig = eigh_contiguous_f64(&gram, &meta)?;
+    let inv = pinv_gram_reciprocals(&eig.eigenvalues, m.max(n));
+    let v = &eig.eigenvectors;
+    let mut av = vec![0.0f64; m * n];
+    gemm::dgemm(m, n, n, data, v, &mut av);
+    let mut out = vec![0.0f64; n * m];
+    for a in 0..n {
+        for b in 0..m {
+            let mut acc = 0.0;
+            for i in 0..n {
+                acc += v[a * n + i] * inv[i] * av[b * n + i];
+            }
+            out[a * m + b] = acc;
+        }
+    }
+    if pinv_moore_penrose_residual_ok(data, &out, m, n) {
+        Ok(Some(out))
+    } else {
+        Ok(None)
+    }
+}
+
+fn pinv_gram_wide_contiguous_f64(
+    data: &[f64],
+    m: usize,
+    n: usize,
+) -> Result<Option<Vec<f64>>, KernelError> {
+    let mut gram = vec![0.0f64; m * m];
+    gemm::dgemm_bt(m, n, m, data, data, &mut gram);
+    symmetrize_square_in_place(&mut gram, m);
+    let meta = TensorMeta::from_shape(vec![m, m], DType::F64, Device::Cpu);
+    let eig = eigh_contiguous_f64(&gram, &meta)?;
+    let inv = pinv_gram_reciprocals(&eig.eigenvalues, m.max(n));
+    let u = &eig.eigenvectors;
+    let mut atu = vec![0.0f64; n * m];
+    gemm::dgemm_tb(n, m, m, data, u, &mut atu);
+    let mut out = vec![0.0f64; n * m];
+    for a in 0..n {
+        for b in 0..m {
+            let mut acc = 0.0;
+            for i in 0..m {
+                acc += atu[a * m + i] * inv[i] * u[b * m + i];
+            }
+            out[a * m + b] = acc;
+        }
+    }
+    if pinv_moore_penrose_residual_ok(data, &out, m, n) {
+        Ok(Some(out))
+    } else {
+        Ok(None)
+    }
+}
+
+fn pinv_gram_reciprocals(eigenvalues: &[f64], mn: usize) -> Vec<f64> {
+    let lambda_max = eigenvalues
+        .iter()
+        .fold(0.0f64, |acc, &lambda| acc.max(lambda.max(0.0)));
+    if lambda_max == 0.0 {
+        return vec![0.0; eigenvalues.len()];
+    }
+    let scale = mn as f64;
+    let lambda_tol = lambda_max * f64::EPSILON * scale * scale * 16.0;
+    eigenvalues
+        .iter()
+        .map(|&lambda| {
+            if lambda > lambda_tol {
+                1.0 / lambda
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+fn symmetrize_square_in_place(a: &mut [f64], n: usize) {
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let v = 0.5 * (a[i * n + j] + a[j * n + i]);
+            a[i * n + j] = v;
+            a[j * n + i] = v;
+        }
+    }
+}
+
+fn pinv_moore_penrose_residual_ok(a: &[f64], pinv: &[f64], m: usize, n: usize) -> bool {
+    if pinv.iter().any(|v| !v.is_finite()) {
+        return false;
+    }
+    let mut max_abs = 0.0f64;
+    for &v in a {
+        max_abs = max_abs.max(v.abs());
+    }
+    let tol = 1e-7 * max_abs.max(1.0) * (m.max(n) as f64);
+
+    let mut ap = vec![0.0f64; m * m];
+    gemm::dgemm(m, n, m, a, pinv, &mut ap);
+    let mut apa = vec![0.0f64; m * n];
+    gemm::dgemm(m, m, n, &ap, a, &mut apa);
+    for i in 0..m * n {
+        if (apa[i] - a[i]).abs() > tol {
+            return false;
+        }
+    }
+
+    let mut pa = vec![0.0f64; n * n];
+    gemm::dgemm(n, m, n, pinv, a, &mut pa);
+    let mut pap = vec![0.0f64; n * m];
+    gemm::dgemm(n, n, m, &pa, pinv, &mut pap);
+    for i in 0..n * m {
+        if (pap[i] - pinv[i]).abs() > tol {
+            return false;
+        }
+    }
+    for i in 0..m {
+        for j in 0..m {
+            if (ap[i * m + j] - ap[j * m + i]).abs() > tol {
+                return false;
+            }
+        }
+    }
+    for i in 0..n {
+        for j in 0..n {
+            if (pa[i * n + j] - pa[j * n + i]).abs() > tol {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Batched Hermitian (symmetric) pseudo-inverse: input `[..., k, k]` (symmetric) -> pinv `[B*k*k]`
@@ -19853,7 +20056,15 @@ pub fn lu_factor_unpack_batched_contiguous_f64(
         packed.extend_from_slice(&pk);
         pivots.extend_from_slice(&pv);
     }
-    Ok(LuBatchedResult { p, l, u, packed, pivots, n, bb })
+    Ok(LuBatchedResult {
+        p,
+        l,
+        u,
+        packed,
+        pivots,
+        n,
+        bb,
+    })
 }
 
 /// Batched LU VJP: per plane, `grad_A = lu_backward_f64(packed_plane, perm_plane, grad_packed_plane)`.
@@ -22377,8 +22588,8 @@ pub fn svd_batched_contiguous_f64(
         .zip(out_s.par_chunks_mut(sp))
         .zip(out_v.par_chunks_mut(vp))
         .zip(data.par_chunks(plane))
-        .for_each(|(((uc, sc), vc), pl)| {
-            match svd_contiguous_f64(pl, &pmeta, full_matrices) {
+        .for_each(
+            |(((uc, sc), vc), pl)| match svd_contiguous_f64(pl, &pmeta, full_matrices) {
                 Ok(r) => {
                     uc.copy_from_slice(&r.u);
                     sc.copy_from_slice(&r.s);
@@ -22390,8 +22601,8 @@ pub fn svd_batched_contiguous_f64(
                         *g = Some(e);
                     }
                 }
-            }
-        });
+            },
+        );
     if let Some(e) = first_err.into_inner().unwrap() {
         return Err(e);
     }
@@ -23752,7 +23963,11 @@ pub fn svdvals_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64
     svdvals_from_row_major_f64(a, m, n)
 }
 
-fn svdvals_from_row_major_f64(mut a: Vec<f64>, m: usize, n: usize) -> Result<Vec<f64>, KernelError> {
+fn svdvals_from_row_major_f64(
+    mut a: Vec<f64>,
+    m: usize,
+    n: usize,
+) -> Result<Vec<f64>, KernelError> {
     if m == 0 || n == 0 {
         return Ok(Vec::new());
     }
@@ -24995,18 +25210,20 @@ pub fn qr_batched_contiguous_f32(
         .par_chunks_mut(qp)
         .zip(r_out.par_chunks_mut(rp))
         .zip(data.par_chunks(plane))
-        .for_each(|((qc, rc), pl)| match qr_contiguous_f32(pl, &pmeta, reduced) {
-            Ok(res) => {
-                qc.copy_from_slice(&res.q);
-                rc.copy_from_slice(&res.r);
-            }
-            Err(e) => {
-                let mut g = first_err.lock().unwrap();
-                if g.is_none() {
-                    *g = Some(e);
+        .for_each(
+            |((qc, rc), pl)| match qr_contiguous_f32(pl, &pmeta, reduced) {
+                Ok(res) => {
+                    qc.copy_from_slice(&res.q);
+                    rc.copy_from_slice(&res.r);
                 }
-            }
-        });
+                Err(e) => {
+                    let mut g = first_err.lock().unwrap();
+                    if g.is_none() {
+                        *g = Some(e);
+                    }
+                }
+            },
+        );
     if let Some(e) = first_err.into_inner().unwrap() {
         return Err(e);
     }
@@ -25172,18 +25389,20 @@ pub fn qr_batched_contiguous_f64(
         .par_chunks_mut(qp)
         .zip(r_out.par_chunks_mut(rp))
         .zip(data.par_chunks(plane))
-        .for_each(|((qc, rc), pl)| match qr_contiguous_f64(pl, &pmeta, reduced) {
-            Ok(res) => {
-                qc.copy_from_slice(&res.q);
-                rc.copy_from_slice(&res.r);
-            }
-            Err(e) => {
-                let mut g = first_err.lock().unwrap();
-                if g.is_none() {
-                    *g = Some(e);
+        .for_each(
+            |((qc, rc), pl)| match qr_contiguous_f64(pl, &pmeta, reduced) {
+                Ok(res) => {
+                    qc.copy_from_slice(&res.q);
+                    rc.copy_from_slice(&res.r);
                 }
-            }
-        });
+                Err(e) => {
+                    let mut g = first_err.lock().unwrap();
+                    if g.is_none() {
+                        *g = Some(e);
+                    }
+                }
+            },
+        );
     if let Some(e) = first_err.into_inner().unwrap() {
         return Err(e);
     }
@@ -25435,7 +25654,8 @@ pub fn qr_contiguous_f64_stage_profile(
     qr_profile_record_ns(&mut timings.copy_zeroing_ns, Some(copy_start));
 
     let qcols = if reduced { k } else { m };
-    let q = qr_householder_panel_blocked_profiled(&mut r_mat, m, n, k, qcols, 32, Some(&mut timings));
+    let q =
+        qr_householder_panel_blocked_profiled(&mut r_mat, m, n, k, qcols, 32, Some(&mut timings));
 
     let zero_start = std::time::Instant::now();
     for i in 0..m {
@@ -25845,7 +26065,8 @@ pub fn lstsq_qr_batched_contiguous_f64(
         .zip(a_data.par_chunks(a_plane))
         .zip(b_data.par_chunks(b_plane))
         .for_each(|((dst, a_plane_data), b_plane_data)| {
-            match lstsq_qr_contiguous_f64(a_plane_data, &a_plane_meta, b_plane_data, &b_plane_meta) {
+            match lstsq_qr_contiguous_f64(a_plane_data, &a_plane_meta, b_plane_data, &b_plane_meta)
+            {
                 Ok(Some(x)) => dst.copy_from_slice(&x),
                 Ok(None) => {
                     declined.store(true, Ordering::Relaxed);
@@ -27117,8 +27338,7 @@ pub fn softmax_dim_tensor_contiguous_f32(
         return Err(KernelError::InvalidDimension { dim, ndim });
     }
     let reduce_size = shape[dim];
-    let (_, inner_size, numel) =
-        checked_dim_loop_sizes(shape, dim, "softmax_f32 overflow")?;
+    let (_, inner_size, numel) = checked_dim_loop_sizes(shape, dim, "softmax_f32 overflow")?;
     if numel == 0 {
         return Ok(Vec::new());
     }
@@ -28265,7 +28485,12 @@ pub fn cumsum_backward_tensor_contiguous_f32(
 /// f32 mirror of [`cumsum_backward_lane_block_f64`] — cache-friendly reverse-cumsum of one
 /// `[dim_size, inner_size]` contiguous block. Bit-exact per lane. (BlackThrush)
 #[inline]
-fn cumsum_backward_lane_block_f32(block: &[f32], out: &mut [f32], dim_size: usize, inner_size: usize) {
+fn cumsum_backward_lane_block_f32(
+    block: &[f32],
+    out: &mut [f32],
+    dim_size: usize,
+    inner_size: usize,
+) {
     if inner_size == 1 {
         let mut acc = 0.0f32;
         for d in (0..dim_size).rev() {
@@ -29357,10 +29582,16 @@ mod tests {
         let a: Vec<f64> = (0..batch * n * n)
             .map(|i| {
                 let (bi, r, c) = (i / (n * n), (i / n) % n, i % n);
-                if r == c { (n as f64) + 1.0 + (bi as f64) * 0.01 } else { 0.1 / ((r + c + 1) as f64) }
+                if r == c {
+                    (n as f64) + 1.0 + (bi as f64) * 0.01
+                } else {
+                    0.1 / ((r + c + 1) as f64)
+                }
             })
             .collect();
-        let b: Vec<f64> = (0..batch * n * m).map(|i| ((i as f64) * 0.013 + 0.2).sin()).collect();
+        let b: Vec<f64> = (0..batch * n * m)
+            .map(|i| ((i as f64) * 0.013 + 0.2).sin())
+            .collect();
         let got = super::lu_solve_batched_contiguous_f64(&a, &b, batch, n, m);
         let a_nn = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
         let b_nm = TensorMeta::from_shape(vec![n, m], DType::F64, Device::Cpu);
@@ -29426,12 +29657,19 @@ mod tests {
         let qn = batch * h_q * seq_q * d_k;
         let kn = batch * h_kv * seq_k * d_k;
         let vn = batch * h_kv * seq_k * d_v;
-        let q: Vec<f64> = (0..qn).map(|i| ((i as f64) * 0.017 + 0.3).sin() * 0.2).collect();
-        let k: Vec<f64> = (0..kn).map(|i| ((i as f64) * 0.013 + 1.1).sin() * 0.2).collect();
-        let v: Vec<f64> = (0..vn).map(|i| ((i as f64) * 0.011 + 2.2).cos() * 0.2).collect();
+        let q: Vec<f64> = (0..qn)
+            .map(|i| ((i as f64) * 0.017 + 0.3).sin() * 0.2)
+            .collect();
+        let k: Vec<f64> = (0..kn)
+            .map(|i| ((i as f64) * 0.013 + 1.1).sin() * 0.2)
+            .collect();
+        let v: Vec<f64> = (0..vn)
+            .map(|i| ((i as f64) * 0.011 + 2.2).cos() * 0.2)
+            .collect();
         // shared [seq_q, seq_k] mask (stride 0) and a per-Q-head [B*h_q, seq_q, seq_k] mask.
-        let mask2d: Vec<f64> =
-            (0..seq_q * seq_k).map(|i| if i % 3 == 0 { -0.5 } else { 0.0 }).collect();
+        let mask2d: Vec<f64> = (0..seq_q * seq_k)
+            .map(|i| if i % 3 == 0 { -0.5 } else { 0.0 })
+            .collect();
         let mask3d: Vec<f64> = (0..batch * h_q * seq_q * seq_k)
             .map(|i| if i % 5 == 0 { -0.7 } else { 0.0 })
             .collect();
@@ -29911,9 +30149,15 @@ mod tests {
         let got = super::max_pool3d_backward_f64(
             &dout, &input, batch, ch, id, ih, iw, kd, kh, kw, od, oh, ow, sd, sh, sw,
         );
-        assert_eq!(got[0].to_bits(), dout[0].to_bits(), "first tied argmax wins");
-        assert_eq!(got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-            expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+        assert_eq!(
+            got[0].to_bits(),
+            dout[0].to_bits(),
+            "first tied argmax wins"
+        );
+        assert_eq!(
+            got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -30231,26 +30475,10 @@ mod tests {
             .map(|i| (((i * 41 + 17) % 193) as f64 - 91.0) * 0.015625)
             .collect();
 
-        let direct = super::avg_pool1d_forward_f64(
-            &input, batch, ch, len, kernel, output_len, stride,
-        );
+        let direct =
+            super::avg_pool1d_forward_f64(&input, batch, ch, len, kernel, output_len, stride);
         let via_2d = super::avg_pool2d_forward_f64(
-            &input,
-            batch,
-            ch,
-            1,
-            len,
-            1,
-            kernel,
-            1,
-            output_len,
-            1,
-            stride,
-            0,
-            0,
-            1,
-            len,
-            true,
+            &input, batch, ch, 1, len, 1, kernel, 1, output_len, 1, stride, 0, 0, 1, len, true,
         );
         assert_eq!(
             direct.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
@@ -30260,26 +30488,10 @@ mod tests {
         let dout: Vec<f64> = (0..batch * ch * output_len)
             .map(|i| (((i * 29 + 5) % 127) as f64 - 63.0) * 0.03125)
             .collect();
-        let direct_grad = super::avg_pool1d_backward_f64(
-            &dout, batch, ch, len, kernel, output_len, stride,
-        );
+        let direct_grad =
+            super::avg_pool1d_backward_f64(&dout, batch, ch, len, kernel, output_len, stride);
         let via_2d_grad = super::avg_pool2d_backward_f64(
-            &dout,
-            batch,
-            ch,
-            1,
-            len,
-            1,
-            kernel,
-            1,
-            output_len,
-            1,
-            stride,
-            0,
-            0,
-            1,
-            len,
-            true,
+            &dout, batch, ch, 1, len, 1, kernel, 1, output_len, 1, stride, 0, 0, 1, len, true,
         );
         assert_eq!(
             direct_grad.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
@@ -30291,7 +30503,10 @@ mod tests {
             digest ^= bits;
             digest = digest.wrapping_mul(0x100000001b3);
         }
-        assert_eq!(digest, 0xfe6d6e661bd9cb67, "avg_pool1d direct golden digest");
+        assert_eq!(
+            digest, 0xfe6d6e661bd9cb67,
+            "avg_pool1d direct golden digest"
+        );
     }
 
     #[test]
@@ -30316,15 +30531,8 @@ mod tests {
         assert_eq!(got_sum.to_bits(), expected_sum.to_bits());
 
         let dense_dout = vec![upstream; batch * ch * output_len];
-        let expected_grad = super::avg_pool1d_backward_f64(
-            &dense_dout,
-            batch,
-            ch,
-            len,
-            kernel,
-            output_len,
-            stride,
-        );
+        let expected_grad =
+            super::avg_pool1d_backward_f64(&dense_dout, batch, ch, len, kernel, output_len, stride);
         let got_grad = super::avg_pool1d_backward_scalar_f64(
             upstream, batch, ch, len, kernel, output_len, stride,
         );
@@ -30611,9 +30819,15 @@ mod tests {
         let (n, c, ph, pw, kh, kw, sh, sw) = (2usize, 3, 9, 11, 3, 2, 2, 2);
         let oh = (ph - kh) / sh + 1;
         let ow = (pw - kw) / sw + 1;
-        let padded: Vec<f64> = (0..n * c * ph * pw).map(|i| (i % 877) as f64 * 0.02 - 6.0).collect();
-        let weight: Vec<f64> = (0..c * kh * kw).map(|i| (i % 47) as f64 * 0.1 - 2.0).collect();
-        let dout: Vec<f64> = (0..n * c * oh * ow).map(|i| (i % 53) as f64 * 0.05 - 1.3).collect();
+        let padded: Vec<f64> = (0..n * c * ph * pw)
+            .map(|i| (i % 877) as f64 * 0.02 - 6.0)
+            .collect();
+        let weight: Vec<f64> = (0..c * kh * kw)
+            .map(|i| (i % 47) as f64 * 0.1 - 2.0)
+            .collect();
+        let dout: Vec<f64> = (0..n * c * oh * ow)
+            .map(|i| (i % 53) as f64 * 0.05 - 1.3)
+            .collect();
         let (dpadded, dweight, dbias) = super::depthwise_conv2d_backward_f64(
             &dout, &padded, &weight, n, c, ph, pw, kh, kw, oh, ow, sh, sw, true,
         );
@@ -30664,7 +30878,9 @@ mod tests {
         let padded: Vec<f64> = (0..n * c * ih * iw)
             .map(|i| (i % 977) as f64 * 0.03 - 7.0)
             .collect();
-        let weight: Vec<f64> = (0..c * kh * kw).map(|i| (i % 51) as f64 * 0.1 - 2.0).collect();
+        let weight: Vec<f64> = (0..c * kh * kw)
+            .map(|i| (i % 51) as f64 * 0.1 - 2.0)
+            .collect();
         let bias: Vec<f64> = (0..c).map(|i| i as f64 * 0.5 - 1.0).collect();
         let got = super::depthwise_conv2d_forward_f64(
             &padded,
@@ -32839,7 +33055,8 @@ mod tests {
         let out = super::svdvals_batched_contiguous_f64(&data, &meta).unwrap();
         assert_eq!(out.len(), bb * mn);
         for b in 0..bb {
-            let s = super::svdvals_contiguous_f64(&data[b * m * n..(b + 1) * m * n], &pmeta).unwrap();
+            let s =
+                super::svdvals_contiguous_f64(&data[b * m * n..(b + 1) * m * n], &pmeta).unwrap();
             for i in 0..mn {
                 assert_eq!(out[b * mn + i].to_bits(), s[i].to_bits());
             }
@@ -32920,7 +33137,12 @@ mod tests {
         let grad_a = super::eigvalsh_grad_batched_contiguous_f64(&evals, &evecs).unwrap();
         assert_eq!(grad_a.len(), bb * k * k);
         for t in 0..bb * k * k {
-            assert!((grad_a[t] - a[t]).abs() < 1e-9, "grad_A != A at {t}: {} vs {}", grad_a[t], a[t]);
+            assert!(
+                (grad_a[t] - a[t]).abs() < 1e-9,
+                "grad_A != A at {t}: {} vs {}",
+                grad_a[t],
+                a[t]
+            );
         }
     }
 
@@ -32951,7 +33173,8 @@ mod tests {
         let evals = super::eigvalsh_batched_contiguous_f64(&data, &meta).unwrap();
         assert_eq!(evals.len(), bb * k);
         for b in 0..bb {
-            let w = super::eigvalsh_contiguous_f64(&data[b * k * k..(b + 1) * k * k], &kmeta).unwrap();
+            let w =
+                super::eigvalsh_contiguous_f64(&data[b * k * k..(b + 1) * k * k], &kmeta).unwrap();
             for i in 0..k {
                 assert_eq!(evals[b * k + i].to_bits(), w[i].to_bits());
             }
@@ -32985,7 +33208,8 @@ mod tests {
         let kmeta = TensorMeta::from_shape(vec![k, k], DType::F32, Device::Cpu);
         let ev = super::eigvalsh_batched_contiguous_f32(&sym, &meta).unwrap();
         for b in 0..bb {
-            let w = super::eigvalsh_contiguous_f32(&sym[b * k * k..(b + 1) * k * k], &kmeta).unwrap();
+            let w =
+                super::eigvalsh_contiguous_f32(&sym[b * k * k..(b + 1) * k * k], &kmeta).unwrap();
             for i in 0..k {
                 assert_eq!(ev[b * k + i].to_bits(), w[i].to_bits());
             }
@@ -33055,11 +33279,7 @@ mod tests {
         for full in [false, true] {
             let (u, s, vh) = super::svd_batched_contiguous_f64(&data, &meta, full).unwrap();
             let kk = m.min(n);
-            let (urows, ucols, vrows, vcols) = if full {
-                (m, m, n, n)
-            } else {
-                (m, kk, kk, n)
-            };
+            let (urows, ucols, vrows, vcols) = if full { (m, m, n, n) } else { (m, kk, kk, n) };
             for b in 0..bb {
                 let r = super::svd_contiguous_f64(&data[b * m * n..(b + 1) * m * n], &pmeta, full)
                     .unwrap();
@@ -33109,7 +33329,8 @@ mod tests {
         let out = super::eigvals_batched_contiguous_f64(&data, &meta).unwrap();
         assert_eq!(out.len(), bb * 2 * k);
         for b in 0..bb {
-            let w = super::eigvals_contiguous_f64(&data[b * k * k..(b + 1) * k * k], &kmeta).unwrap();
+            let w =
+                super::eigvals_contiguous_f64(&data[b * k * k..(b + 1) * k * k], &kmeta).unwrap();
             for t in 0..2 * k {
                 assert_eq!(out[b * 2 * k + t].to_bits(), w[t].to_bits());
             }
@@ -33127,7 +33348,8 @@ mod tests {
         let out = super::matrix_exp_batched_contiguous_f64(&data, &meta).unwrap();
         assert_eq!(out.len(), bb * k * k);
         for b in 0..bb {
-            let r = super::matrix_exp_contiguous_f64(&data[b * k * k..(b + 1) * k * k], &kmeta).unwrap();
+            let r = super::matrix_exp_contiguous_f64(&data[b * k * k..(b + 1) * k * k], &kmeta)
+                .unwrap();
             for t in 0..k * k {
                 assert_eq!(out[b * k * k + t].to_bits(), r[t].to_bits());
             }
@@ -33138,8 +33360,8 @@ mod tests {
         let kmetaf = TensorMeta::from_shape(vec![k, k], DType::F32, Device::Cpu);
         let outf = super::matrix_exp_batched_contiguous_f32(&dataf, &metaf).unwrap();
         for b in 0..bb {
-            let r =
-                super::matrix_exp_contiguous_f32(&dataf[b * k * k..(b + 1) * k * k], &kmetaf).unwrap();
+            let r = super::matrix_exp_contiguous_f32(&dataf[b * k * k..(b + 1) * k * k], &kmetaf)
+                .unwrap();
             for t in 0..k * k {
                 assert_eq!(outf[b * k * k + t].to_bits(), r[t].to_bits());
             }
@@ -33258,6 +33480,48 @@ mod tests {
     }
 
     #[test]
+    fn pinv_gram_rank_deficient_satisfies_moore_penrose() {
+        let (m, n) = (12usize, 8usize);
+        let data: Vec<f64> = (0..m * n)
+            .map(|i| (((i + 3) % 5) as f64 - 2.0) * 0.125)
+            .collect();
+        let pinv = super::pinv_gram_contiguous_f64(&data, m, n)
+            .unwrap()
+            .expect("gram pinv accepts rank-deficient fixture");
+        let mut ap = vec![0.0f64; m * m];
+        super::gemm::dgemm(m, n, m, &data, &pinv, &mut ap);
+        let mut apa = vec![0.0f64; m * n];
+        super::gemm::dgemm(m, m, n, &ap, &data, &mut apa);
+        for i in 0..m * n {
+            assert!((apa[i] - data[i]).abs() < 1e-7, "A P A mismatch at {i}");
+        }
+
+        let mut pa = vec![0.0f64; n * n];
+        super::gemm::dgemm(n, m, n, &pinv, &data, &mut pa);
+        let mut pap = vec![0.0f64; n * m];
+        super::gemm::dgemm(n, n, m, &pa, &pinv, &mut pap);
+        for i in 0..n * m {
+            assert!((pap[i] - pinv[i]).abs() < 1e-7, "P A P mismatch at {i}");
+        }
+        for i in 0..m {
+            for j in 0..m {
+                assert!(
+                    (ap[i * m + j] - ap[j * m + i]).abs() < 1e-7,
+                    "A P symmetry mismatch ({i},{j})"
+                );
+            }
+        }
+        for i in 0..n {
+            for j in 0..n {
+                assert!(
+                    (pa[i * n + j] - pa[j * n + i]).abs() < 1e-7,
+                    "P A symmetry mismatch ({i},{j})"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn pinv_hermitian_batched_spd_is_inverse_and_symmetric() {
         // For SPD planes, pinv == inverse: A @ pinv ≈ I (and pinv symmetric).
         let (bb, k) = (7usize, 5usize);
@@ -33286,7 +33550,10 @@ mod tests {
             // symmetry
             for i in 0..k {
                 for j in 0..k {
-                    assert!((p[i * k + j] - p[j * k + i]).abs() < 1e-9, "pinv not symmetric");
+                    assert!(
+                        (p[i * k + j] - p[j * k + i]).abs() < 1e-9,
+                        "pinv not symmetric"
+                    );
                 }
             }
             // A @ pinv ≈ I
@@ -35146,11 +35413,9 @@ mod tests {
         }
 
         let soft64 = softmax_dim_tensor_contiguous_f64(&data64, &meta64, dim).unwrap();
-        let soft64_shift =
-            softmax_dim_tensor_contiguous_f64(&shifted64, &meta64, dim).unwrap();
+        let soft64_shift = softmax_dim_tensor_contiguous_f64(&shifted64, &meta64, dim).unwrap();
         let log64 = log_softmax_dim_tensor_contiguous_f64(&data64, &meta64, dim).unwrap();
-        let log64_shift =
-            log_softmax_dim_tensor_contiguous_f64(&shifted64, &meta64, dim).unwrap();
+        let log64_shift = log_softmax_dim_tensor_contiguous_f64(&shifted64, &meta64, dim).unwrap();
 
         let soft32 = super::softmax_dim_tensor_contiguous_f32(&data32, &meta32, dim).unwrap();
         let soft32_shift =
@@ -36553,7 +36818,11 @@ mod tests {
             let want = serial_norm(&data, &shape, p, 1);
             assert_eq!(got.len(), want.len());
             for i in 0..got.len() {
-                assert_eq!(got[i].to_bits(), want[i].to_bits(), "norm_dim p={p} idx={i}");
+                assert_eq!(
+                    got[i].to_bits(),
+                    want[i].to_bits(),
+                    "norm_dim p={p} idx={i}"
+                );
             }
         }
         // f32 twin, same shape/p.
@@ -36575,7 +36844,11 @@ mod tests {
             }
         }
         for i in 0..gotf.len() {
-            assert_eq!(gotf[i].to_bits(), wantf[i].to_bits(), "norm_dim_f32 idx={i}");
+            assert_eq!(
+                gotf[i].to_bits(),
+                wantf[i].to_bits(),
+                "norm_dim_f32 idx={i}"
+            );
         }
     }
 
@@ -36626,7 +36899,9 @@ mod tests {
         // (b) general strided path: [64, 32, 64], dim=1 (inner_size==64 > 1).
         let shape_b = vec![64usize, 32, 64];
         let nb: usize = shape_b.iter().product(); // 131072 > PARALLEL_THRESHOLD
-        let db: Vec<f32> = (0..nb).map(|i| ((i % 7001) as f32) * 0.0013 - 3.0).collect();
+        let db: Vec<f32> = (0..nb)
+            .map(|i| ((i % 7001) as f32) * 0.0013 - 3.0)
+            .collect();
         let meta_b = TensorMeta::from_shape(shape_b.clone(), DType::F32, Device::Cpu);
         let got_b = super::softmax_dim_tensor_contiguous_f32(&db, &meta_b, 1).unwrap();
         let want_b = serial_softmax(&db, &shape_b, 1);
@@ -36709,7 +36984,8 @@ mod tests {
         assert_eq!(imin, vec![0.0f64, 0.0, 0.0, 0.0, 1.0, 0.0]);
         // NaN-freeze (f32)
         let m3 = TensorMeta::from_shape(vec![3, 1], DType::F32, Device::Cpu);
-        let (vn, in_) = super::cummax_dim_tensor_contiguous_f32(&[1.0, f32::NAN, 2.0], &m3, 0).unwrap();
+        let (vn, in_) =
+            super::cummax_dim_tensor_contiguous_f32(&[1.0, f32::NAN, 2.0], &m3, 0).unwrap();
         assert_eq!(vn[0], 1.0f32);
         assert!(vn[1].is_nan() && vn[2].is_nan());
         assert_eq!(in_, vec![0.0f64, 1.0, 1.0]);
@@ -36720,12 +36996,14 @@ mod tests {
         // [[1,5,2],[4,3,6]] cummin dim0: [1,5,2] idx[0,0,0] ; [1,3,2] idx[0,1,0]
         let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
         let (v, i) =
-            super::cummin_dim_tensor_contiguous_f64(&[1.0, 5.0, 2.0, 4.0, 3.0, 6.0], &meta, 0).unwrap();
+            super::cummin_dim_tensor_contiguous_f64(&[1.0, 5.0, 2.0, 4.0, 3.0, 6.0], &meta, 0)
+                .unwrap();
         assert_eq!(v, vec![1.0, 5.0, 2.0, 1.0, 3.0, 2.0]);
         assert_eq!(i, vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
         // dim1: [[1,5,2],[4,3,6]] -> [1,1,1] idx[0,0,0] ; [4,3,3] idx[0,1,1]
         let (v1, i1) =
-            super::cummin_dim_tensor_contiguous_f64(&[1.0, 5.0, 2.0, 4.0, 3.0, 6.0], &meta, 1).unwrap();
+            super::cummin_dim_tensor_contiguous_f64(&[1.0, 5.0, 2.0, 4.0, 3.0, 6.0], &meta, 1)
+                .unwrap();
         assert_eq!(v1, vec![1.0, 1.0, 1.0, 4.0, 3.0, 3.0]);
         assert_eq!(i1, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0]);
         // tie [5,5,5] -> idx [0,1,2] (<= keeps latest)
@@ -36734,7 +37012,8 @@ mod tests {
         assert_eq!(vt, vec![5.0, 5.0, 5.0]);
         assert_eq!(it, vec![0.0, 1.0, 2.0]);
         // NaN [1,nan,2] -> values [1,nan,nan], idx [0,1,1]
-        let (vn, in_) = super::cummin_dim_tensor_contiguous_f64(&[1.0, f64::NAN, 2.0], &m3, 0).unwrap();
+        let (vn, in_) =
+            super::cummin_dim_tensor_contiguous_f64(&[1.0, f64::NAN, 2.0], &m3, 0).unwrap();
         assert_eq!(vn[0], 1.0);
         assert!(vn[1].is_nan() && vn[2].is_nan());
         assert_eq!(in_, vec![0.0, 1.0, 1.0]);
@@ -36763,7 +37042,8 @@ mod tests {
     fn cummax_dim_nan_propagates() {
         // [1,nan,2] dim0 -> values [1,nan,nan], indices [0,1,1] (torch NaN-freeze)
         let meta = TensorMeta::from_shape(vec![3, 1], DType::F64, Device::Cpu);
-        let (v, i) = super::cummax_dim_tensor_contiguous_f64(&[1.0, f64::NAN, 2.0], &meta, 0).unwrap();
+        let (v, i) =
+            super::cummax_dim_tensor_contiguous_f64(&[1.0, f64::NAN, 2.0], &meta, 0).unwrap();
         assert_eq!(v[0], 1.0);
         assert!(v[1].is_nan() && v[2].is_nan());
         assert_eq!(i, vec![0.0, 1.0, 1.0]);
@@ -40512,10 +40792,13 @@ mod tests {
         for plane in 0..batch {
             for r in 0..m {
                 for c in 0..n {
-                    let noise =
-                        ((((plane + 1) * (r + 3) * (c + 5)) % 23) as f64 - 11.0) * 0.0005;
-                    a[plane * m * n + r * n + c] =
-                        noise + if r == c { 2.0 + (plane % 7) as f64 * 0.001 } else { 0.0 };
+                    let noise = ((((plane + 1) * (r + 3) * (c + 5)) % 23) as f64 - 11.0) * 0.0005;
+                    a[plane * m * n + r * n + c] = noise
+                        + if r == c {
+                            2.0 + (plane % 7) as f64 * 0.001
+                        } else {
+                            0.0
+                        };
                 }
                 for c in 0..nrhs {
                     b[plane * m * nrhs + r * nrhs + c] =
@@ -41702,9 +41985,7 @@ mod tests {
             }
         }
 
-        let (dx, dw, db) = crate::layer_norm_backward_f64(
-            &dy, &x, &weight, batch, norm_size, eps,
-        );
+        let (dx, dw, db) = crate::layer_norm_backward_f64(&dy, &x, &weight, batch, norm_size, eps);
         for (got, expected) in dx.iter().zip(ref_dx.iter()) {
             assert_eq!(got.to_bits(), expected.to_bits(), "dx mismatch");
         }
@@ -41765,9 +42046,8 @@ mod tests {
                 }
             }
 
-            let (dx, dw, db) = crate::layer_norm_backward_f32(
-                &dy, &x, &weight, batch, norm_size, eps,
-            );
+            let (dx, dw, db) =
+                crate::layer_norm_backward_f32(&dy, &x, &weight, batch, norm_size, eps);
             for (got, expected) in dx.iter().zip(ref_dx.iter()) {
                 assert_eq!(
                     got.to_bits(),
@@ -42471,12 +42751,8 @@ mod tests {
     fn smooth_l1_backward_reduced_f64_matches_uniform_dloss_bits() {
         let n = super::SUM_PARALLEL_THRESHOLD + 129;
         let beta = 0.75;
-        let x: Vec<f64> = (0..n)
-            .map(|i| ((i % 193) as f64 - 96.0) * 0.011)
-            .collect();
-        let t: Vec<f64> = (0..n)
-            .map(|i| ((i % 157) as f64 - 78.0) * -0.007)
-            .collect();
+        let x: Vec<f64> = (0..n).map(|i| ((i % 193) as f64 - 96.0) * 0.011).collect();
+        let t: Vec<f64> = (0..n).map(|i| ((i % 157) as f64 - 78.0) * -0.007).collect();
 
         for scale in [1.0, -0.125] {
             let dloss = vec![scale; n];
@@ -42493,12 +42769,8 @@ mod tests {
     fn smooth_l1_backward_reduced_one_sided_helpers_match_full_bits() {
         let n = super::SUM_PARALLEL_THRESHOLD + 131;
         let beta = 0.75;
-        let x: Vec<f64> = (0..n)
-            .map(|i| ((i % 193) as f64 - 96.0) * 0.011)
-            .collect();
-        let t: Vec<f64> = (0..n)
-            .map(|i| ((i % 157) as f64 - 78.0) * -0.007)
-            .collect();
+        let x: Vec<f64> = (0..n).map(|i| ((i % 193) as f64 - 96.0) * 0.011).collect();
+        let t: Vec<f64> = (0..n).map(|i| ((i % 157) as f64 - 78.0) * -0.007).collect();
 
         for scale in [1.0, -0.125] {
             let (want_di, want_dt) = super::smooth_l1_backward_reduced_f64(scale, &x, &t, beta);
