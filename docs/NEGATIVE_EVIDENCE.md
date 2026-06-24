@@ -4,6 +4,90 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-24 - ★WIN: cumsum leading-dim (dim=0) transpose trick 1.76-2.24x vs PyTorch (was 1.12x)
+
+`cumsum` along a LEADING dim (e.g. dim=0 of a 2-D tensor) has `outer_size==1`, so the
+existing outer-block rayon fan-out leaves the whole pool idle and the single lane block
+runs serially over an `inner_size`-wide accumulator (bandwidth-bound, one core). The
+`crates/ft-api/examples/cumsum_transpose_trick.rs` bench (untracked on `main`) had MEASURED
+that an op-level transpose+contiguous+scan+transpose+contiguous beats the direct path
+(15.69 -> 8.90ms) but it lived only in the example, not the op.
+
+LEVER (cc): wire a FUSED transpose trick INTO `cumsum_tensor_contiguous_f64/f32`
+(`crates/ft-kernel-cpu/src/lib.rs`). When `outer_size < rayon::current_num_threads()`,
+`inner_size >= 8`, `dim_size >= 2`, and the block clears `PARALLEL_THRESHOLD`, the
+`inner_size` independent lanes are scanned across the pool: pass 1 fuses transpose+scan
+(strided read of `block`, contiguous per-lane write into a `[inner, d]` scratch), pass 2
+transposes the scratch back into the `[d, inner]` output. Only TWO streaming passes (vs the
+example's six), both disjoint `par_chunks_mut` contiguous writes — no unsafe. Each fixed-inner
+lane accumulates in the SAME order as the direct walk, so it is bit-for-bit identical.
+
+Measured (`PYTORCH_PYTHON=/tmp/torchvenv/bin/python` running the example binary, 2048x2048
+f64 dim=0, 15-iter min): FT direct `cumsum` dim=0 now **7.94-8.89ms** (was 15.69ms) =
+**1.76-2.24x faster than PyTorch's 17.5-17.8ms** (was 1.12x); the in-op direct path now
+matches the explicit op-level trick (~7.4-7.9ms). FT-trick output matches torch to 3.0e-14
+and the direct serial scan bit-for-bit.
+
+Correctness: new kernel tests `cumsum_transpose_trick_dim0_bit_exact_f64`/`_f32` (256x256
+dim=0 vs serial reference, `to_bits()` equality) pass; `cargo test -p ft-kernel-cpu --lib`
+541/0, `cargo test -p ft-api cumsum` 16/0. Source disposition: KEEP. AGENT cc.
+
+## 2026-06-24 - NEGATIVE (reverted): pdist f32 p=2 flat direct SIMD kernel regresses
+
+Bead/thread `frankentorch-kgs4`, assignee `cod-b`, agent `QuietMeadow`.
+`br ready --json` remains blocked by duplicate issue id `frankentorch-kgs4.150`;
+`bv --robot-triage` still reports `frankentorch-kgs4` as the active in-progress
+perf lane. Before editing, cod-b scratch/worktree commits were checked for
+unlanded measured wins; their HEADs were already ancestors of current `main`,
+and the dirty trees were either no-ship evidence, harness-only, or code already
+present on `main`.
+
+Measured residual: no-grad `tensor_pdist(x, p=2)` for contiguous f32 input,
+shape `512x64`, after the shipped SGEMM upper-triangle and direct-condensed
+assembly keeps. The current shipped route still trails PyTorch on this tiny
+primitive, but the prior direct row-pair attempt was rejected unless a
+flat/preallocated or blocked direct kernel first showed lower-level evidence.
+
+Baseline command used the required warm target dir and crate scope:
+`AGENT_NAME=QuietMeadow CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo bench -p ft-api --bench cdist_bench --
+pdist_f32_p2_mm/512x64 --warm-up-time 1 --measurement-time 3 --sample-size 10
+--noplot`. A literal `cargo bench --release ...` probe is recorded in
+`artifacts/perf/frankentorch-kgs4.cod-b-pdist-flat-direct-20260624/baseline_pdist_f32_p2_mm_512x64.log`
+and failed because this Cargo rejects `--release` for `cargo bench`; subsequent
+bench runs used Criterion's optimized bench profile. Baseline on RCH worker
+`ovh-a` measured `[777.97 us 784.62 us 789.22 us]`.
+
+Lever tried and reverted: add a thresholded no-grad f32 direct Euclidean pdist
+kernel in `ft-kernel-cpu`, called from `tensor_pdist` when
+`out_len * m <= 16,777,216`. It wrote the condensed strict upper triangle
+directly with `f32x8` lane accumulation and avoided the full `N x N` Gram
+matrix allocation. The threshold covered the measured `512x64` row while
+leaving larger rows on the existing SGEMM path.
+
+Candidate run attempted RCH with the same crate-scoped bench command, but RCH
+timed out during remote sync and failed open to a local per-crate run under the
+same warm `CARGO_TARGET_DIR`; the log is
+`artifacts/perf/frankentorch-kgs4.cod-b-pdist-flat-direct-20260624/candidate_pdist_f32_p2_mm_512x64_bench_profile.log`.
+It measured `[3.1875 ms 3.3256 ms 3.4056 ms]` and Criterion reported a
+`+321.23%` midpoint regression. Since the candidate was over 4x slower than the
+shipped baseline by point estimate (`3.3256 / 0.78462 = 4.24x`), the source
+hunks were reverted.
+
+Fresh local PyTorch sidecar for the same fixture, torch `2.12.0+cpu`, 32
+threads, recorded in
+`artifacts/perf/frankentorch-kgs4.cod-b-pdist-flat-direct-20260624/pytorch_pdist_f32_p2_512x64.log`,
+reported `min=0.044263 ms`, `p50=0.049193 ms`, `p95=0.056467 ms`, checksum
+`883173.937500`. Current shipped FT/PyTorch ratio remains `17.72x SLOWER`
+(`0.78462 / 0.044263`). The reverted direct candidate would have been
+`75.13x SLOWER` (`3.3256 / 0.044263`).
+
+Decision: REVERT. Do not retry a sequential flat direct f32 pair loop for
+`pdist_f32_p2_mm/512x64`. A future retry must use a true blocked/parallel
+condensed writer with same-worker proof against the shipped SGEMM path, or move
+below pdist into the f32 GEMM/session-output floor. Score vs PyTorch for this
+lever: `0W / 1L / 0N`.
+
 ## 2026-06-23 - KEEP: avg_pool2d f64 scalar-loss backward skips dense dout
 
 Bead/thread `frankentorch-kgs4`, assignee `cod-a`, agent `QuietMeadow`.

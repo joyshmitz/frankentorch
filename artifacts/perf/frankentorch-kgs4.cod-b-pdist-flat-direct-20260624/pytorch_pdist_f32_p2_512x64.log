@@ -1,0 +1,1 @@
+torch=2.12.0+cpu threads=32 min_ms=0.044263 p50_ms=0.049193 p95_ms=0.056467 checksum=883173.937500
