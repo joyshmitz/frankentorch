@@ -13416,7 +13416,25 @@ pub fn cummax_dim_tensor_contiguous_f64(
     let mut indices = vec![0.0; numel];
     let data = &input[offset..];
     let lane = dim_size * inner_size;
-    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+    // Leading-dim scan (small outer, large inner) → transpose trick (see cumsum f64 kernel).
+    let threads = rayon::current_num_threads();
+    let use_trick = numel >= PARALLEL_THRESHOLD
+        && inner_size >= 8
+        && dim_size >= 2
+        && outer_size < threads
+        && lane >= PARALLEL_THRESHOLD;
+    if use_trick {
+        for outer in 0..outer_size {
+            let base = outer * lane;
+            cummax_dim_block_transpose_trick_f64(
+                &data[base..base + lane],
+                &mut values[base..base + lane],
+                &mut indices[base..base + lane],
+                dim_size,
+                inner_size,
+            );
+        }
+    } else if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
         values
             .par_chunks_mut(lane)
             .zip(indices.par_chunks_mut(lane))
@@ -13444,6 +13462,55 @@ pub fn cummax_dim_tensor_contiguous_f64(
         }
     }
     Ok((values, indices))
+}
+
+/// Cummax transpose trick for a leading scan dim (small outer, large inner): the plain lane block
+/// runs serially when `outer_size==1`. Here each inner lane (fixed column) scans `d` independently
+/// with a scalar running max + argmax-index (same `>=` tie-keeps-latest + NaN-freeze rule as
+/// [`cummax_dim_lane_block_f64`]), writing into `[inner, d]` value/index scratches, then a parallel
+/// transpose copies both back into the `[d, inner]` outputs. Per-lane scan order is unchanged, so
+/// values AND indices are bit-for-bit identical. Disjoint `par_chunks_mut`, no unsafe.
+fn cummax_dim_block_transpose_trick_f64(
+    block: &[f64],
+    vals: &mut [f64],
+    idxs: &mut [f64],
+    dim_size: usize,
+    inner_size: usize,
+) {
+    let mut sv = vec![0.0; dim_size * inner_size];
+    let mut si = vec![0.0; dim_size * inner_size];
+    sv.par_chunks_mut(dim_size)
+        .zip(si.par_chunks_mut(dim_size))
+        .enumerate()
+        .for_each(|(r, (svr, sir))| {
+            let mut acc_max = f64::NEG_INFINITY;
+            let mut acc_idx = 0.0f64;
+            let mut seen_nan = false;
+            for d in 0..dim_size {
+                let v = block[d * inner_size + r];
+                if !seen_nan {
+                    if v.is_nan() {
+                        seen_nan = true;
+                        acc_max = v;
+                        acc_idx = d as f64;
+                    } else if v >= acc_max {
+                        acc_max = v;
+                        acc_idx = d as f64;
+                    }
+                }
+                svr[d] = acc_max;
+                sir[d] = acc_idx;
+            }
+        });
+    vals.par_chunks_mut(inner_size)
+        .zip(idxs.par_chunks_mut(inner_size))
+        .enumerate()
+        .for_each(|(d, (vd, idd))| {
+            for r in 0..inner_size {
+                vd[r] = sv[r * dim_size + d];
+                idd[r] = si[r * dim_size + d];
+            }
+        });
 }
 
 /// Cummax one `[dim_size, inner_size]` contiguous block into `vals`/`idxs`. Cache-friendly
@@ -13513,7 +13580,25 @@ pub fn cummin_dim_tensor_contiguous_f64(
     let mut indices = vec![0.0; numel];
     let data = &input[offset..];
     let lane = dim_size * inner_size;
-    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+    // Leading-dim scan (small outer, large inner) → transpose trick (see cumsum f64 kernel).
+    let threads = rayon::current_num_threads();
+    let use_trick = numel >= PARALLEL_THRESHOLD
+        && inner_size >= 8
+        && dim_size >= 2
+        && outer_size < threads
+        && lane >= PARALLEL_THRESHOLD;
+    if use_trick {
+        for outer in 0..outer_size {
+            let base = outer * lane;
+            cummin_dim_block_transpose_trick_f64(
+                &data[base..base + lane],
+                &mut values[base..base + lane],
+                &mut indices[base..base + lane],
+                dim_size,
+                inner_size,
+            );
+        }
+    } else if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
         values
             .par_chunks_mut(lane)
             .zip(indices.par_chunks_mut(lane))
@@ -13541,6 +13626,51 @@ pub fn cummin_dim_tensor_contiguous_f64(
         }
     }
     Ok((values, indices))
+}
+
+/// Cummin transpose trick — sister of [`cummax_dim_block_transpose_trick_f64`] with `<=` /
+/// `INFINITY` (running min + argmin, tie keeps latest, NaN-freeze). Bit-exact per lane.
+fn cummin_dim_block_transpose_trick_f64(
+    block: &[f64],
+    vals: &mut [f64],
+    idxs: &mut [f64],
+    dim_size: usize,
+    inner_size: usize,
+) {
+    let mut sv = vec![0.0; dim_size * inner_size];
+    let mut si = vec![0.0; dim_size * inner_size];
+    sv.par_chunks_mut(dim_size)
+        .zip(si.par_chunks_mut(dim_size))
+        .enumerate()
+        .for_each(|(r, (svr, sir))| {
+            let mut acc_min = f64::INFINITY;
+            let mut acc_idx = 0.0f64;
+            let mut seen_nan = false;
+            for d in 0..dim_size {
+                let v = block[d * inner_size + r];
+                if !seen_nan {
+                    if v.is_nan() {
+                        seen_nan = true;
+                        acc_min = v;
+                        acc_idx = d as f64;
+                    } else if v <= acc_min {
+                        acc_min = v;
+                        acc_idx = d as f64;
+                    }
+                }
+                svr[d] = acc_min;
+                sir[d] = acc_idx;
+            }
+        });
+    vals.par_chunks_mut(inner_size)
+        .zip(idxs.par_chunks_mut(inner_size))
+        .enumerate()
+        .for_each(|(d, (vd, idd))| {
+            for r in 0..inner_size {
+                vd[r] = sv[r * dim_size + d];
+                idd[r] = si[r * dim_size + d];
+            }
+        });
 }
 
 /// Cummin one `[dim_size, inner_size]` contiguous block (sister of [`cummax_dim_lane_block_f64`]):
@@ -13607,7 +13737,25 @@ pub fn cummax_dim_tensor_contiguous_f32(
     let mut indices = vec![0.0f64; numel];
     let data = &input[offset..];
     let lane = dim_size * inner_size;
-    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+    // Leading-dim scan (small outer, large inner) → transpose trick (see cumsum f64 kernel).
+    let threads = rayon::current_num_threads();
+    let use_trick = numel >= PARALLEL_THRESHOLD
+        && inner_size >= 8
+        && dim_size >= 2
+        && outer_size < threads
+        && lane >= PARALLEL_THRESHOLD;
+    if use_trick {
+        for outer in 0..outer_size {
+            let base = outer * lane;
+            cummax_dim_block_transpose_trick_f32(
+                &data[base..base + lane],
+                &mut values[base..base + lane],
+                &mut indices[base..base + lane],
+                dim_size,
+                inner_size,
+            );
+        }
+    } else if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
         values
             .par_chunks_mut(lane)
             .zip(indices.par_chunks_mut(lane))
@@ -13635,6 +13783,50 @@ pub fn cummax_dim_tensor_contiguous_f32(
         }
     }
     Ok((values, indices))
+}
+
+/// f32 mirror of [`cummax_dim_block_transpose_trick_f64`] — values f32, indices f64. Bit-exact.
+fn cummax_dim_block_transpose_trick_f32(
+    block: &[f32],
+    vals: &mut [f32],
+    idxs: &mut [f64],
+    dim_size: usize,
+    inner_size: usize,
+) {
+    let mut sv = vec![0.0f32; dim_size * inner_size];
+    let mut si = vec![0.0f64; dim_size * inner_size];
+    sv.par_chunks_mut(dim_size)
+        .zip(si.par_chunks_mut(dim_size))
+        .enumerate()
+        .for_each(|(r, (svr, sir))| {
+            let mut acc_max = f32::NEG_INFINITY;
+            let mut acc_idx = 0.0f64;
+            let mut seen_nan = false;
+            for d in 0..dim_size {
+                let v = block[d * inner_size + r];
+                if !seen_nan {
+                    if v.is_nan() {
+                        seen_nan = true;
+                        acc_max = v;
+                        acc_idx = d as f64;
+                    } else if v >= acc_max {
+                        acc_max = v;
+                        acc_idx = d as f64;
+                    }
+                }
+                svr[d] = acc_max;
+                sir[d] = acc_idx;
+            }
+        });
+    vals.par_chunks_mut(inner_size)
+        .zip(idxs.par_chunks_mut(inner_size))
+        .enumerate()
+        .for_each(|(d, (vd, idd))| {
+            for r in 0..inner_size {
+                vd[r] = sv[r * dim_size + d];
+                idd[r] = si[r * dim_size + d];
+            }
+        });
 }
 
 #[inline]
@@ -13699,7 +13891,25 @@ pub fn cummin_dim_tensor_contiguous_f32(
     let mut indices = vec![0.0f64; numel];
     let data = &input[offset..];
     let lane = dim_size * inner_size;
-    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+    // Leading-dim scan (small outer, large inner) → transpose trick (see cumsum f64 kernel).
+    let threads = rayon::current_num_threads();
+    let use_trick = numel >= PARALLEL_THRESHOLD
+        && inner_size >= 8
+        && dim_size >= 2
+        && outer_size < threads
+        && lane >= PARALLEL_THRESHOLD;
+    if use_trick {
+        for outer in 0..outer_size {
+            let base = outer * lane;
+            cummin_dim_block_transpose_trick_f32(
+                &data[base..base + lane],
+                &mut values[base..base + lane],
+                &mut indices[base..base + lane],
+                dim_size,
+                inner_size,
+            );
+        }
+    } else if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
         values
             .par_chunks_mut(lane)
             .zip(indices.par_chunks_mut(lane))
@@ -13727,6 +13937,50 @@ pub fn cummin_dim_tensor_contiguous_f32(
         }
     }
     Ok((values, indices))
+}
+
+/// f32 mirror of [`cummin_dim_block_transpose_trick_f64`] — values f32, indices f64. Bit-exact.
+fn cummin_dim_block_transpose_trick_f32(
+    block: &[f32],
+    vals: &mut [f32],
+    idxs: &mut [f64],
+    dim_size: usize,
+    inner_size: usize,
+) {
+    let mut sv = vec![0.0f32; dim_size * inner_size];
+    let mut si = vec![0.0f64; dim_size * inner_size];
+    sv.par_chunks_mut(dim_size)
+        .zip(si.par_chunks_mut(dim_size))
+        .enumerate()
+        .for_each(|(r, (svr, sir))| {
+            let mut acc_min = f32::INFINITY;
+            let mut acc_idx = 0.0f64;
+            let mut seen_nan = false;
+            for d in 0..dim_size {
+                let v = block[d * inner_size + r];
+                if !seen_nan {
+                    if v.is_nan() {
+                        seen_nan = true;
+                        acc_min = v;
+                        acc_idx = d as f64;
+                    } else if v <= acc_min {
+                        acc_min = v;
+                        acc_idx = d as f64;
+                    }
+                }
+                svr[d] = acc_min;
+                sir[d] = acc_idx;
+            }
+        });
+    vals.par_chunks_mut(inner_size)
+        .zip(idxs.par_chunks_mut(inner_size))
+        .enumerate()
+        .for_each(|(d, (vd, idd))| {
+            for r in 0..inner_size {
+                vd[r] = sv[r * dim_size + d];
+                idd[r] = si[r * dim_size + d];
+            }
+        });
 }
 
 #[inline]
@@ -37552,6 +37806,102 @@ mod tests {
                 want[i].to_bits(),
                 "cumprod trick f32 idx={i}"
             );
+        }
+    }
+
+    // Serial reference cummax/cummin along dim=0 of a [rows,cols] tensor: (values, indices),
+    // tie keeps LATEST (>=/<=), NaN freezes the lane. Used to pin the transpose-trick path.
+    fn cummaxmin_ref_f64(
+        input: &[f64],
+        rows: usize,
+        cols: usize,
+        is_max: bool,
+    ) -> (Vec<f64>, Vec<f64>) {
+        let mut v = vec![0.0; input.len()];
+        let mut idx = vec![0.0; input.len()];
+        for c in 0..cols {
+            let mut acc = if is_max {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            };
+            let mut ai = 0.0f64;
+            let mut nan = false;
+            for d in 0..rows {
+                let x = input[d * cols + c];
+                if !nan {
+                    if x.is_nan() {
+                        nan = true;
+                        acc = x;
+                        ai = d as f64;
+                    } else if (is_max && x >= acc) || (!is_max && x <= acc) {
+                        acc = x;
+                        ai = d as f64;
+                    }
+                }
+                v[d * cols + c] = acc;
+                idx[d * cols + c] = ai;
+            }
+        }
+        (v, idx)
+    }
+
+    #[test]
+    fn cummax_cummin_transpose_trick_dim0_bit_exact() {
+        // [512,256] dim=0 (outer_size==1) exercises the trick path; include a NaN so the
+        // NaN-freeze rule is covered. Values AND indices must match the serial reference bit-exact.
+        let (rows, cols) = (512usize, 256usize);
+        let mut input: Vec<f64> = (0..rows * cols)
+            .map(|i| ((i as f64) * 0.001).sin() * 3.0)
+            .collect();
+        input[37 * cols + 11] = f64::NAN; // freeze lane 11 from row 37 on
+        let meta = TensorMeta::from_shape(vec![rows, cols], DType::F64, Device::Cpu);
+        // f64 cummax
+        let (gv, gi) = super::cummax_dim_tensor_contiguous_f64(&input, &meta, 0).unwrap();
+        let (wv, wi) = cummaxmin_ref_f64(&input, rows, cols, true);
+        for i in 0..gv.len() {
+            assert_eq!(gv[i].to_bits(), wv[i].to_bits(), "cummax val idx={i}");
+            assert_eq!(gi[i].to_bits(), wi[i].to_bits(), "cummax idx idx={i}");
+        }
+        // f64 cummin
+        let (gv, gi) = super::cummin_dim_tensor_contiguous_f64(&input, &meta, 0).unwrap();
+        let (wv, wi) = cummaxmin_ref_f64(&input, rows, cols, false);
+        for i in 0..gv.len() {
+            assert_eq!(gv[i].to_bits(), wv[i].to_bits(), "cummin val idx={i}");
+            assert_eq!(gi[i].to_bits(), wi[i].to_bits(), "cummin idx idx={i}");
+        }
+        // f32 cummax / cummin (values f32, indices f64).
+        let input32: Vec<f32> = input.iter().map(|&x| x as f32).collect();
+        let meta32 = TensorMeta::from_shape(vec![rows, cols], DType::F32, Device::Cpu);
+        let (gv, gi) = super::cummax_dim_tensor_contiguous_f32(&input32, &meta32, 0).unwrap();
+        let (wv, wi) = cummaxmin_ref_f64(
+            &input32.iter().map(|&x| x as f64).collect::<Vec<_>>(),
+            rows,
+            cols,
+            true,
+        );
+        for i in 0..gv.len() {
+            assert_eq!(
+                gv[i].to_bits(),
+                (wv[i] as f32).to_bits(),
+                "cummax f32 val idx={i}"
+            );
+            assert_eq!(gi[i].to_bits(), wi[i].to_bits(), "cummax f32 idx idx={i}");
+        }
+        let (gv, gi) = super::cummin_dim_tensor_contiguous_f32(&input32, &meta32, 0).unwrap();
+        let (wv, wi) = cummaxmin_ref_f64(
+            &input32.iter().map(|&x| x as f64).collect::<Vec<_>>(),
+            rows,
+            cols,
+            false,
+        );
+        for i in 0..gv.len() {
+            assert_eq!(
+                gv[i].to_bits(),
+                (wv[i] as f32).to_bits(),
+                "cummin f32 val idx={i}"
+            );
+            assert_eq!(gi[i].to_bits(), wi[i].to_bits(), "cummin f32 idx idx={i}");
         }
     }
 

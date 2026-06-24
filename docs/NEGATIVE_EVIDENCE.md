@@ -101,6 +101,36 @@ hand-written `wide::f32x8` per-channel BatchNorm stats helpers for this NCHW
 scalar-sum row. Future BatchNorm2d f32 work should target session/leaf setup,
 running-stat bookkeeping, or a fundamentally different stats layout strategy
 with same-worker proof.
+## 2026-06-24 - ★WIN: cummax/cummin dim=0 transpose trick (f64+f32) doubles to 6-8x vs PyTorch
+
+Third application of the cumsum/cumprod dim=0 transpose trick (below). All four
+`cummax_dim`/`cummin_dim` `_f64`/`_f32` kernels had the same `outer_size >= 2` rayon gate, so a
+LEADING scan dim (dim=0, `outer_size==1`) ran the single lane block SERIALLY over an `inner_size`-
+wide running-max/min+argmax accumulator. FT's cache-friendly serial walk already beat torch's
+strided dim=0 (torch cummax/cummin are SERIAL — see the 2026-06-23 last-dim 6.8-9.1x note), but it
+left the pool idle.
+
+Baseline MEASURED (`crates/ft-api/examples/cummax_dim_api_headtohead.rs`, [262144,64] dim=0 f64,
+15-iter min): FT cummax dim=0 **138.80ms = 3.29x faster** than PyTorch (456.97ms) — already a win,
+but serial.
+
+LEVER (cc): wire the FUSED transpose trick into all four kernels (`cummax/cummin_dim_block_
+transpose_trick_f64/f32`), gated identically (`outer_size < current_num_threads() && inner_size>=8
+&& dim_size>=2 && lane>=PARALLEL_THRESHOLD`). Pass 1 scans each inner lane independently across the
+pool with a scalar running max/min + argmax-index (same `>=`/`<=` tie-keeps-latest + NaN-freeze
+rule), writing values AND indices into `[inner,d]` scratches; pass 2 transposes both back. Disjoint
+`par_chunks_mut`, no unsafe. Per-lane scan order unchanged → values AND indices bit-for-bit
+identical (the doubled transpose-back bandwidth is outweighed by the inner-lane parallelism).
+
+After MEASURED (same harness, dim=0, best-of-3, end-to-end API, all values+indices MATCH vs torch):
+  - cummax f64 [262144,64]: 138.80 -> **71.88ms = 6.0-6.9x** vs torch (was 3.29x serial)
+  - cummin f64 [262144,64]: **69.85ms = 6.2-6.6x** vs torch
+  - cummax f32 [262144,64]: **49.29ms = 7.3-8.1x** vs torch (f32 half the bandwidth → bigger win)
+  - cummin f32 [262144,64]: **49.60ms = 7.1-7.9x** vs torch
+
+Correctness: new kernel test `cummax_cummin_transpose_trick_dim0_bit_exact` ([512,256] dim=0 with an
+injected NaN, all four kernels, values+indices `to_bits()` equality); `cargo test -p ft-kernel-cpu
+--lib` 544/0, `cargo test -p ft-api cummax`/`cummin` 7/0. Source disposition: KEEP. AGENT cc.
 
 ## 2026-06-24 - ★WIN: cumprod leading-dim (dim=0) transpose trick flips 1.05x LOSS to 1.40-1.68x WIN vs PyTorch
 
