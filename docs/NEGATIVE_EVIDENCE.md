@@ -4,6 +4,44 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-24 - NEGATIVE (reverted): pdist f32 p=2 row-parallel f32x8 direct writer regresses
+
+Bead/thread `frankentorch-kgs4`, assignee `cod-a`, agent `PearlReef`.
+Fresh cod-a scratch/worktree ancestry check found no frankentorch cod-a commit
+ahead of current `origin/main`; the remaining measured residual was still
+no-grad contiguous f32 `tensor_pdist(x, p=2)`, shape `512x64`, after the shipped
+SGEMM upper-triangle and direct condensed-output keeps.
+
+Lever tried and reverted: a narrow no-grad f32 p=2 route for
+`n <= 1024`, `m <= 128`, and `out_len * m <= 16,777,216` that bypassed the
+full `N x N` Gram matrix and computed strict upper-triangle rows directly in
+parallel. Each pair streamed the two source rows once and used local `f32x8`
+squared-distance accumulation before `sqrt`. This was the ledger-allowed
+"true blocked/parallel condensed writer" retry family, but still carried one
+per-row `Vec` and flatten pass.
+
+Correctness smoke before rejection:
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec --
+cargo test -p ft-api pdist_p2_f32_fused_nograd_matches_composed_path --lib --
+--nocapture` selected RCH worker `ovh-a` and passed 1/0.
+
+Candidate bench:
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec --
+cargo bench --profile release -p ft-api --bench cdist_bench --
+pdist_f32_p2_mm/512x64 --warm-up-time 1 --measurement-time 3 --sample-size 10
+--noplot` selected `ovh-a` and measured `[1.0343 ms 1.7468 ms 2.4083 ms]`.
+The current shipped SGEMM/direct-output row in this ledger is `0.78462 ms`
+midpoint on `ovh-a`; this candidate is `2.23x SLOWER` by midpoint
+(`1.7468 / 0.78462`). Against the local PyTorch sidecar from the same row
+(`min=0.044263 ms`, torch `2.12.0+cpu`), the candidate would be
+`39.46x SLOWER` (`1.7468 / 0.044263`) while the shipped route remains
+`17.72x SLOWER`.
+
+Decision: REVERT. Do not retry row-parallel direct f32x8 pdist p=2 for
+`512x64` unless it first eliminates the per-row allocation/flatten overhead and
+shows a lower-level same-worker win over the shipped SGEMM/direct-output route.
+Score vs PyTorch for this lever: `0W / 1L / 0N`.
+
 ## 2026-06-24 - ★WIN: cumprod leading-dim (dim=0) transpose trick flips 1.05x LOSS to 1.40-1.68x WIN vs PyTorch
 
 Direct generalization of the cumsum dim=0 win below. `cumprod_tensor_contiguous_f64/f32` had the
