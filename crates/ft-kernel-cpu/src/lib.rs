@@ -13271,7 +13271,28 @@ pub fn cumsum_tensor_contiguous_f64(
     // output slices, so fan them out over Rayon. Each lane's accumulation order is
     // unchanged, so the result is bit-for-bit identical to the serial scan.
     let lane = dim_size * inner_size;
-    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+    // When the scan dim is a LEADING dim (e.g. dim=0), `outer_size` is small (1 for a
+    // 2-D tensor) so the outer fan-out leaves the pool idle and the single lane block
+    // runs serially over an `inner_size`-wide accumulator — bandwidth-bound. Switch to
+    // the transpose trick: scan the `inner_size` independent lanes across the pool, then
+    // transpose back. Bit-exact per lane (see `cumsum_block_transpose_trick_f64`).
+    let threads = rayon::current_num_threads();
+    let use_trick = numel >= PARALLEL_THRESHOLD
+        && inner_size >= 8
+        && dim_size >= 2
+        && outer_size < threads
+        && lane >= PARALLEL_THRESHOLD;
+    if use_trick {
+        for outer in 0..outer_size {
+            let base = outer * lane;
+            cumsum_block_transpose_trick_f64(
+                &data[base..base + lane],
+                &mut output[base..base + lane],
+                dim_size,
+                inner_size,
+            );
+        }
+    } else if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
         output
             .par_chunks_mut(lane)
             .enumerate()
@@ -13292,6 +13313,47 @@ pub fn cumsum_tensor_contiguous_f64(
     }
 
     Ok(output)
+}
+
+/// Cumsum one `[dim_size, inner_size]` contiguous block by the TRANSPOSE TRICK, for the case
+/// where the scan dim is a leading dim (poor outer parallelism, large `inner_size`). The plain
+/// [`cumsum_lane_block_f64`] walks `d` outer with a serial `inner_size`-wide accumulator — one
+/// thread, bandwidth-bound. Here the `inner_size` lanes (one per fixed inner column) are
+/// INDEPENDENT, so we fan them out: each lane runs a scalar scan over `d`, writing its result
+/// into a `[inner_size, dim_size]` scratch (scan dim innermost = contiguous per-lane write),
+/// then a parallel transpose copies the scratch back into the `[dim_size, inner_size]` output.
+/// Each fixed-inner lane accumulates `block[0*inner+r], block[1*inner+r], …` in the SAME order
+/// as the direct walk, so the result is bit-for-bit identical. Both passes use disjoint
+/// `par_chunks_mut` (contiguous writes), so no unsafe is needed — only two streaming passes
+/// over the data (vs the 6 of a transpose+contiguous+scan+transpose+contiguous at the op level).
+fn cumsum_block_transpose_trick_f64(
+    block: &[f64],
+    out: &mut [f64],
+    dim_size: usize,
+    inner_size: usize,
+) {
+    // Pass 1: fused transpose + scan. Lane `r` (fixed inner column) reads `block` with stride
+    // `inner_size` and writes its running sums contiguously into `scanned[r*dim_size..]`.
+    let mut scanned = vec![0.0; dim_size * inner_size];
+    scanned
+        .par_chunks_mut(dim_size)
+        .enumerate()
+        .for_each(|(r, srow)| {
+            let mut acc = 0.0;
+            for d in 0..dim_size {
+                acc += block[d * inner_size + r];
+                srow[d] = acc;
+            }
+        });
+    // Pass 2: transpose `scanned` [inner, d] back into `out` [d, inner]. Thread `d` owns the
+    // contiguous output row `out[d*inner_size..]`, reading `scanned` strided.
+    out.par_chunks_mut(inner_size)
+        .enumerate()
+        .for_each(|(d, orow)| {
+            for (r, slot) in orow.iter_mut().enumerate() {
+                *slot = scanned[r * dim_size + d];
+            }
+        });
 }
 
 /// Cumsum one `[dim_size, inner_size]` contiguous block (row-major) into `out`. Walks `d` OUTER and
@@ -21461,7 +21523,8 @@ fn eig_initial_q_acc(n: usize, want_vectors: bool) -> Vec<f64> {
 // when the batch saturates the thread pool: nesting the per-plane rayon inside the batch par_chunks adds
 // dispatch overhead that WORSENS with thread count (eigvals B=150 n=96 measured @8 21ms -> @32 33ms).
 // Bit-exact — the inner row/col updates are independent, so serial == parallel. frankentorch eig-batched-no-nest.
-static EIG_BATCHED_SERIAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static EIG_BATCHED_SERIAL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigResult, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
@@ -21530,8 +21593,7 @@ fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigRe
             // path's per-row dot/scale expression and arithmetic order). The big
             // Hessenberg O(n^3) phase of the non-symmetric eig (frankentorch-l9xod).
             let m_sub = n - k - 1;
-            let par = n >= 64
-                && !EIG_BATCHED_SERIAL.load(std::sync::atomic::Ordering::Relaxed);
+            let par = n >= 64 && !EIG_BATCHED_SERIAL.load(std::sync::atomic::Ordering::Relaxed);
 
             // Left multiply. For eigvals-only, columns before k are outside the
             // active Hessenberg band and are never read by the QR phase; skipping
@@ -22261,8 +22323,7 @@ pub fn eig_francis_profile_f64(
             }
 
             let m_sub = n - k - 1;
-            let par = n >= 64
-                && !EIG_BATCHED_SERIAL.load(std::sync::atomic::Ordering::Relaxed);
+            let par = n >= 64 && !EIG_BATCHED_SERIAL.load(std::sync::atomic::Ordering::Relaxed);
             let left_start = if want_vectors { 0 } else { k };
             let mut left_scale = vec![0.0f64; n - left_start];
             let col_scale = |(j_rel, slot): (usize, &mut f64)| {
@@ -22405,8 +22466,7 @@ pub fn eig_francis_shadow_profile_f64(
             }
 
             let m_sub = n - k - 1;
-            let par = n >= 64
-                && !EIG_BATCHED_SERIAL.load(std::sync::atomic::Ordering::Relaxed);
+            let par = n >= 64 && !EIG_BATCHED_SERIAL.load(std::sync::atomic::Ordering::Relaxed);
             let left_start = if want_vectors { 0 } else { k };
             let mut left_scale = vec![0.0f64; n - left_start];
             let col_scale = |(j_rel, slot): (usize, &mut f64)| {
@@ -28581,7 +28641,24 @@ pub fn cumsum_tensor_contiguous_f32(
     let data = &input[offset..];
     // f32 mirror: fan independent `outer` blocks over Rayon, bit-exact per lane.
     let lane = dim_size * inner_size;
-    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+    // Leading-dim scan (small outer, large inner) → transpose trick (see f64 kernel).
+    let threads = rayon::current_num_threads();
+    let use_trick = numel >= PARALLEL_THRESHOLD
+        && inner_size >= 8
+        && dim_size >= 2
+        && outer_size < threads
+        && lane >= PARALLEL_THRESHOLD;
+    if use_trick {
+        for outer in 0..outer_size {
+            let base = outer * lane;
+            cumsum_block_transpose_trick_f32(
+                &data[base..base + lane],
+                &mut output[base..base + lane],
+                dim_size,
+                inner_size,
+            );
+        }
+    } else if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
         output
             .par_chunks_mut(lane)
             .enumerate()
@@ -28601,6 +28678,34 @@ pub fn cumsum_tensor_contiguous_f32(
         }
     }
     Ok(output)
+}
+
+/// f32 mirror of [`cumsum_block_transpose_trick_f64`] — fused transpose+scan over independent
+/// inner lanes, then a parallel transpose back. Bit-exact per lane.
+fn cumsum_block_transpose_trick_f32(
+    block: &[f32],
+    out: &mut [f32],
+    dim_size: usize,
+    inner_size: usize,
+) {
+    let mut scanned = vec![0.0f32; dim_size * inner_size];
+    scanned
+        .par_chunks_mut(dim_size)
+        .enumerate()
+        .for_each(|(r, srow)| {
+            let mut acc = 0.0f32;
+            for d in 0..dim_size {
+                acc += block[d * inner_size + r];
+                srow[d] = acc;
+            }
+        });
+    out.par_chunks_mut(inner_size)
+        .enumerate()
+        .for_each(|(d, orow)| {
+            for (r, slot) in orow.iter_mut().enumerate() {
+                *slot = scanned[r * dim_size + d];
+            }
+        });
 }
 
 /// f32 mirror of [`cumsum_lane_block_f64`] — cache-friendly d-outer/inner-inner cumsum of one
@@ -29827,7 +29932,10 @@ mod tests {
                 "[int8_linear] m={m} k={k} n={n}: cosine={cos:.6} max_abs={max_abs:.4} max_rel(vs max|y|)={max_rel:.4}"
             );
             assert!(cos > 0.999, "cosine {cos} too low for m={m} k={k} n={n}");
-            assert!(max_rel < 0.05, "max_rel {max_rel} too high for m={m} k={k} n={n}");
+            assert!(
+                max_rel < 0.05,
+                "max_rel {max_rel} too high for m={m} k={k} n={n}"
+            );
         }
     }
 
@@ -37229,6 +37337,72 @@ mod tests {
             super::cumsum_tensor_contiguous_f64(&input, &meta, 1).expect("cumsum should succeed");
         // dim1: accumulate within rows: [1,1+2,1+2+3] [4,4+5,4+5+6] = [1,3,6,4,9,15]
         assert_eq!(out, vec![1.0, 3.0, 6.0, 4.0, 9.0, 15.0]);
+    }
+
+    // Serial reference cumsum along `dim` of a row-major contiguous tensor, used to pin the
+    // transpose-trick path (dim=0 of a large 2-D tensor) bit-for-bit.
+    fn cumsum_ref_f64(input: &[f64], shape: &[usize], dim: usize) -> Vec<f64> {
+        let dim_size = shape[dim];
+        let inner: usize = shape[dim + 1..].iter().product();
+        let outer: usize = shape[..dim].iter().product();
+        let lane = dim_size * inner;
+        let mut out = vec![0.0; input.len()];
+        for o in 0..outer {
+            for r in 0..inner {
+                let mut acc = 0.0;
+                for d in 0..dim_size {
+                    let idx = o * lane + d * inner + r;
+                    acc += input[idx];
+                    out[idx] = acc;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn cumsum_transpose_trick_dim0_bit_exact_f64() {
+        // [256,256] dim=0: outer_size=1 → exercises the transpose-trick path on multi-core.
+        // The result must be bit-for-bit identical to the serial reference scan.
+        let (rows, cols) = (256usize, 256usize);
+        let input: Vec<f64> = (0..rows * cols).map(|i| (i as f64) * 1e-6 - 3.0).collect();
+        let meta = TensorMeta::from_shape(vec![rows, cols], DType::F64, Device::Cpu);
+        let got = super::cumsum_tensor_contiguous_f64(&input, &meta, 0).expect("cumsum");
+        let want = cumsum_ref_f64(&input, &[rows, cols], 0);
+        assert_eq!(got.len(), want.len());
+        for i in 0..got.len() {
+            assert_eq!(
+                got[i].to_bits(),
+                want[i].to_bits(),
+                "cumsum trick f64 idx={i}"
+            );
+        }
+    }
+
+    #[test]
+    fn cumsum_transpose_trick_dim0_bit_exact_f32() {
+        let (rows, cols) = (256usize, 256usize);
+        let input: Vec<f32> = (0..rows * cols).map(|i| (i as f32) * 1e-4 - 3.0).collect();
+        let meta = TensorMeta::from_shape(vec![rows, cols], DType::F32, Device::Cpu);
+        let got = super::cumsum_tensor_contiguous_f32(&input, &meta, 0).expect("cumsum f32");
+        // Serial f32 reference.
+        let (dim_size, inner) = (rows, cols);
+        let mut want = vec![0.0f32; input.len()];
+        for r in 0..inner {
+            let mut acc = 0.0f32;
+            for d in 0..dim_size {
+                let idx = d * inner + r;
+                acc += input[idx];
+                want[idx] = acc;
+            }
+        }
+        for i in 0..got.len() {
+            assert_eq!(
+                got[i].to_bits(),
+                want[i].to_bits(),
+                "cumsum trick f32 idx={i}"
+            );
+        }
     }
 
     #[test]
