@@ -10444,6 +10444,7 @@ pub fn batch_norm_stats_f32(
     let cs = channels * spatial;
     let mut mean = vec![0.0f32; channels];
     let mut var = vec![0.0f32; channels];
+    let use_simd_spatial = spatial >= 64;
     mean.par_iter_mut()
         .zip(var.par_iter_mut())
         .enumerate()
@@ -10451,23 +10452,81 @@ pub fn batch_norm_stats_f32(
             let mut sum = 0.0f32;
             for n in 0..batch {
                 let base = n * cs + c * spatial;
-                for s in 0..spatial {
-                    sum += x[base + s];
+                let row = &x[base..base + spatial];
+                if use_simd_spatial {
+                    sum += sum_f32x8(row);
+                } else {
+                    for &value in row {
+                        sum += value;
+                    }
                 }
             }
             let m = sum * inv_n;
             let mut vs = 0.0f32;
             for n in 0..batch {
                 let base = n * cs + c * spatial;
-                for s in 0..spatial {
-                    let d = x[base + s] - m;
-                    vs += d * d;
+                let row = &x[base..base + spatial];
+                if use_simd_spatial {
+                    vs += centered_sumsq_f32x8(row, m);
+                } else {
+                    for &value in row {
+                        let d = value - m;
+                        vs += d * d;
+                    }
                 }
             }
             *mc = m;
             *vc = vs * inv_n;
         });
     (mean, var)
+}
+
+fn sum_f32x8(values: &[f32]) -> f32 {
+    let simd_len = values.len() / SIMD_WIDTH_F32 * SIMD_WIDTH_F32;
+    let mut lanes = f32x8::splat(0.0);
+    for i in (0..simd_len).step_by(SIMD_WIDTH_F32) {
+        lanes += f32x8::new([
+            values[i],
+            values[i + 1],
+            values[i + 2],
+            values[i + 3],
+            values[i + 4],
+            values[i + 5],
+            values[i + 6],
+            values[i + 7],
+        ]);
+    }
+    let mut sum = lanes.as_array_ref().iter().copied().sum::<f32>();
+    for &value in &values[simd_len..] {
+        sum += value;
+    }
+    sum
+}
+
+fn centered_sumsq_f32x8(values: &[f32], mean: f32) -> f32 {
+    let simd_len = values.len() / SIMD_WIDTH_F32 * SIMD_WIDTH_F32;
+    let mean = f32x8::splat(mean);
+    let mut lanes = f32x8::splat(0.0);
+    for i in (0..simd_len).step_by(SIMD_WIDTH_F32) {
+        let value = f32x8::new([
+            values[i],
+            values[i + 1],
+            values[i + 2],
+            values[i + 3],
+            values[i + 4],
+            values[i + 5],
+            values[i + 6],
+            values[i + 7],
+        ]);
+        let delta = value - mean;
+        lanes += delta * delta;
+    }
+    let mut sumsq = lanes.as_array_ref().iter().copied().sum::<f32>();
+    for &value in &values[simd_len..] {
+        let delta = value - mean.as_array_ref()[0];
+        sumsq += delta * delta;
+    }
+    sumsq
 }
 
 /// f32 mirror of [`batch_norm_apply_f64`]: per-channel affine normalize via a
@@ -13898,7 +13957,24 @@ pub fn cumprod_tensor_contiguous_f64(
     // was confirmed by an anchored single-process A/B (cumsum 2.2x anchor,
     // cumprod 2.9x) resolving the earlier separate-exec worker-variance confound.
     let lane = dim_size * inner_size;
-    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+    // Leading-dim scan (small outer, large inner) → transpose trick (see cumsum f64 kernel).
+    let threads = rayon::current_num_threads();
+    let use_trick = numel >= PARALLEL_THRESHOLD
+        && inner_size >= 8
+        && dim_size >= 2
+        && outer_size < threads
+        && lane >= PARALLEL_THRESHOLD;
+    if use_trick {
+        for outer in 0..outer_size {
+            let base = outer * lane;
+            cumprod_block_transpose_trick_f64(
+                &data[base..base + lane],
+                &mut output[base..base + lane],
+                dim_size,
+                inner_size,
+            );
+        }
+    } else if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
         output
             .par_chunks_mut(lane)
             .enumerate()
@@ -13919,6 +13995,37 @@ pub fn cumprod_tensor_contiguous_f64(
     }
 
     Ok(output)
+}
+
+/// Cumprod mirror of [`cumsum_block_transpose_trick_f64`] — fused transpose+scan over the
+/// independent inner lanes (multiplicative acc), then a parallel transpose back. For a leading
+/// scan dim (small outer, large inner) this turns the serial inner_size-wide accumulator into
+/// inner_size scalar scans across the pool. Each fixed-inner lane multiplies in the SAME order
+/// as the direct walk => bit-for-bit identical. Two streaming passes, disjoint `par_chunks_mut`.
+fn cumprod_block_transpose_trick_f64(
+    block: &[f64],
+    out: &mut [f64],
+    dim_size: usize,
+    inner_size: usize,
+) {
+    let mut scanned = vec![0.0; dim_size * inner_size];
+    scanned
+        .par_chunks_mut(dim_size)
+        .enumerate()
+        .for_each(|(r, srow)| {
+            let mut acc = 1.0;
+            for d in 0..dim_size {
+                acc *= block[d * inner_size + r];
+                srow[d] = acc;
+            }
+        });
+    out.par_chunks_mut(inner_size)
+        .enumerate()
+        .for_each(|(d, orow)| {
+            for (r, slot) in orow.iter_mut().enumerate() {
+                *slot = scanned[r * dim_size + d];
+            }
+        });
 }
 
 /// Cumprod one `[dim_size, inner_size]` contiguous block into `out`. Cache-friendly d-outer/
@@ -28842,7 +28949,24 @@ pub fn cumprod_tensor_contiguous_f32(
     // Independent `outer` lanes -> Rayon; per-lane order unchanged = bit-exact.
     // Mirrors the f64 path (anchored A/B confirmed the parallel win).
     let lane = dim_size * inner_size;
-    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+    // Leading-dim scan (small outer, large inner) → transpose trick (see cumsum f64 kernel).
+    let threads = rayon::current_num_threads();
+    let use_trick = numel >= PARALLEL_THRESHOLD
+        && inner_size >= 8
+        && dim_size >= 2
+        && outer_size < threads
+        && lane >= PARALLEL_THRESHOLD;
+    if use_trick {
+        for outer in 0..outer_size {
+            let base = outer * lane;
+            cumprod_block_transpose_trick_f32(
+                &data[base..base + lane],
+                &mut output[base..base + lane],
+                dim_size,
+                inner_size,
+            );
+        }
+    } else if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
         output
             .par_chunks_mut(lane)
             .enumerate()
@@ -28862,6 +28986,34 @@ pub fn cumprod_tensor_contiguous_f32(
         }
     }
     Ok(output)
+}
+
+/// f32 mirror of [`cumprod_block_transpose_trick_f64`] — fused transpose+scan over independent
+/// inner lanes (multiplicative acc), then a parallel transpose back. Bit-exact per lane.
+fn cumprod_block_transpose_trick_f32(
+    block: &[f32],
+    out: &mut [f32],
+    dim_size: usize,
+    inner_size: usize,
+) {
+    let mut scanned = vec![0.0f32; dim_size * inner_size];
+    scanned
+        .par_chunks_mut(dim_size)
+        .enumerate()
+        .for_each(|(r, srow)| {
+            let mut acc = 1.0f32;
+            for d in 0..dim_size {
+                acc *= block[d * inner_size + r];
+                srow[d] = acc;
+            }
+        });
+    out.par_chunks_mut(inner_size)
+        .enumerate()
+        .for_each(|(d, orow)| {
+            for (r, slot) in orow.iter_mut().enumerate() {
+                *slot = scanned[r * dim_size + d];
+            }
+        });
 }
 
 /// f32 mirror of [`cumprod_lane_block_f64`] — cache-friendly cumprod of one contiguous block.
@@ -37401,6 +37553,63 @@ mod tests {
                 got[i].to_bits(),
                 want[i].to_bits(),
                 "cumsum trick f32 idx={i}"
+            );
+        }
+    }
+
+    #[test]
+    fn cumprod_transpose_trick_dim0_bit_exact_f64() {
+        // [256,256] dim=0: outer_size=1 → exercises the cumprod transpose-trick path.
+        // Values near 1.0 keep the 256-long product finite; result must match serial bit-for-bit.
+        let (rows, cols) = (256usize, 256usize);
+        let input: Vec<f64> = (0..rows * cols)
+            .map(|i| 1.0 + ((i % 997) as f64) * 1e-6)
+            .collect();
+        let meta = TensorMeta::from_shape(vec![rows, cols], DType::F64, Device::Cpu);
+        let got = super::cumprod_tensor_contiguous_f64(&input, &meta, 0).expect("cumprod");
+        // Serial reference.
+        let (dim_size, inner) = (rows, cols);
+        let mut want = vec![0.0; input.len()];
+        for r in 0..inner {
+            let mut acc = 1.0;
+            for d in 0..dim_size {
+                let idx = d * inner + r;
+                acc *= input[idx];
+                want[idx] = acc;
+            }
+        }
+        for i in 0..got.len() {
+            assert_eq!(
+                got[i].to_bits(),
+                want[i].to_bits(),
+                "cumprod trick f64 idx={i}"
+            );
+        }
+    }
+
+    #[test]
+    fn cumprod_transpose_trick_dim0_bit_exact_f32() {
+        let (rows, cols) = (256usize, 256usize);
+        let input: Vec<f32> = (0..rows * cols)
+            .map(|i| 1.0 + ((i % 997) as f32) * 1e-5)
+            .collect();
+        let meta = TensorMeta::from_shape(vec![rows, cols], DType::F32, Device::Cpu);
+        let got = super::cumprod_tensor_contiguous_f32(&input, &meta, 0).expect("cumprod f32");
+        let (dim_size, inner) = (rows, cols);
+        let mut want = vec![0.0f32; input.len()];
+        for r in 0..inner {
+            let mut acc = 1.0f32;
+            for d in 0..dim_size {
+                let idx = d * inner + r;
+                acc *= input[idx];
+                want[idx] = acc;
+            }
+        }
+        for i in 0..got.len() {
+            assert_eq!(
+                got[i].to_bits(),
+                want[i].to_bits(),
+                "cumprod trick f32 idx={i}"
             );
         }
     }

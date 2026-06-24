@@ -4,6 +4,32 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-24 - ★WIN: cumprod leading-dim (dim=0) transpose trick flips 1.05x LOSS to 1.40-1.68x WIN vs PyTorch
+
+Direct generalization of the cumsum dim=0 win below. `cumprod_tensor_contiguous_f64/f32` had the
+SAME `outer_size >= 2` rayon gate, so cumprod along a LEADING dim (dim=0 of a 2-D tensor,
+`outer_size==1`) ran the single lane block SERIALLY over an `inner_size`-wide multiplicative
+accumulator — bandwidth-bound, one core.
+
+Baseline MEASURED (`crates/ft-api/examples/cumprod_transpose_trick.rs`, 2048x2048 f64 dim=0,
+values near 1.0 to keep the 2048-long product finite, 15-iter min): FT direct cumprod dim=0
+**17.21ms = 1.05x SLOWER than PyTorch's 16.46ms**.
+
+LEVER (cc): wire the same FUSED transpose trick (`cumprod_block_transpose_trick_f64/f32`) into both
+kernels, gated identically (`outer_size < current_num_threads() && inner_size>=8 && dim_size>=2 &&
+block>=PARALLEL_THRESHOLD`). Pass 1 fuses transpose+scan (multiplicative acc, strided read,
+contiguous per-lane write into a `[inner,d]` scratch), pass 2 transposes back. Two streaming
+passes, disjoint `par_chunks_mut`, no unsafe. Each fixed-inner lane multiplies in the SAME order as
+the direct walk → bit-for-bit identical.
+
+After MEASURED (same harness, 3 runs): FT direct cumprod dim=0 **9.95 / 12.93 / 14.07ms** =
+**1.40-1.68x FASTER than PyTorch** (16.7-20.9ms), correct vs torch to 7.4e-14 and the serial scan
+bit-exact. ~1.7x improvement on the op; flips the loss.
+
+Correctness: new kernel tests `cumprod_transpose_trick_dim0_bit_exact_f64`/`_f32`; `cargo test -p
+ft-kernel-cpu cumprod` 8/0, `cargo test -p ft-api cumprod` 6/0 (incl. torch goldens). Source
+disposition: KEEP. AGENT cc.
+
 ## 2026-06-24 - ★WIN: cumsum leading-dim (dim=0) transpose trick 1.76-2.24x vs PyTorch (was 1.12x)
 
 `cumsum` along a LEADING dim (e.g. dim=0 of a 2-D tensor) has `outer_size==1`, so the
