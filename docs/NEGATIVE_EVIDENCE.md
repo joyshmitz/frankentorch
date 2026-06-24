@@ -42,6 +42,66 @@ Decision: REVERT. Do not retry row-parallel direct f32x8 pdist p=2 for
 shows a lower-level same-worker win over the shipped SGEMM/direct-output route.
 Score vs PyTorch for this lever: `0W / 1L / 0N`.
 
+## 2026-06-24 - NEGATIVE (reverted): BatchNorm2d f32 stats SIMD regresses scalar-sum gauntlet
+
+Bead/thread `frankentorch-kgs4`, assignee `cod-b`, agent `QuietMeadow`.
+`bv --robot-triage` still reports `frankentorch-kgs4` as the active in-progress
+no-gaps perf lane; `br show frankentorch-kgs4 --json` remains blocked by the
+duplicate id `frankentorch-kgs4.150` in `.beads/issues.jsonl`. A scan of
+cod-b scratch/worktrees found no clean unlanded measured win: branch HEADs were
+already ancestors of current `main`, and dirty cod-b trees were no-ship
+evidence, harness-only, or code already on `main`.
+
+Measured residual targeted: `gauntlet_batch_norm2d_f32_grad` scalar-sum
+training row (`functional_batch_norm2d_sum`, f32 `[32,256,28,28]`). The current
+row is still slower than PyTorch, but it already uses the algebraic scalar-loss
+shortcut where the scalar value and gradients are bias-only in training mode.
+The remaining obvious cost looked like the native f32 per-channel stats scan.
+
+Lever tried and reverted: in `ft-kernel-cpu::batch_norm_stats_f32`, add a
+`spatial >= 64` `f32x8` helper for the per-channel sum and centered-sumsq scan.
+Tiny fixtures stayed on the scalar loop to preserve their current reduction
+order. This was inspired by the alien-graveyard/vectorized-execution guidance,
+but it changed the practical hot path in the wrong direction: extra wide-lane
+construction and horizontal reductions outweighed any SIMD gain for the NCHW
+channel-block layout.
+
+Measured evidence, all crate-scoped with the required warm target dir:
+
+- Literal required probe
+  `AGENT_NAME=QuietMeadow CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+  rch exec -- cargo bench --release -p ft-api --bench pytorch_gauntlet_bench -- ...`
+  is recorded in
+  `artifacts/perf/frankentorch-kgs4.cod-b-batchnorm-stats-simd-20260624/baseline_literal_cargo_bench_release.log`;
+  this Cargo rejects `--release` for `cargo bench`, so the actual Criterion
+  bench runs used the optimized bench profile.
+- Baseline clean-worktree FT run on RCH `ovh-a`, same bench filter before the
+  SIMD hunk, measured scalar-sum
+  `[45.958 ms 46.748 ms 48.136 ms]` (remote PyTorch row failed because the
+  worker had no `torch` module).
+- Candidate SIMD run measured scalar-sum
+  `[55.042 ms 58.732 ms 64.911 ms]`; RCH selected `vmi1153651` despite the
+  attempted worker pin. By midpoint this is `1.26x` slower than the baseline
+  midpoint (`58.732 / 46.748`).
+- Post-revert filtered run, same crate bench under the warm cod-b target dir,
+  fell back locally because no RCH workers were admissible and measured
+  `[33.391 ms 33.823 ms 34.492 ms]`; Criterion reported
+  `[-53.687% -46.795% -39.060%]`, `p = 0.00`, confirming the bad hunk had been
+  removed from the measured path.
+- Local PyTorch sidecar, torch `2.12.1+cpu`, 32 threads, 20-iteration reps,
+  recorded in
+  `artifacts/perf/frankentorch-kgs4.cod-b-batchnorm-stats-simd-20260624/pytorch_batchnorm2d_f32_local.log`,
+  best warmed time `7.104 ms/iter` after one cold outlier. Reverted FT ratio:
+  `4.76x SLOWER` (`33.823 / 7.104`). Rejected SIMD candidate ratio:
+  `8.27x SLOWER` (`58.732 / 7.104`).
+
+Correctness before rejection: `cargo test -p ft-kernel-cpu batch_norm --lib --
+--nocapture` passed 7/0 with the candidate. Disposition: REVERT. Do not retry
+hand-written `wide::f32x8` per-channel BatchNorm stats helpers for this NCHW
+scalar-sum row. Future BatchNorm2d f32 work should target session/leaf setup,
+running-stat bookkeeping, or a fundamentally different stats layout strategy
+with same-worker proof.
+
 ## 2026-06-24 - ★WIN: cumprod leading-dim (dim=0) transpose trick flips 1.05x LOSS to 1.40-1.68x WIN vs PyTorch
 
 Direct generalization of the cumsum dim=0 win below. `cumprod_tensor_contiguous_f64/f32` had the

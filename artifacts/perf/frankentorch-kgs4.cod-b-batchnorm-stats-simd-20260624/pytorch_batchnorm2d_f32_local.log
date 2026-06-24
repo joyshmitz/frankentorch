@@ -1,0 +1,20 @@
+/data/projects/.venvs/frankentorch-pytorch-cpu/lib/python3.13/site-packages/torch/_subclasses/functional_tensor.py:362: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+checksum=501760.000000000000
+1.481173831969
+/data/projects/.venvs/frankentorch-pytorch-cpu/lib/python3.13/site-packages/torch/_subclasses/functional_tensor.py:362: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+checksum=501760.000000000000
+0.289368167985
+/data/projects/.venvs/frankentorch-pytorch-cpu/lib/python3.13/site-packages/torch/_subclasses/functional_tensor.py:362: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+checksum=501760.000000000000
+0.345952827949
+/data/projects/.venvs/frankentorch-pytorch-cpu/lib/python3.13/site-packages/torch/_subclasses/functional_tensor.py:362: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+checksum=501760.000000000000
+0.142089203000
+/data/projects/.venvs/frankentorch-pytorch-cpu/lib/python3.13/site-packages/torch/_subclasses/functional_tensor.py:362: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+checksum=501760.000000000000
+0.149664995028

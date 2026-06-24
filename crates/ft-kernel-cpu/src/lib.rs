@@ -10444,7 +10444,6 @@ pub fn batch_norm_stats_f32(
     let cs = channels * spatial;
     let mut mean = vec![0.0f32; channels];
     let mut var = vec![0.0f32; channels];
-    let use_simd_spatial = spatial >= 64;
     mean.par_iter_mut()
         .zip(var.par_iter_mut())
         .enumerate()
@@ -10452,81 +10451,23 @@ pub fn batch_norm_stats_f32(
             let mut sum = 0.0f32;
             for n in 0..batch {
                 let base = n * cs + c * spatial;
-                let row = &x[base..base + spatial];
-                if use_simd_spatial {
-                    sum += sum_f32x8(row);
-                } else {
-                    for &value in row {
-                        sum += value;
-                    }
+                for s in 0..spatial {
+                    sum += x[base + s];
                 }
             }
             let m = sum * inv_n;
             let mut vs = 0.0f32;
             for n in 0..batch {
                 let base = n * cs + c * spatial;
-                let row = &x[base..base + spatial];
-                if use_simd_spatial {
-                    vs += centered_sumsq_f32x8(row, m);
-                } else {
-                    for &value in row {
-                        let d = value - m;
-                        vs += d * d;
-                    }
+                for s in 0..spatial {
+                    let d = x[base + s] - m;
+                    vs += d * d;
                 }
             }
             *mc = m;
             *vc = vs * inv_n;
         });
     (mean, var)
-}
-
-fn sum_f32x8(values: &[f32]) -> f32 {
-    let simd_len = values.len() / SIMD_WIDTH_F32 * SIMD_WIDTH_F32;
-    let mut lanes = f32x8::splat(0.0);
-    for i in (0..simd_len).step_by(SIMD_WIDTH_F32) {
-        lanes += f32x8::new([
-            values[i],
-            values[i + 1],
-            values[i + 2],
-            values[i + 3],
-            values[i + 4],
-            values[i + 5],
-            values[i + 6],
-            values[i + 7],
-        ]);
-    }
-    let mut sum = lanes.as_array_ref().iter().copied().sum::<f32>();
-    for &value in &values[simd_len..] {
-        sum += value;
-    }
-    sum
-}
-
-fn centered_sumsq_f32x8(values: &[f32], mean: f32) -> f32 {
-    let simd_len = values.len() / SIMD_WIDTH_F32 * SIMD_WIDTH_F32;
-    let mean = f32x8::splat(mean);
-    let mut lanes = f32x8::splat(0.0);
-    for i in (0..simd_len).step_by(SIMD_WIDTH_F32) {
-        let value = f32x8::new([
-            values[i],
-            values[i + 1],
-            values[i + 2],
-            values[i + 3],
-            values[i + 4],
-            values[i + 5],
-            values[i + 6],
-            values[i + 7],
-        ]);
-        let delta = value - mean;
-        lanes += delta * delta;
-    }
-    let mut sumsq = lanes.as_array_ref().iter().copied().sum::<f32>();
-    for &value in &values[simd_len..] {
-        let delta = value - mean.as_array_ref()[0];
-        sumsq += delta * delta;
-    }
-    sumsq
 }
 
 /// f32 mirror of [`batch_norm_apply_f64`]: per-channel affine normalize via a

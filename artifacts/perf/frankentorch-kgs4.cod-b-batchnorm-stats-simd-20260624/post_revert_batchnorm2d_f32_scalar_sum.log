@@ -1,0 +1,20 @@
+[RCH] local (no admissible workers: insufficient_slots=7,health_below_fallback=3,hard_preflight=1)
+   Compiling ft-core v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-core)
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-kernel-cpu)
+   Compiling ft-runtime v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-runtime)
+   Compiling ft-dispatch v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 1m 07s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-b/release/deps/pytorch_gauntlet_bench-660553189fe21307)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum: Warming up for 1.0000 s
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum: Collecting 10 samples in estimated 3.9738 s (110 iterations)
+Benchmarking gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum: Analyzing
+gauntlet_batch_norm2d_f32_grad/frankentorch_kgs4_136_scalar_sum
+                        time:   [33.391 ms 33.823 ms 34.492 ms]
+                        change: [-53.687% -46.795% -39.060%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild

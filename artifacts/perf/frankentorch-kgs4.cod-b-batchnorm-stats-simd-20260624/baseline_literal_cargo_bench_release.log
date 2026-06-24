@@ -1,0 +1,111 @@
+  [2m2026-06-24T22:01:08.767458Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSelected worker: ovh-a at ubuntu@51.222.245.56 (0 slots remaining after reservation, speed 50.0)[0m
+    [2;3mat[0m rch/src/hook.rs:921 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:09.030976Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mStarting remote compilation pipeline for frankentorch-cod-b-bn-simd-20260624T2203Z (hash: ff2d3679c8aecffa)[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:241 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:09.031062Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mPrepared dependency sync manifest for 13 roots[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:263 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:17.585371Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mSyncing project to worker ovh-a...[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:323 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:17.585441Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:18.522308Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 936ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:18.522403Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-api -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-api on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:19.035489Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 513ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:19.035567Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-autograd -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-autograd on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:19.548383Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 512ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:19.548467Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-conformance -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-conformance on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:20.010740Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 462ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:20.010825Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-core -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-core on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:20.500343Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 489ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:20.500438Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-data -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-data on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:21.002478Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 502ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:21.002615Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-device -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-device on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:21.493719Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 491ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:21.493867Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-dispatch -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-dispatch on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:21.972702Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 478ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:21.972803Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-kernel-cpu -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-kernel-cpu on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:22.480326Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 507ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:22.480419Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-nn -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-nn on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:23.165466Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 685ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:23.165557Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-optim -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-optim on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:23.622671Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 457ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:23.622764Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-runtime -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-runtime on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:24.131315Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 508ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:24.131412Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-serialize -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/crates/ft-serialize on ovh-a[0m
+    [2;3mat[0m rch/src/transfer.rs:1528 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:24.602999Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 471ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1592 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:24.603038Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mSync complete: 4957 files, 9218342 bytes in 7011ms[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:486 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:28.324495Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mExecuting command remotely: cargo bench --release -p ft-api --bench pytorch_gauntlet_bench -- gauntlet_batch_norm2d_f32_grad --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:529 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-24T22:01:28.324555Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRewriting CARGO_TARGET_DIR for remote execution (worker-scoped path): /data/projects/.rch-targets/frankentorch-cod-b -> /data/projects/.scratch/frankentorch-cod-b-bn-simd-20260624T2203Z/.rch-target-ovh-a-pool-eda8d6ee0f3ef601b9924e2c7a9d3401[0m
+    [2;3mat[0m rch/src/transfer.rs:799 [2;3mon[0m ThreadId(1)
+
+error: unexpected argument '--release' found
+
+  tip: a similar argument exists: '--examples'
+  tip: to pass '--release' as a value, use '-- --release'
+
+Usage: cargo bench --examples [BENCHNAME] [-- [ARGS]...]
+
+For more information, try '--help'.
+  [2m2026-06-24T22:01:28.866546Z[0m [32m INFO[0m [1;32mrch::hook::transfer_orchestration[0m[32m: [32mRemote command finished: exit=1 in 541ms[0m
+    [2;3mat[0m rch/src/hook/transfer_orchestration.rs:653 [2;3mon[0m ThreadId(1)
+
+[RCH] remote ovh-a failed (exit 1)

@@ -1,0 +1,13 @@
+[RCH] local (no admissible workers: insufficient_slots=6,health_below_fallback=3,hard_preflight=1,active_project_exclusion=1)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+   Compiling ft-nn v0.1.0 (/data/projects/frankentorch/crates/ft-nn)
+   Compiling ft-data v0.1.0 (/data/projects/frankentorch/crates/ft-data)
+   Compiling ft-optim v0.1.0 (/data/projects/frankentorch/crates/ft-optim)
+   Compiling ft-conformance v0.1.0 (/data/projects/frankentorch/crates/ft-conformance)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.50s
+     Running tests/smoke.rs (/data/projects/.rch-targets/frankentorch-cod-b/debug/deps/smoke-00ff743c0bbdf4cb)
+
+running 1 test
+test production_code_contains_no_forbidden_stub_or_panic_macros ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 38 filtered out; finished in 1.29s
