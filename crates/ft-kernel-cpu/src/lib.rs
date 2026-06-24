@@ -26897,6 +26897,106 @@ pub fn matmul_tensor_contiguous_f32_into(
     Ok(())
 }
 
+/// Quantize a row-major weight matrix `w` of shape `[out, in_]` (PyTorch
+/// `[out_features, in_features]`) to symmetric per-output-channel int8.
+///
+/// For each output channel `o`, `scale[o] = max(|w[o, :]|) / 127` (or `1.0`
+/// when the whole row is zero), and `w_i8[o, i] = clamp(round(w[o,i]/scale[o]),
+/// -127, 127)`. Zero-point is implicitly 0 (symmetric). Returns `(w_i8,
+/// scales)` ready to feed [`linear_int8_dynamic_f32`]. Pure, deterministic,
+/// allocation-only — does not touch any existing f32/f64 path.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+pub fn quantize_per_output_channel_i8(w: &[f32], out: usize, in_: usize) -> (Vec<i8>, Vec<f32>) {
+    assert_eq!(w.len(), out * in_, "weight length must equal out*in_");
+    let mut w_i8 = vec![0i8; out * in_];
+    let mut scales = vec![0f32; out];
+    for o in 0..out {
+        let row = &w[o * in_..(o + 1) * in_];
+        let amax = row.iter().fold(0f32, |acc, &v| acc.max(v.abs()));
+        let scale = if amax > 0.0 { amax / 127.0 } else { 1.0 };
+        let inv = 1.0 / scale;
+        let dst = &mut w_i8[o * in_..(o + 1) * in_];
+        for i in 0..in_ {
+            dst[i] = (row[i] * inv).round().clamp(-127.0, 127.0) as i8;
+        }
+        scales[o] = scale;
+    }
+    (w_i8, scales)
+}
+
+/// Int8 dynamic-quantized linear layer:
+/// `y[m, n] = dequant(quant_per_row(x[m, k]) @ w_i8[n, k]^T) + bias[n]`.
+///
+/// `x` is row-major `[m, k]` f32 activations, dynamically quantized symmetric
+/// per row (`a_scale[s] = max(|x[s,:]|)/127`, or `1.0` for an all-zero row).
+/// `w_i8` is row-major `[n, k]` int8 weights (PyTorch `[out, in]`)
+/// pre-quantized symmetric per output channel with `w_scales[n]` (see
+/// [`quantize_per_output_channel_i8`]). The matmul accumulates in i32; each
+/// result is dequantized to f32 via `a_scale[s] * w_scales[o]` and the optional
+/// `bias[n]` is added. This mirrors ONNX `DynamicQuantizeLinear` +
+/// `MatMulInteger` (symmetric, zero-point 0).
+///
+/// Parallelized with rayon over output rows (sequence positions). Additive
+/// inference-only kernel — independent of the f32/f64 GEMM dispatch.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+pub fn linear_int8_dynamic_f32(
+    x: &[f32],
+    m: usize,
+    k: usize,
+    w_i8: &[i8],
+    w_scales: &[f32],
+    n: usize,
+    bias: Option<&[f32]>,
+) -> Vec<f32> {
+    use rayon::prelude::*;
+    assert_eq!(x.len(), m * k, "x length must equal m*k");
+    assert_eq!(w_i8.len(), n * k, "w_i8 length must equal n*k");
+    assert_eq!(w_scales.len(), n, "w_scales length must equal n");
+    if let Some(b) = bias {
+        assert_eq!(b.len(), n, "bias length must equal n");
+    }
+
+    // Per-row dynamic quantization of the activations.
+    let mut x_i8 = vec![0i8; m * k];
+    let mut a_scales = vec![0f32; m];
+    for s in 0..m {
+        let row = &x[s * k..(s + 1) * k];
+        let amax = row.iter().fold(0f32, |acc, &v| acc.max(v.abs()));
+        let scale = if amax > 0.0 { amax / 127.0 } else { 1.0 };
+        let inv = 1.0 / scale;
+        let dst = &mut x_i8[s * k..(s + 1) * k];
+        for i in 0..k {
+            dst[i] = (row[i] * inv).round().clamp(-127.0, 127.0) as i8;
+        }
+        a_scales[s] = scale;
+    }
+
+    // i32-accumulate GEMM + dequant + bias, parallel over output rows. The
+    // inner k-loop is a tight i32 multiply-accumulate that LLVM autovectorizes;
+    // a hand-written SIMD dot (wide/VNNI) is a future micro-opt (see bead).
+    let mut out = vec![0f32; m * n];
+    out.par_chunks_mut(n)
+        .zip(x_i8.par_chunks(k))
+        .zip(a_scales.par_iter())
+        .for_each(|((out_row, x_row), &a_scale)| {
+            for o in 0..n {
+                let w_row = &w_i8[o * k..(o + 1) * k];
+                let mut acc: i32 = 0;
+                for i in 0..k {
+                    acc += i32::from(x_row[i]) * i32::from(w_row[i]);
+                }
+                let mut y = acc as f32 * a_scale * w_scales[o];
+                if let Some(b) = bias {
+                    y += b[o];
+                }
+                out_row[o] = y;
+            }
+        });
+    out
+}
+
 const BMM_F32_4X4_BATCH_CHUNK: usize = 256;
 
 #[inline(always)]
@@ -29665,6 +29765,77 @@ pub fn sparse_coo_add(
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
+
+    // ── int8 dynamic-quantized linear (additive, inference-only) ──
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn linear_int8_dynamic_tracks_f32_reference() {
+        // Deterministic LCG-filled f32 matrices; no RNG/time (reproducible).
+        fn lcg(state: &mut u64) -> f32 {
+            *state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let u = (*state >> 33) as f32 / (1u64 << 31) as f32; // [0, 1)
+            u - 1.0 // [-1, 1)
+        }
+        for &(m, k, n) in &[(8usize, 384usize, 384usize), (4, 384, 1536), (7, 200, 53)] {
+            let mut st = 0x1234_5678_9abc_def0u64 ^ ((m * 131 + k * 17 + n) as u64);
+            let x: Vec<f32> = (0..m * k).map(|_| lcg(&mut st) * 3.0).collect();
+            let w: Vec<f32> = (0..n * k).map(|_| lcg(&mut st) * 0.5).collect();
+            let bias: Vec<f32> = (0..n).map(|_| lcg(&mut st)).collect();
+
+            // f32 reference: y_ref[s,o] = sum_i x[s,i]*w[o,i] + bias[o].
+            let mut y_ref = vec![0f32; m * n];
+            for s in 0..m {
+                for o in 0..n {
+                    let mut acc = 0f32;
+                    for i in 0..k {
+                        acc += x[s * k + i] * w[o * k + i];
+                    }
+                    y_ref[s * n + o] = acc + bias[o];
+                }
+            }
+
+            let (w_i8, w_scales) = super::quantize_per_output_channel_i8(&w, n, k);
+            let y_q = super::linear_int8_dynamic_f32(&x, m, k, &w_i8, &w_scales, n, Some(&bias));
+
+            let mut dot = 0f64;
+            let mut na = 0f64;
+            let mut nb = 0f64;
+            let mut max_rel = 0f64;
+            let mut max_abs = 0f64;
+            let denom = f64::from(y_ref.iter().fold(0f32, |mx, &v| mx.max(v.abs())));
+            for (&r, &q) in y_ref.iter().zip(&y_q) {
+                let (r, q) = (f64::from(r), f64::from(q));
+                dot += r * q;
+                na += r * r;
+                nb += q * q;
+                let abs = (r - q).abs();
+                max_abs = max_abs.max(abs);
+                if denom > 0.0 {
+                    max_rel = max_rel.max(abs / denom);
+                }
+            }
+            let cos = dot / (na.sqrt() * nb.sqrt());
+            println!(
+                "[int8_linear] m={m} k={k} n={n}: cosine={cos:.6} max_abs={max_abs:.4} max_rel(vs max|y|)={max_rel:.4}"
+            );
+            assert!(cos > 0.999, "cosine {cos} too low for m={m} k={k} n={n}");
+            assert!(max_rel < 0.05, "max_rel {max_rel} too high for m={m} k={k} n={n}");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn linear_int8_dynamic_is_deterministic() {
+        let (m, k, n) = (6usize, 384usize, 384usize);
+        let x: Vec<f32> = (0..m * k).map(|i| ((i % 17) as f32 - 8.0) * 0.1).collect();
+        let w: Vec<f32> = (0..n * k).map(|i| ((i % 13) as f32 - 6.0) * 0.05).collect();
+        let (w_i8, w_scales) = super::quantize_per_output_channel_i8(&w, n, k);
+        let a = super::linear_int8_dynamic_f32(&x, m, k, &w_i8, &w_scales, n, None);
+        let b = super::linear_int8_dynamic_f32(&x, m, k, &w_i8, &w_scales, n, None);
+        assert_eq!(a, b, "int8 linear must be bit-identical across runs");
+    }
 
     // The batched LU-solve kernel must match the per-matrix 2-D lu_factor+lu_solve path
     // (the authoritative reference) to tolerance — both are LU with partial pivoting.
