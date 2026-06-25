@@ -1,0 +1,22 @@
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.95s
+     Running unittests src/lib.rs (/data/projects/.rch-targets/frankentorch-cod-b/debug/deps/ft_api-4fa2327a283f58d8)
+
+running 12 tests
+test tests::cdist_linf_propagates_gradient_to_max_coordinate ... ok
+test tests::cdist_rejects_invalid_p ... ok
+test tests::cdist_linf ... ok
+test tests::cdist_l1_propagates_gradient_through_both_inputs ... ok
+test tests::cdist_l2_propagates_gradient_through_both_inputs ... ok
+test tests::cdist_golden_matches_torch ... ok
+test tests::cdist_l2_2d ... ok
+test tests::cdist_l2_matmul_matches_direct_2d_and_batched ... ok
+test tests::cdist_matches_torch_various_p ... ok
+test tests::cdist_p2_f32_fused_nograd_matches_composed_path ... ok
+test tests::finite_difference_gradcheck_cdist ... ok
+test tests::cdist_p_neq2_fused_nograd_matches_broadcast_bit_exact ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 2366 filtered out; finished in 0.04s

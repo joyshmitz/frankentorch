@@ -1,0 +1,5 @@
+    Finished `release` profile [optimized] target(s) in 0.09s
+     Running `/data/projects/.rch-targets/frankentorch-cod-b/release/examples/cdist_p1_headtohead`
+cdist p=1 f64 [1024,128] x [1024,128] -> [1024,1024] forward (no-grad), 15 iters MIN:
+  FrankenTorch :   15.229 ms   (checksum 5.4401e7)
+  PyTorch      :    8.789 ms   => FT 1.73x slower

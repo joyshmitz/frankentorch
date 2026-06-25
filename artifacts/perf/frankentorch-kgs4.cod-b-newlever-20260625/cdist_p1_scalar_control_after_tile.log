@@ -1,0 +1,18 @@
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+warning: function `cdist_forward_p1_row_tiled_f64` is never used
+    --> crates/ft-kernel-cpu/src/lib.rs:6876:4
+     |
+6876 | fn cdist_forward_p1_row_tiled_f64(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+warning: `ft-kernel-cpu` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 48.39s
+     Running `/data/projects/.rch-targets/frankentorch-cod-b/release/examples/cdist_p1_headtohead`
+cdist p=1 f64 [1024,128] x [1024,128] -> [1024,1024] forward (no-grad), 15 iters MIN:
+  FrankenTorch :   15.935 ms   (checksum 5.4401e7)
+  PyTorch      :    7.944 ms   => FT 2.01x slower

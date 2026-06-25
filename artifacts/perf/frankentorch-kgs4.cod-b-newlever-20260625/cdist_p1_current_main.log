@@ -1,0 +1,6 @@
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `release` profile [optimized] target(s) in 0.50s
+     Running `/data/projects/.rch-targets/frankentorch-cod-b/release/examples/cdist_p1_headtohead`
+cdist p=1 f64 [1024,128] x [1024,128] -> [1024,1024] forward (no-grad), 15 iters MIN:
+  FrankenTorch :   20.433 ms   (checksum 5.4401e7)
+  PyTorch      :   10.099 ms   => FT 2.02x slower

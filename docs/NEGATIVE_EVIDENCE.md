@@ -4,6 +4,49 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - NEGATIVE (reverted): cdist p=1 tiled Manhattan SIMD still loses to PyTorch
+
+Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh worktree scan found
+no clean unlanded measured win: the only ahead worktree was
+`/data/projects/frankentorch-gxpb2-pass10`, an explicit large-n row-SIMD
+rejection. Current `main` was fast-forwarded to `9cf163ab` before probing.
+
+Target selection: current-main h2h showed `masked_select` still losing mildly
+(FT `38.52 ms`, PyTorch `30.87 ms`, FT `1.25x slower`, `MATCH`), while
+`cdist p=1` remained the larger current loss (`cdist_p1_headtohead`: initial FT
+`20.433 ms`, PyTorch `10.099 ms`, FT `2.02x slower`). The old cdist p=1 note
+allowed only a deeper SIMD/tiled Manhattan retry, not indexing-only tweaks.
+
+Lever tried: safe `wide::f64x4` output-column tiling in
+`ft_kernel_cpu::cdist_forward_f64` for `p == 1.0`. The tiled path interleaved
+independent output columns but preserved each output cell's original
+left-to-right `k` accumulation order.
+
+Measured on the warm cod-b target with
+`AGENT_NAME=PearlReef CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python
+cargo run --release -p ft-api --example cdist_p1_headtohead`:
+
+- 4-column tile: FT `15.753 ms`, PyTorch `8.764 ms`, FT `1.80x slower`.
+- 8-column tile: FT `14.879 ms`, PyTorch `9.019 ms`, FT `1.65x slower`.
+- 8-column confirmation: FT `15.229 ms`, PyTorch `8.789 ms`, FT `1.73x
+  slower`.
+- Scalar control rerun after disabling the tile: FT `15.935 ms`, PyTorch
+  `7.944 ms`, FT `2.01x slower`.
+
+Correctness/proof while the candidate was present:
+
+- `cargo check -p ft-kernel-cpu --all-targets`: pass.
+- `cargo test -p ft-api cdist --lib -- --nocapture`: `12 passed`.
+- After source restore, `cargo test -p ft-conformance`: pass.
+
+Decision: REVERT/no source retained. The best candidate was only about a 4-7%
+internal gain over the scalar control and still lost to PyTorch by
+`1.65-1.73x`; it does not clear the BOLD-VERIFY bar. Do not retry `cdist p=1`
+with output-column tiling or `wide::f64x4` interleaving unless a lower-level
+profile proves a different bottleneck. Artifacts:
+`artifacts/perf/frankentorch-kgs4.cod-b-newlever-20260625/`.
+
 ## 2026-06-25 - BOLD-VERIFY (kept): current main fold + unique wins reproduce vs PyTorch on cod-b
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. After the shared checkout
