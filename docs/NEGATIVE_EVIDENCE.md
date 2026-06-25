@@ -8096,3 +8096,33 @@ fold the bounded check into the per-lane loop + stack the per-lane scratch. torc
 NOT done this cycle (clone-elision through the multi-dim strided kernel + the borrow
 scoping is real surface); re-applied source re-reverted (stashed + patch in scratch).
 AGENT BlackThrush.
+
+## 2026-06-25 - WIN (supersedes the earlier revert): quantile_dim counting + CLONE-ELISION = 18.40x FASTER vs PyTorch
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. The quantile counting lever was
+twice judged sub-2.0 (4dbc980e revert at an assumed-1.4x; ac3a3840 clean re-measure 1.31x)
+— but BOTH were measured with the un-elided read. The clean re-measure exposed that FT's
+~98ms was almost ENTIRELY the `tensor_values` 128MB full-numel CLONE, not the O(n) counting
+(mode's counting path is ~20x faster at the same size precisely because it borrows). Adding
+the one missing optimization — borrow the contiguous f64 input zero-copy via
+`values_borrowed` (Cow, owned-clone fallback for a non-contiguous view; the borrow ends by
+NLL at its last use in the per-lane loops, before the `&mut self` output build) — collapsed
+FT from 98ms to 6.9ms:
+
+MEASURED `quantile(x, 0.5, dim=1) [4000,4000]` f64 bounded-int no-grad, 6-iter MIN:
+- before clone-elision: FT `98.14 ms` / torch `128.70 ms` => 1.31x
+- AFTER clone-elision:  FT ` 6.878 ms` / torch `126.54 ms` => **18.40x FASTER**. value-sum rel `0.0`.
+
+Bit-exact (the r-th order statistic of a multiset is a unique value; counting reproduces the
+quickselect result; -0.0 excluded; interpolation arithmetic unchanged). Falls back to the
+unchanged quickselect path for any out-of-range/non-integer/non-finite/non-contiguous input.
+Tests: `quantile_dim_bounded_integer_counting_matches_reference` (all 5 interp modes,
+hand-derived order statistics) + `quantile_dim_non_integer_falls_back_to_quickselect`;
+existing torch-golden `quantile_dim_matches_torch` + `..._matches_stable_sort_reference`
+also pass with the counting path. ft-api lib full suite + conformance green.
+
+★★ LESSON (the campaign-wide one): for EVERY no-grad fast path, the input read MUST borrow
+(`values_borrowed`/`values_f32_borrowed`), never `tensor_values` (a full-numel clone). The
+clone alone was a ~14x ceiling on this op. mode borrowed from day one (15.5x); quantile did
+not and looked marginal until elided. SWEEP other counting/selection/scan no-grad fast paths
+for `tensor_values`-then-read patterns. AGENT BlackThrush.
