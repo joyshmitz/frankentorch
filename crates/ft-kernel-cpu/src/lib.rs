@@ -1,3 +1,4 @@
+#![feature(stdarch_neon_dotprod)]
 #![deny(unsafe_code)]
 
 use std::fmt;
@@ -27458,9 +27459,10 @@ pub fn linear_int8_dynamic_f32(
     }
 
     // i32-accumulate GEMM + dequant + bias, parallel over output rows. The inner
-    // k-loop is a tight i32 multiply-accumulate that LLVM autovectorizes; a
-    // hand-written SIMD dot (wide) measured ~5x SLOWER than autovectorization, so
-    // the scalar inner loop is intentional.
+    // dot product dispatches to a hand-written SIMD kernel (aarch64 SDOT / x86
+    // AVX-512-VNNI), bit-identical to the scalar sum but using the int8
+    // dot-product-accumulate instructions ONNX/MLAS relies on. (An earlier naive
+    // `wide` SIMD attempt was 5x slower; SDOT/VNNI are the right primitives.)
     let mut out = vec![0f32; m * n];
     out.par_chunks_mut(n)
         .zip(x_i8.par_chunks(k))
@@ -27468,10 +27470,7 @@ pub fn linear_int8_dynamic_f32(
         .for_each(|((out_row, x_row), &a_scale)| {
             for o in 0..n {
                 let w_row = &w_i8[o * k..(o + 1) * k];
-                let mut acc: i32 = 0;
-                for i in 0..k {
-                    acc += i32::from(x_row[i]) * i32::from(w_row[i]);
-                }
+                let acc = dot_i8(x_row, w_row);
                 let mut y = acc as f32 * a_scale * w_scales[o];
                 if let Some(b) = bias {
                     y += b[o];
@@ -27480,6 +27479,111 @@ pub fn linear_int8_dynamic_f32(
             }
         });
     out
+}
+
+/// SIMD-dispatched exact int8 dot product with i32 accumulation. Bit-identical to
+/// the scalar sequential sum — integer addition is associative and exact here
+/// (|sum| <= k * 127 * 127 ~= 24.9M for k <= 1536, well within i32). aarch64 uses
+/// SDOT (FEAT_DotProd: 16 i8 MACs/instr); x86_64 uses AVX-512-VNNI `vpdpbusd` via
+/// the standard signed->unsigned activation offset (a+128, corrected by
+/// 128*sum(b)); otherwise a scalar fallback keeps every cross-compile target
+/// building. Runtime feature detection, so one binary picks the best path.
+#[inline]
+#[allow(unsafe_code)]
+fn dot_i8(a: &[i8], b: &[i8]) -> i32 {
+    debug_assert_eq!(a.len(), b.len());
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("dotprod") {
+            // SAFETY: the `dotprod` feature is confirmed present at runtime.
+            return unsafe { dot_i8_sdot(a, b) };
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx512vnni")
+            && std::arch::is_x86_feature_detected!("avx512bw")
+            && std::arch::is_x86_feature_detected!("avx512f")
+        {
+            // SAFETY: the AVX-512-VNNI features are confirmed present at runtime.
+            return unsafe { dot_i8_vnni512(a, b) };
+        }
+    }
+    dot_i8_scalar(a, b)
+}
+
+#[inline]
+fn dot_i8_scalar(a: &[i8], b: &[i8]) -> i32 {
+    let mut acc: i32 = 0;
+    for i in 0..a.len() {
+        acc += i32::from(a[i]) * i32::from(b[i]);
+    }
+    acc
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn dot_i8_sdot(a: &[i8], b: &[i8]) -> i32 {
+    use std::arch::aarch64::{vaddvq_s32, vdotq_s32, vdupq_n_s32, vld1q_s8};
+    let k = a.len();
+    let pa = a.as_ptr();
+    let pb = b.as_ptr();
+    let mut acc = vdupq_n_s32(0);
+    let mut i = 0usize;
+    while i + 16 <= k {
+        // SAFETY: i + 16 <= k == a.len() == b.len(); 16 in-bounds bytes.
+        let va = vld1q_s8(pa.add(i));
+        let vb = vld1q_s8(pb.add(i));
+        acc = vdotq_s32(acc, va, vb);
+        i += 16;
+    }
+    let mut sum = vaddvq_s32(acc);
+    while i < k {
+        // SAFETY: i < k == a.len() == b.len().
+        sum += i32::from(*pa.add(i)) * i32::from(*pb.add(i));
+        i += 1;
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512vnni,avx512bw,avx512f")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn dot_i8_vnni512(a: &[i8], b: &[i8]) -> i32 {
+    use std::arch::x86_64::{
+        _mm512_dpbusd_epi32, _mm512_loadu_si512, _mm512_reduce_add_epi32, _mm512_set1_epi8,
+        _mm512_setzero_si512, _mm512_xor_si512,
+    };
+    let k = a.len();
+    let pa = a.as_ptr();
+    let pb = b.as_ptr();
+    // XOR by 0x80 flips the sign bit == +128, mapping signed i8 [-128,127] to the
+    // unsigned u8 [0,255] that vpdpbusd's first operand requires.
+    let sign = _mm512_set1_epi8(0x80u8 as i8);
+    let ones = _mm512_set1_epi8(1); // u8 value 1, accumulates sum(b)
+    let mut acc = _mm512_setzero_si512(); // sum_i (a[i]+128) * b[i]
+    let mut bsum = _mm512_setzero_si512(); // sum_i b[i]
+    let mut i = 0usize;
+    while i + 64 <= k {
+        // SAFETY: i + 64 <= k == a.len() == b.len(); 64 in-bounds bytes.
+        let va = _mm512_loadu_si512(pa.add(i).cast());
+        let vb = _mm512_loadu_si512(pb.add(i).cast());
+        let va_u8 = _mm512_xor_si512(va, sign);
+        acc = _mm512_dpbusd_epi32(acc, va_u8, vb);
+        bsum = _mm512_dpbusd_epi32(bsum, ones, vb);
+        i += 64;
+    }
+    let mut total = _mm512_reduce_add_epi32(acc);
+    let mut bs = _mm512_reduce_add_epi32(bsum);
+    while i < k {
+        // SAFETY: i < k == a.len() == b.len().
+        total += (i32::from(*pa.add(i)) + 128) * i32::from(*pb.add(i));
+        bs += i32::from(*pb.add(i));
+        i += 1;
+    }
+    // dot(a,b) = sum((a+128)*b) - 128*sum(b)
+    total - 128 * bs
 }
 
 const BMM_F32_4X4_BATCH_CHUNK: usize = 256;
