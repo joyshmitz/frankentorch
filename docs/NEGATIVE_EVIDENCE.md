@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - NEGATIVE (reverted, ~0-gain): tensor_unique all-distinct — par_sort_by of the unique set does NOT help
+
+Follow-up to the splitmix64 dedup-hasher win (3235b861) which left the all-distinct regime at
+4.27x slower than torch. Hypothesis: the dominant remaining cost was the serial
+`order.sort_by(total_cmp)` over the full 33.5M-element unique set, so swap it for rayon's STABLE
+`par_sort_by` (bit-exact: total order + stable tie handling => byte-identical sorted values, remap,
+inverse). MEASURED (`unique_h2h.rs`, 33.5M f64 sorted=true, fresh target dir): all-distinct
+4623 -> 4711ms (within noise = ~0-gain), few-unique unchanged (430ms, the serial path, < the 8192
+gate). Both still MATCH torch.
+
+Conclusion: the all-distinct bottleneck is the HASH DEDUP itself (33.5M splitmix inserts + ~25
+HashMap rehashes + the 33.5M-entry working set), NOT the final sort — the sort is a negligible
+fraction, so parallelizing it is ~0-gain. REVERTED. The ONLY real lever for the all-distinct regime
+remains the argsort-based dedup (sort the values with FT's parallel radix sort, dedup adjacent runs —
+avoids the hash entirely), gated to keep the O(n)-hash for low cardinality, and guarded by a
+differential test locking the torch-exact NaN-own-unique / ±0-merge-representative / first-occurrence
+(`sorted=false`) semantics. Do NOT retry the final-sort parallelization. AGENT cc.
+
 ## 2026-06-25 - NEGATIVE (reverted): dgemm_bt per-call panel packing does not clear the gate
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh BOLD-VERIFY pass
