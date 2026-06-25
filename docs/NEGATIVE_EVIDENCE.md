@@ -8319,3 +8319,25 @@ repeat/tile (2.48x) replicate data (output 2x = 256MB) — a smaller, more bandw
 gap, surfaced for a follow-up (likely the same division-unravel in the tape repeat). The
 division-unravel anti-pattern in ft-autograd structural/indexing kernels is the recurring
 LOSS->WIN lever this session. AGENT BlackThrush.
+## 2026-06-25 - where + masked_fill no-grad fast path (structural/select scan; cat/stack surfaced)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. A structural/select op-scan
+(op_scan4_h2h.rs, [4000,4000] f64 no-grad) found the BIGGEST gaps yet on common ops:
+where 17.82x SLOWER (421ms), masked_fill 15.29x SLOWER (411ms), cat 5.64x, stack 6.04x
+SLOWER (unfold is a torch VIEW = apples-to-oranges, skipped). where/masked_fill at ~1.2GB/s
+are WAY below bandwidth = clone+tape overhead, not a vectorized select.
+
+`tensor_masked_fill` = `where(mask, full(value), input)`, so BOTH route through
+`tensor_where`. The same-shape tape `tensor_where` clones cond/x/y + builds nodes + saves
+for backward. Added a no-grad fast path: borrow all three contiguous f64 buffers and select
+directly in parallel (`out[i] = cond[i]!=0 ? x[i] : y[i]`, truthy==nonzero matching the
+kernel). Bit-exact; broadcast / non-f64 / non-contiguous / grad fall through to the tape op.
+
+MEASURED [4000,4000] f64 no-grad:
+- where: 17.82x SLOWER (421ms) -> FT `127.5ms` / torch `23.3ms` = `5.48x SLOWER` (3.3x self-improvement; remaining gap = branch-mispredict in the scalar select vs torch SIMD blend — a `wide` branchless f64x4 blend, NaN-correct via select-not-arithmetic, is the follow-up WIN)
+- masked_fill: 15.29x SLOWER (411ms) -> FT `64.7ms` / torch `28.7ms` = `2.25x SLOWER` (6.4x self-improvement; still allocates the full(value)
+  fill tensor before the now-fast where; a direct masked_fill path avoiding that is a
+  follow-up).
+
+cat 5.64x / stack 6.04x SLOWER surfaced (the same tape division-unravel; cat/stack
+concatenate so output > input = more bandwidth, follow-up). AGENT BlackThrush.
