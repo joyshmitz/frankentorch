@@ -1,0 +1,8 @@
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `release` profile [optimized] target(s) in 0.52s
+     Running `/data/projects/.rch-targets/frankentorch-cod-b/release/examples/combinations_h2h`
+/data/projects/.venvs/frankentorch-pytorch-cpu/lib/python3.13/site-packages/torch/_subclasses/functional_tensor.py:362: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+combinations(arange(3000), r=2) f64 no-grad, 5 iters MIN:
+  FrankenTorch :    136.69 ms   chk 1.349100e10
+  PyTorch      :    182.20 ms   chk 1.349100e10  => FT 1.33x FASTER  [MATCH]

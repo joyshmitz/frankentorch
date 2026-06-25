@@ -4,6 +4,31 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - ★WIN (kept existing implementation): tensor_combinations r=2 beats PyTorch by 1.33x
+
+Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh BOLD-VERIFY pass
+found no clean unlanded scratch/worktree source diff ahead of `main`, then
+benchmarked existing selection-style surfaces head-to-head against the local
+PyTorch CPU sidecar.
+
+Measured command:
+`AGENT_NAME=PearlReef CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python
+cargo run --release -p ft-api --example combinations_h2h`
+
+Final fixture: `torch.combinations(torch.arange(3000, dtype=float64), r=2)`,
+no-grad, 5-iteration minimum. Output checksum matched PyTorch:
+`1.349100e10`.
+
+- FrankenTorch: `136.69 ms`.
+- PyTorch: `182.20 ms`.
+- Ratio: FT `1.33x FASTER`.
+
+Decision: KEEP existing `tensor_combinations` implementation; no source-code
+optimization was needed. Landed the h2h benchmark example and this ledger entry
+so the PyTorch win is reproducible. Artifacts:
+`artifacts/perf/frankentorch-kgs4.cod-b-bold-verify-20260625/`.
+
 ## 2026-06-24 - NEGATIVE (reverted): logsumexp no-grad output-lane parallel fast path regresses
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh worktree ancestry

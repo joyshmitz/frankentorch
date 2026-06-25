@@ -1,0 +1,15 @@
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-runtime v0.1.0 (/data/projects/frankentorch/crates/ft-runtime)
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.05s
+     Running unittests src/lib.rs (/data/projects/.rch-targets/frankentorch-cod-b/debug/deps/ft_api-4fa2327a283f58d8)
+
+running 4 tests
+test tests::combinations_empty ... ok
+test tests::combinations_basic ... ok
+test tests::combinations_with_replacement ... ok
+test tests::combinations_propagates_gradient_via_scatter ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 2372 filtered out; finished in 0.00s

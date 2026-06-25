@@ -1,0 +1,6 @@
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `release` profile [optimized] target(s) in 36.16s
+     Running `/data/projects/.rch-targets/frankentorch-cod-b/release/examples/masked_select_h2h`
+masked_select(x[4000000], mask) f64 no-grad, 6 iters MIN:
+  FrankenTorch :     38.50 ms   kept 2001643  chk 1.274286e6
+  PyTorch      :     29.21 ms   kept 2001643  chk 1.274286e6  => FT 1.32x slower  [MATCH]

@@ -4,7 +4,8 @@
 //!
 //! Run: PYTORCH_PYTHON=/path/to/python cargo run --release -p ft-api --example softmax_family_dim0_h2h
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use ft_api::FrankenTorchSession;
@@ -13,40 +14,36 @@ use ft_core::ExecutionMode;
 const R: usize = 4096;
 const C: usize = 4096;
 
-fn bench_ft(op: &str, dtype: &str, data: &[f64]) -> (f64, f64) {
+fn bench_ft(use_softmax: bool, data: &[f64]) -> Result<(f64, f64), Box<dyn std::error::Error>> {
     let mut best = f64::INFINITY;
     let mut chk = 0.0;
     for _ in 0..12 {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable(data.to_vec(), vec![R, C], false).unwrap();
-        let x = if dtype == "f32" {
-            s.tensor_to_f32(x).unwrap()
-        } else {
-            x
-        };
+        let x = s.tensor_variable(data.to_vec(), vec![R, C], false)?;
         let t = Instant::now();
-        let out = if op == "softmax" {
-            s.tensor_softmax(x, 0).unwrap()
+        let out = if use_softmax {
+            s.tensor_softmax(x, 0)?
         } else {
-            s.tensor_log_softmax(x, 0).unwrap()
+            s.tensor_log_softmax(x, 0)?
         };
         let el = t.elapsed().as_secs_f64() * 1e3;
         if el < best {
             best = el;
-            chk = s.tensor_values(out).unwrap().iter().sum();
+            chk = s.tensor_values(out)?.iter().sum();
         }
     }
-    (best, chk)
+    Ok((best, chk))
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data: Vec<f64> = (0..R * C)
         .map(|i| ((i as f64) * 0.0007).sin() * 4.0)
         .collect();
     let python = std::env::var("PYTORCH_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    for op in ["softmax", "log_softmax"] {
-        for dtype in ["f64"] {
-            let (ft, chk) = bench_ft(op, dtype, &data);
+    for (op, use_softmax) in [("softmax", true), ("log_softmax", false)] {
+        {
+            let dtype = "f64";
+            let (ft, chk) = bench_ft(use_softmax, &data)?;
             let py = format!(
                 r#"
 import time, torch
@@ -61,10 +58,20 @@ for _ in range(12):
     t=time.perf_counter(); o=fn(x, dim=0); ts.append((time.perf_counter()-t)*1e3); chk=o.double().sum().item()
 print("MS", sorted(ts)[0]); print("CHK", chk)
 "#,
-                dt = if dtype == "f32" { "float32" } else { "float64" },
-                fn = if op == "softmax" { "softmax" } else { "log_softmax" },
+                dt = "float64",
+                fn = op,
             );
-            let out = Command::new(&python).arg("-c").arg(&py).output();
+            let mut child = Command::new(&python)
+                .arg("-")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()?;
+            child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| std::io::Error::other("python stdin unavailable"))?
+                .write_all(py.as_bytes())?;
+            let out = child.wait_with_output();
             print!("{op:11} {dtype}  dim=0 [{R},{C}]: FT {ft:8.3} ms");
             if let Ok(o) = out
                 && o.status.success()
@@ -91,4 +98,5 @@ print("MS", sorted(ts)[0]); print("CHK", chk)
             }
         }
     }
+    Ok(())
 }

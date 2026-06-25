@@ -1,0 +1,5 @@
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `release` profile [optimized] target(s) in 1.64s
+     Running `/data/projects/.rch-targets/frankentorch-cod-b/release/examples/logsumexp_ab`
+logsumexp no-grad [16384,256] dim=1 (bit-exact OK): OLD serial+saves 54.62ms  NEW(8t) 67.37ms  =>  0.81x
+PyTorch torch.logsumexp best 10.56ms checksum 94552.975548; FT is 6.38x SLOWER
