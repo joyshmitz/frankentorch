@@ -1,0 +1,3 @@
+Command: rustfmt --edition 2024 --check crates/ft-api/examples/fold_h2h.rs
+Exit: 0
+Output: <none>

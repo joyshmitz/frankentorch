@@ -4,6 +4,47 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - BOLD-VERIFY (kept): current main fold + unique wins reproduce vs PyTorch on cod-b
+
+Bead/thread `frankentorch-kgs4`, agent `PearlReef`. After the shared checkout
+fast-forwarded to `61d6be15`, the previously dirty `tensor_fold` worktree win
+was confirmed to already be on `origin/main`; the current run remeasured it
+head-to-head instead of relanding duplicate source. The verification used the
+warm target `CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`
+and per-crate `ft-api` commands only.
+
+Measured current-main fold command:
+`AGENT_NAME=PearlReef CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python
+cargo run --release -p ft-api --example fold_h2h`.
+
+- `fold([64,576,2916] -> [64,64,56,56])` f64 no-grad: FrankenTorch
+  `23.53 ms`, PyTorch `142.09 ms`, FT `6.04x FASTER`, checksum `MATCH`.
+
+Measured current-main unique corroboration command:
+`AGENT_NAME=PearlReef CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python
+cargo run --release -p ft-api --example unique_h2h`.
+
+- few-unique-503: FrankenTorch `482.41 ms`, PyTorch `1557.96 ms`, FT
+  `3.23x FASTER`, output `MATCH`.
+- all-distinct: FrankenTorch `197.14 ms`, PyTorch `1071.64 ms`, FT
+  `5.44x FASTER`, output `MATCH`.
+
+Behavior proof on the same current-main tree:
+
+- `cargo test -p ft-api fold --lib -- --nocapture`: `7 passed; 2369
+  filtered out`.
+- `cargo check -p ft-api --all-targets`: pass.
+- `cargo clippy -p ft-api --all-targets -- -D warnings`: pass.
+- `cargo test -p ft-conformance`: pass.
+- `cargo test -p ft-api --lib`: `2375 passed; 1 ignored`.
+
+Decision: KEEP evidence. No source change in this entry; it records that the
+landed fold and unique wins reproduce on cod-b with PyTorch ratios and green
+current-main conformance. Artifacts:
+`artifacts/perf/frankentorch-kgs4.cod-b-fold-20260625/`.
+
 ## 2026-06-25 - ★WIN: tensor_fold (col2im) parallelized over (n,c) lanes — flips 2.72x LOSS to 6.8-7.4x WIN vs PyTorch
 
 ★Finding via the "torch op is serial" probe extended to NN/signal ops: **`torch.nn.functional.fold`

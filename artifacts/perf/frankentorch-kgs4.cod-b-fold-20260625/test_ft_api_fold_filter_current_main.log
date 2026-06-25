@@ -1,0 +1,11 @@
+
+running 7 tests
+test tests::unfold_invalid_args_error ... ok
+test tests::unfold_1d ... ok
+test tests::fold_matches_torch_overlap_sum ... ok
+test tests::unfold_sliding_window_golden_matches_torch ... ok
+test tests::unfold_propagates_gradient_via_scatter ... ok
+test tests::unfold_step2 ... ok
+test tests::functional_batch_norm1d_3d_native_fused_matches_fold_reference_bits ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 2369 filtered out; finished in 0.01s

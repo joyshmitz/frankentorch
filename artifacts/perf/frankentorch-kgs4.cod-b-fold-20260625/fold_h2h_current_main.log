@@ -1,0 +1,3 @@
+fold([64,576,2916] -> [64,64,56,56]) f64 no-grad, 5 iters MIN:
+  FrankenTorch :     23.53 ms   chk 2.232285e5
+  PyTorch      :    142.09 ms   chk 2.232285e5  => FT 6.04x FASTER  [MATCH]

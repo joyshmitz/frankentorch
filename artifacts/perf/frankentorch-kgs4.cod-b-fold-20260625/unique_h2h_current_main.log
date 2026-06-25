@@ -1,0 +1,5 @@
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `release` profile [optimized] target(s) in 0.61s
+     Running `/data/projects/.rch-targets/frankentorch-cod-b/release/examples/unique_h2h`
+few-unique-503: FT    482.41 ms  (uniq 503)  | torch   1557.96 ms (uniq 503) => FT 3.23x FASTER  [MATCH]
+all-distinct  : FT    197.14 ms  (uniq 33554432)  | torch   1071.64 ms (uniq 33554432) => FT 5.44x FASTER  [MATCH]
