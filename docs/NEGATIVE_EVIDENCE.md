@@ -4,6 +4,33 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-24 - ★WIN: sort/argsort dim=0 column-parallel transpose trick — flips 1.58x LOSS to 2.3x WIN vs PyTorch
+
+Same dim=0 transpose trick, now on the SORT family (compute-bound O(n log n)/radix). `sort_tensor`/
+`argsort_tensor` `_f64`/`_f32` parallelize over OUTER blocks, so a leading sort dim (dim=0,
+`outer_size==1`) ran the lone block SERIALLY over its `inner_size` columns, each a per-lane
+radix-or-comparison sort.
+
+Baseline MEASURED (`crates/ft-api/examples/sort_dim0_h2h.rs`, sort dim=0 [4096,2048] f64 ascending,
+NaN-free → radix path, 10-iter min): FT **465.62ms vs PyTorch 294.94ms = 1.58x SLOWER**.
+
+LEVER (cc): wire a column-parallel transpose trick into all four kernels (`sort/argsort_block_
+transpose_trick_f64/f32`), gated `outer_size < current_num_threads() && inner_size>=8 && dim_size>=2
+&& block>=PARALLEL_THRESHOLD`. Each column sorts on its own rayon lane with the SAME
+radix-or-comparison logic (radix keys, `nan_greatest_cmp` tie/NaN-greatest, stable order), writing
+sorted values+indices CONTIGUOUSLY into an `[inner,dim]` scratch; a parallel transpose copies both
+back. Per-column keys/comparator/stable order identical → values AND indices bit-for-bit identical.
+Disjoint `par_chunks_mut`, no unsafe; sort is compute-bound so the transpose bandwidth is dwarfed.
+
+After MEASURED (best-of-3, sort dim=0 [4096,2048] f64, first-row values MATCH): FT **127.08ms =
+2.26-2.36x FASTER** than PyTorch (294-300ms) — a 3.6x internal speedup that flips the loss.
+argsort + both f32 kernels got the identical trick + a bit-exact kernel test (incl a NaN column to
+hit the comparison fallback).
+
+Correctness: new kernel test `sort_argsort_dim0_transpose_trick_bit_exact` ([512,256] dim=0, asc+desc,
+all four kernels + NaN column, values+indices equality vs a stable per-column reference); `cargo test
+-p ft-kernel-cpu --lib` 546/0, `cargo test -p ft-api sort` 31/0. Source disposition: KEEP. AGENT cc.
+
 ## 2026-06-24 - ★WIN: softmax/log_softmax dim=0 column-parallel transpose trick — closes a 12x LOSS to parity
 
 NEW op family for the dim=0 transpose trick (beyond the scan family). `softmax_dim`/`log_softmax_dim`

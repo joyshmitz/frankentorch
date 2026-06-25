@@ -14584,6 +14584,80 @@ fn sort_radix_perm(keys: &[u64], perm: &mut Vec<u32>, scratch: &mut Vec<u32>) {
     }
 }
 
+/// Sort transpose trick for a leading sort dim (small outer, large inner): the plain block sorts
+/// its `inner_size` columns serially. Here each column sorts on its own rayon lane — gather the
+/// strided column, run the SAME radix-or-comparison sort as
+/// [`sort_tensor_contiguous_f64`]'s block, write the sorted values+indices CONTIGUOUSLY into an
+/// `[inner, dim]` scratch, then a parallel transpose copies both back into the `[dim, inner]`
+/// outputs. Per-column the keys/comparator/stable order are identical, so values AND indices are
+/// bit-for-bit identical. Disjoint `par_chunks_mut`, no unsafe; sorting is compute-bound so the
+/// extra transpose bandwidth is dwarfed by the parallelized O(n log n) work.
+#[allow(clippy::too_many_arguments)]
+fn sort_block_transpose_trick_f64(
+    in_block: &[f64],
+    sv_block: &mut [f64],
+    idx_block: &mut [usize],
+    dim_size: usize,
+    inner_size: usize,
+    descending: bool,
+    use_radix: bool,
+) {
+    let mut sv_t = vec![0.0; dim_size * inner_size];
+    let mut idx_t = vec![0usize; dim_size * inner_size];
+    sv_t.par_chunks_mut(dim_size)
+        .zip(idx_t.par_chunks_mut(dim_size))
+        .enumerate()
+        .for_each(|(inner, (sv_row, idx_row))| {
+            let mut radix_ok = use_radix;
+            let mut keys: Vec<u64> = Vec::new();
+            if radix_ok {
+                keys.reserve(dim_size);
+                for d in 0..dim_size {
+                    let x = in_block[d * inner_size + inner];
+                    if x.is_nan() {
+                        radix_ok = false;
+                        break;
+                    }
+                    let k = sort_radix_key_f64(x);
+                    keys.push(if descending { !k } else { k });
+                }
+            }
+            if radix_ok {
+                let mut perm: Vec<u32> = Vec::new();
+                let mut scratch: Vec<u32> = Vec::new();
+                sort_radix_perm(&keys, &mut perm, &mut scratch);
+                for (out_d, &p) in perm.iter().enumerate() {
+                    let orig_d = p as usize;
+                    sv_row[out_d] = in_block[orig_d * inner_size + inner];
+                    idx_row[out_d] = orig_d;
+                }
+                return;
+            }
+            let mut lane: Vec<(usize, f64)> = (0..dim_size)
+                .map(|d| (d, in_block[d * inner_size + inner]))
+                .collect();
+            if descending {
+                lane.sort_by(|a, b| nan_greatest_cmp_f64(b.1, a.1));
+            } else {
+                lane.sort_by(|a, b| nan_greatest_cmp_f64(a.1, b.1));
+            }
+            for (out_d, (orig_d, val)) in lane.into_iter().enumerate() {
+                sv_row[out_d] = val;
+                idx_row[out_d] = orig_d;
+            }
+        });
+    sv_block
+        .par_chunks_mut(inner_size)
+        .zip(idx_block.par_chunks_mut(inner_size))
+        .enumerate()
+        .for_each(|(out_d, (sv_row, idx_row))| {
+            for inner in 0..inner_size {
+                sv_row[inner] = sv_t[inner * dim_size + out_d];
+                idx_row[inner] = idx_t[inner * dim_size + out_d];
+            }
+        });
+}
+
 pub fn sort_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
@@ -14625,6 +14699,31 @@ pub fn sort_tensor_contiguous_f64(
     // values, same stable tie order) far faster. NaN/short lanes fall back to the
     // comparison sort, which alone reproduces PyTorch's "NaN is greatest" rule.
     let use_radix = dim_size >= SORT_RADIX_MIN_LEN && dim_size <= u32::MAX as usize;
+    // Leading sort dim (small outer, large inner) → the outer-block fan-out leaves the pool idle
+    // and the lone block sorts its `inner_size` columns serially (compute-bound O(n log n)/radix).
+    // Parallelize the columns instead via the transpose trick (bit-exact: same keys/comparator).
+    let threads = rayon::current_num_threads();
+    let use_trick = numel >= PARALLEL_THRESHOLD
+        && threads > 1
+        && inner_size >= 8
+        && dim_size >= 2
+        && outer_size < threads
+        && block >= PARALLEL_THRESHOLD;
+    if use_trick {
+        for o in 0..outer_size {
+            let base = o * block;
+            sort_block_transpose_trick_f64(
+                &data[base..base + block],
+                &mut sorted_values[base..base + block],
+                &mut indices[base..base + block],
+                dim_size,
+                inner_size,
+                descending,
+                use_radix,
+            );
+        }
+        return Ok((sorted_values, indices));
+    }
     sorted_values
         .par_chunks_mut(block)
         .zip(indices.par_chunks_mut(block))
@@ -14681,6 +14780,65 @@ pub fn sort_tensor_contiguous_f64(
     Ok((sorted_values, indices))
 }
 
+/// argsort transpose trick — sister of [`sort_block_transpose_trick_f64`], indices only. Bit-exact.
+fn argsort_block_transpose_trick_f64(
+    in_block: &[f64],
+    idx_block: &mut [usize],
+    dim_size: usize,
+    inner_size: usize,
+    descending: bool,
+    use_radix: bool,
+) {
+    let mut idx_t = vec![0usize; dim_size * inner_size];
+    idx_t
+        .par_chunks_mut(dim_size)
+        .enumerate()
+        .for_each(|(inner, idx_row)| {
+            let mut radix_ok = use_radix;
+            let mut keys: Vec<u64> = Vec::new();
+            if radix_ok {
+                keys.reserve(dim_size);
+                for d in 0..dim_size {
+                    let x = in_block[d * inner_size + inner];
+                    if x.is_nan() {
+                        radix_ok = false;
+                        break;
+                    }
+                    let k = sort_radix_key_f64(x);
+                    keys.push(if descending { !k } else { k });
+                }
+            }
+            if radix_ok {
+                let mut perm: Vec<u32> = Vec::new();
+                let mut scratch: Vec<u32> = Vec::new();
+                sort_radix_perm(&keys, &mut perm, &mut scratch);
+                for (out_d, &p) in perm.iter().enumerate() {
+                    idx_row[out_d] = p as usize;
+                }
+                return;
+            }
+            let mut lane: Vec<(usize, f64)> = (0..dim_size)
+                .map(|d| (d, in_block[d * inner_size + inner]))
+                .collect();
+            if descending {
+                lane.sort_by(|a, b| nan_greatest_cmp_f64(b.1, a.1));
+            } else {
+                lane.sort_by(|a, b| nan_greatest_cmp_f64(a.1, b.1));
+            }
+            for (out_d, (orig_d, _)) in lane.into_iter().enumerate() {
+                idx_row[out_d] = orig_d;
+            }
+        });
+    idx_block
+        .par_chunks_mut(inner_size)
+        .enumerate()
+        .for_each(|(out_d, idx_row)| {
+            for inner in 0..inner_size {
+                idx_row[inner] = idx_t[inner * dim_size + out_d];
+            }
+        });
+}
+
 pub fn argsort_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
@@ -14714,6 +14872,28 @@ pub fn argsort_tensor_contiguous_f64(
     let mut indices = vec![0usize; numel];
     let block = dim_size * inner_size;
     let use_radix = dim_size >= SORT_RADIX_MIN_LEN && dim_size <= u32::MAX as usize;
+    // Leading sort dim (small outer, large inner) → column-parallel transpose trick (see sort f64).
+    let threads = rayon::current_num_threads();
+    let use_trick = numel >= PARALLEL_THRESHOLD
+        && threads > 1
+        && inner_size >= 8
+        && dim_size >= 2
+        && outer_size < threads
+        && block >= PARALLEL_THRESHOLD;
+    if use_trick {
+        for o in 0..outer_size {
+            let base = o * block;
+            argsort_block_transpose_trick_f64(
+                &data[base..base + block],
+                &mut indices[base..base + block],
+                dim_size,
+                inner_size,
+                descending,
+                use_radix,
+            );
+        }
+        return Ok(indices);
+    }
     indices
         .par_chunks_mut(block)
         .zip(data[..numel].par_chunks(block))
@@ -29639,6 +29819,133 @@ pub fn cumprod_backward_tensor_contiguous_f32(
     Ok(grad_input)
 }
 
+/// f32 mirror of [`sort_block_transpose_trick_f64`] — values f32, radix key zero-extended to u64.
+/// Bit-exact per column (same keys/comparator/stable order).
+#[allow(clippy::too_many_arguments)]
+fn sort_block_transpose_trick_f32(
+    in_block: &[f32],
+    sv_block: &mut [f32],
+    idx_block: &mut [usize],
+    dim_size: usize,
+    inner_size: usize,
+    descending: bool,
+    use_radix: bool,
+) {
+    let mut sv_t = vec![0.0f32; dim_size * inner_size];
+    let mut idx_t = vec![0usize; dim_size * inner_size];
+    sv_t.par_chunks_mut(dim_size)
+        .zip(idx_t.par_chunks_mut(dim_size))
+        .enumerate()
+        .for_each(|(inner, (sv_row, idx_row))| {
+            let mut radix_ok = use_radix;
+            let mut keys: Vec<u64> = Vec::new();
+            if radix_ok {
+                keys.reserve(dim_size);
+                for d in 0..dim_size {
+                    let x = in_block[d * inner_size + inner];
+                    if x.is_nan() {
+                        radix_ok = false;
+                        break;
+                    }
+                    let k = sort_radix_key_f32(x);
+                    keys.push(u64::from(if descending { !k } else { k }));
+                }
+            }
+            if radix_ok {
+                let mut perm: Vec<u32> = Vec::new();
+                let mut scratch: Vec<u32> = Vec::new();
+                sort_radix_perm(&keys, &mut perm, &mut scratch);
+                for (out_d, &p) in perm.iter().enumerate() {
+                    let orig_d = p as usize;
+                    sv_row[out_d] = in_block[orig_d * inner_size + inner];
+                    idx_row[out_d] = orig_d;
+                }
+                return;
+            }
+            let mut lane: Vec<(usize, f32)> = (0..dim_size)
+                .map(|d| (d, in_block[d * inner_size + inner]))
+                .collect();
+            if descending {
+                lane.sort_by(|a, b| nan_greatest_cmp_f32(b.1, a.1));
+            } else {
+                lane.sort_by(|a, b| nan_greatest_cmp_f32(a.1, b.1));
+            }
+            for (out_d, (orig_d, val)) in lane.into_iter().enumerate() {
+                sv_row[out_d] = val;
+                idx_row[out_d] = orig_d;
+            }
+        });
+    sv_block
+        .par_chunks_mut(inner_size)
+        .zip(idx_block.par_chunks_mut(inner_size))
+        .enumerate()
+        .for_each(|(out_d, (sv_row, idx_row))| {
+            for inner in 0..inner_size {
+                sv_row[inner] = sv_t[inner * dim_size + out_d];
+                idx_row[inner] = idx_t[inner * dim_size + out_d];
+            }
+        });
+}
+
+/// f32 mirror of [`argsort_block_transpose_trick_f64`] — indices only. Bit-exact.
+fn argsort_block_transpose_trick_f32(
+    in_block: &[f32],
+    idx_block: &mut [usize],
+    dim_size: usize,
+    inner_size: usize,
+    descending: bool,
+    use_radix: bool,
+) {
+    let mut idx_t = vec![0usize; dim_size * inner_size];
+    idx_t
+        .par_chunks_mut(dim_size)
+        .enumerate()
+        .for_each(|(inner, idx_row)| {
+            let mut radix_ok = use_radix;
+            let mut keys: Vec<u64> = Vec::new();
+            if radix_ok {
+                keys.reserve(dim_size);
+                for d in 0..dim_size {
+                    let x = in_block[d * inner_size + inner];
+                    if x.is_nan() {
+                        radix_ok = false;
+                        break;
+                    }
+                    let k = sort_radix_key_f32(x);
+                    keys.push(u64::from(if descending { !k } else { k }));
+                }
+            }
+            if radix_ok {
+                let mut perm: Vec<u32> = Vec::new();
+                let mut scratch: Vec<u32> = Vec::new();
+                sort_radix_perm(&keys, &mut perm, &mut scratch);
+                for (out_d, &p) in perm.iter().enumerate() {
+                    idx_row[out_d] = p as usize;
+                }
+                return;
+            }
+            let mut lane: Vec<(usize, f32)> = (0..dim_size)
+                .map(|d| (d, in_block[d * inner_size + inner]))
+                .collect();
+            if descending {
+                lane.sort_by(|a, b| nan_greatest_cmp_f32(b.1, a.1));
+            } else {
+                lane.sort_by(|a, b| nan_greatest_cmp_f32(a.1, b.1));
+            }
+            for (out_d, (orig_d, _)) in lane.into_iter().enumerate() {
+                idx_row[out_d] = orig_d;
+            }
+        });
+    idx_block
+        .par_chunks_mut(inner_size)
+        .enumerate()
+        .for_each(|(out_d, idx_row)| {
+            for inner in 0..inner_size {
+                idx_row[inner] = idx_t[inner * dim_size + out_d];
+            }
+        });
+}
+
 pub fn sort_tensor_contiguous_f32(
     input: &[f32],
     meta: &TensorMeta,
@@ -29672,6 +29979,29 @@ pub fn sort_tensor_contiguous_f32(
     // reproduces PyTorch's "NaN is greatest" placement. See the f64 path.
     let block = dim_size * inner_size;
     let use_radix = dim_size >= SORT_RADIX_MIN_LEN && dim_size <= u32::MAX as usize;
+    // Leading sort dim (small outer, large inner) → column-parallel transpose trick (see sort f64).
+    let threads = rayon::current_num_threads();
+    let use_trick = numel >= PARALLEL_THRESHOLD
+        && threads > 1
+        && inner_size >= 8
+        && dim_size >= 2
+        && outer_size < threads
+        && block >= PARALLEL_THRESHOLD;
+    if use_trick {
+        for o in 0..outer_size {
+            let base = o * block;
+            sort_block_transpose_trick_f32(
+                &data[base..base + block],
+                &mut sorted_values[base..base + block],
+                &mut indices[base..base + block],
+                dim_size,
+                inner_size,
+                descending,
+                use_radix,
+            );
+        }
+        return Ok((sorted_values, indices));
+    }
     sorted_values
         .par_chunks_mut(block)
         .zip(indices.par_chunks_mut(block))
@@ -29751,6 +30081,28 @@ pub fn argsort_tensor_contiguous_f32(
     let mut indices = vec![0usize; numel];
     let block = dim_size * inner_size;
     let use_radix = dim_size >= SORT_RADIX_MIN_LEN && dim_size <= u32::MAX as usize;
+    // Leading sort dim (small outer, large inner) → column-parallel transpose trick (see sort f64).
+    let threads = rayon::current_num_threads();
+    let use_trick = numel >= PARALLEL_THRESHOLD
+        && threads > 1
+        && inner_size >= 8
+        && dim_size >= 2
+        && outer_size < threads
+        && block >= PARALLEL_THRESHOLD;
+    if use_trick {
+        for o in 0..outer_size {
+            let base = o * block;
+            argsort_block_transpose_trick_f32(
+                &data[base..base + block],
+                &mut indices[base..base + block],
+                dim_size,
+                inner_size,
+                descending,
+                use_radix,
+            );
+        }
+        return Ok(indices);
+    }
     indices
         .par_chunks_mut(block)
         .zip(data[..numel].par_chunks(block))
@@ -37981,6 +38333,84 @@ mod tests {
         for i in 0..n {
             let want = y[i].atan2(x[i]);
             assert_eq!(got[i].to_bits(), want.to_bits(), "atan2 f32 idx={i}");
+        }
+    }
+
+    #[test]
+    fn sort_argsort_dim0_transpose_trick_bit_exact() {
+        // [512,256] dim=0 (outer_size==1, dim_size>=SORT_RADIX_MIN_LEN) exercises the column-parallel
+        // sort trick. One column carries a NaN to force the comparison fallback there (others radix).
+        // Reference: per-column STABLE sort by nan_greatest_cmp (matches both radix + comparison).
+        let (rows, cols) = (512usize, 256usize);
+        let mut input: Vec<f64> = (0..rows * cols)
+            .map(|i| (((i * 2_654_435_761usize) % 100_003) as f64) / 100_003.0 - 0.5)
+            .collect();
+        input[300 * cols + 7] = f64::NAN;
+        let meta = TensorMeta::from_shape(vec![rows, cols], DType::F64, Device::Cpu);
+        // Reference (ascending).
+        let reference = |asc: bool| -> (Vec<f64>, Vec<usize>) {
+            let mut v = vec![0.0; rows * cols];
+            let mut idx = vec![0usize; rows * cols];
+            for c in 0..cols {
+                let mut lane: Vec<(usize, f64)> =
+                    (0..rows).map(|r| (r, input[r * cols + c])).collect();
+                if asc {
+                    lane.sort_by(|a, b| super::nan_greatest_cmp_f64(a.1, b.1));
+                } else {
+                    lane.sort_by(|a, b| super::nan_greatest_cmp_f64(b.1, a.1));
+                }
+                for (out_r, (orig, val)) in lane.into_iter().enumerate() {
+                    v[out_r * cols + c] = val;
+                    idx[out_r * cols + c] = orig;
+                }
+            }
+            (v, idx)
+        };
+        for &asc in &[true, false] {
+            let (wv, wi) = reference(asc);
+            // f64 sort
+            let (gv, gi) = super::sort_tensor_contiguous_f64(&input, &meta, 0, !asc).unwrap();
+            for i in 0..gv.len() {
+                assert_eq!(
+                    gv[i].to_bits(),
+                    wv[i].to_bits(),
+                    "sort f64 val asc={asc} idx={i}"
+                );
+                assert_eq!(gi[i], wi[i], "sort f64 idx asc={asc} idx={i}");
+            }
+            // f64 argsort
+            let ga = super::argsort_tensor_contiguous_f64(&input, &meta, 0, !asc).unwrap();
+            assert_eq!(ga, wi, "argsort f64 asc={asc}");
+            // f32 sort + argsort (cast; NaN preserved).
+            let input32: Vec<f32> = input.iter().map(|&x| x as f32).collect();
+            let meta32 = TensorMeta::from_shape(vec![rows, cols], DType::F32, Device::Cpu);
+            let mut wv32 = vec![0.0f32; rows * cols];
+            let mut wi32 = vec![0usize; rows * cols];
+            for c in 0..cols {
+                let mut lane: Vec<(usize, f32)> =
+                    (0..rows).map(|r| (r, input32[r * cols + c])).collect();
+                if asc {
+                    lane.sort_by(|a, b| super::nan_greatest_cmp_f32(a.1, b.1));
+                } else {
+                    lane.sort_by(|a, b| super::nan_greatest_cmp_f32(b.1, a.1));
+                }
+                for (out_r, (orig, val)) in lane.into_iter().enumerate() {
+                    wv32[out_r * cols + c] = val;
+                    wi32[out_r * cols + c] = orig;
+                }
+            }
+            let (gv32, gi32) =
+                super::sort_tensor_contiguous_f32(&input32, &meta32, 0, !asc).unwrap();
+            for i in 0..gv32.len() {
+                assert_eq!(
+                    gv32[i].to_bits(),
+                    wv32[i].to_bits(),
+                    "sort f32 val asc={asc} idx={i}"
+                );
+                assert_eq!(gi32[i], wi32[i], "sort f32 idx asc={asc} idx={i}");
+            }
+            let ga32 = super::argsort_tensor_contiguous_f32(&input32, &meta32, 0, !asc).unwrap();
+            assert_eq!(ga32, wi32, "argsort f32 asc={asc}");
         }
     }
 
