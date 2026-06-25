@@ -4588,6 +4588,14 @@ impl TensorTape {
         Ok(self.node(node)?.tensor.contiguous_values_f32()?.to_vec())
     }
 
+    /// Borrowed view of a contiguous f32 node's values — the zero-copy counterpart
+    /// of [`Self::values_f32`]. Errors (like `values_f32`) if the node is not
+    /// contiguous f32. Lets a read-only consumer (e.g. an inference-only int8 GEMM
+    /// op) feed the storage straight into a kernel without the `to_vec` alloc+copy.
+    pub fn values_f32_borrowed(&self, node: TensorNodeId) -> Result<&[f32], AutogradError> {
+        Ok(self.node(node)?.tensor.contiguous_values_f32()?)
+    }
+
     pub fn dtype(&self, node: TensorNodeId) -> Result<DType, AutogradError> {
         Ok(self.node(node)?.tensor.meta().dtype())
     }
