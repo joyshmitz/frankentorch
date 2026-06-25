@@ -8358,3 +8358,19 @@ MEASURED [4000,4000] f64 no-grad:
 Both via the proven division-unravel->block-copy lever (diff/flip/roll/index_select). cat/stack
 are the 5th/6th structural ops flipped LOSS->WIN this way. f64 only (f32/grad/non-contiguous fall
 through). ft-api lib + conformance green. AGENT BlackThrush.
+## 2026-06-25 - ★ WIN: stack grain-based parallel copy — flips the a3ccc03a regression-fix 1.58x SLOWER -> 3.54x FASTER
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. The stack no-grad fast path
+(a3ccc03a) chunked the output by `inner` = one chunk per (outer,input) block, which
+under-parallelizes when there are FEW blocks but a huge `inner` (stack(dim=0) of 2 tensors
+= only 2 blocks → 2-way parallelism) → 1.58x SLOWER. Replaced with a GRAIN-based parallel
+copy: chunk the output into ~4x num_threads pieces; each piece resolves its source block by
+integer-div of its start offset (ONE division per BLOCK-BOUNDARY crossing, not per element)
+and copies up to each block boundary in a small while-loop. Bit-exact (pure copy).
+
+MEASURED stack([x,x], dim=0) [4000,4000] f64 no-grad: 73.9ms -> FT `13.3ms` / torch
+`47.3ms` = **3.54x FASTER** (cat unchanged at 3.87x). stack now joins the structural wins.
+★ The grain-copy is the general fix for the few-blocks under-parallelization — applies
+wherever a block-copy fast path has few/large blocks. ft-api lib + conformance green
+(stack dim0 / cat_stack golden / vstack/hstack/dstack / grad-fallthrough tests pass).
+AGENT BlackThrush.
