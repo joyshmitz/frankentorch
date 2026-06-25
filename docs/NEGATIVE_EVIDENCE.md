@@ -4,6 +4,52 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - NEGATIVE (reverted): dgemm_bt per-call panel packing does not clear the gate
+
+Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh BOLD-VERIFY pass
+found no clean unlanded scratch/worktree win ahead of `main`; the only ahead
+worktree was `/data/projects/frankentorch-gxpb2-pass10`, an explicit large-n
+row-SIMD rejection.
+
+Alien route: cache-aware vectorized execution and panel packing suggested
+revisiting `dgemm_bt`, the transposed-weight GEMM behind f64 Linear. Two
+one-hunk variants were tried and reverted:
+
+1. Pack one contiguous `[k,bj]` B panel per 2-D output-column block in
+   `dgemm_bt_2d_parallel`.
+2. Pack one contiguous `[k,bw]` B panel inside the small-M column-split path
+   that wide Linear forward actually dispatches through.
+
+Measured commands used the warm cod-b target:
+`AGENT_NAME=PearlReef CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+cargo run --release -p ft-kernel-cpu --example gemm_bt_ab`
+and
+`AGENT_NAME=PearlReef CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python
+FT_TORCH_THREADS=32 FT_TORCH_INTEROP_THREADS=32
+cargo bench -p ft-api --bench pytorch_gauntlet_bench -- gauntlet_linear_train_hidden_2048 --noplot`.
+
+2-D panel-pack kernel rows regressed:
+
+- `[512,1024] @ W[1024,1024]^T`: `4.065 ms -> 4.179 ms`, FT `1.03x SLOWER`.
+- `[1024,1024] @ W[1024,1024]^T`: `5.911 ms -> 6.191 ms`, FT `1.05x SLOWER`.
+- `[2048,512] @ W[2048,512]^T`: `13.654 ms -> 14.301 ms`, FT `1.05x SLOWER`.
+
+Public PyTorch gauntlet while the first candidate was present measured
+FrankenTorch f64 Linear train `6.9660 ms` vs PyTorch `12.406 ms`, FT `1.78x
+FASTER`, but that row is not causal evidence for `dgemm_bt_2d_parallel`: the
+target Linear shape dispatches through the earlier small-M column split. The
+second small-M column-pack candidate then measured FT `6.9871 ms` with
+Criterion reporting `No change in performance detected` (`p = 0.61`), so it was
+also reverted.
+
+Decision: REVERT/no source retained. Do not retry per-call B-panel packing in
+`dgemm_bt`; the packed copy consumes bandwidth without a causal end-to-end win.
+The plausible remaining family is an explicit persistent packed-weight object
+whose construction is amortized across repeated Linear calls and whose dispatch
+can be proved active for the target shape. Artifacts:
+`artifacts/perf/frankentorch-kgs4.cod-b-dgemm-bt-pack-20260625/`.
+
 ## 2026-06-25 - WIN (by-analogy, byte-identical): tensor_unique_dim splitmix64 slice-key hasher
 
 `tensor_unique_dim` dedups slices via a `HashMap<Vec<i64>, usize>` keyed by each slice's bit

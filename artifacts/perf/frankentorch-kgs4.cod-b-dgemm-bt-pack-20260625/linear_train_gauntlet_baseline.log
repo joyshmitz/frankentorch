@@ -1,0 +1,26 @@
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 1m 06s
+     Running benches/pytorch_gauntlet_bench.rs (/data/projects/.rch-targets/frankentorch-cod-b/release/deps/pytorch_gauntlet_bench-660553189fe21307)
+Gnuplot not found, using plotters backend
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121: Warming up for 1.0000 s
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121: Collecting 10 samples in estimated 3.1320 s (440 iterations)
+Benchmarking gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121: Analyzing
+gauntlet_linear_train_hidden_2048/frankentorch_kgs4_121
+                        time:   [7.3120 ms 7.6681 ms 7.9540 ms]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu: Warming up for 1.0000 s
+
+Warning: Unable to complete 10 samples in 3.0s. You may wish to increase target time to 15.9s.
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu: Collecting 10 samples in estimated 15.932 s (10 iterations)
+Benchmarking gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu: Analyzing
+gauntlet_linear_train_hidden_2048/pytorch_2_12_cpu
+                        time:   [21.524 ms 40.835 ms 64.882 ms]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
