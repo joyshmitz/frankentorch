@@ -4504,6 +4504,57 @@ pub fn layer_norm_forward_f32(
     out
 }
 
+/// Fused residual-add + LayerNorm: `out = layer_norm(a + b)`, the transformer
+/// "add & norm". Computes `a + b` on the fly inside the per-row mean/var/normalize
+/// pass so the residual sum is never materialized as its own tensor (saving an
+/// alloc + a full read/write per add-norm; there are 2 per encoder layer). The
+/// `a + b` values are byte-identical to a separate `add` followed by
+/// `layer_norm_forward_f32`, so the result is bit-identical.
+#[must_use]
+pub fn add_layer_norm_forward_f32(
+    a: &[f32],
+    b: &[f32],
+    weight: Option<&[f32]>,
+    bias: Option<&[f32]>,
+    batch: usize,
+    norm_size: usize,
+    eps: f32,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * norm_size];
+    let inv_n = 1.0 / norm_size as f32;
+    out.par_chunks_mut(norm_size).enumerate().for_each(|(r, orow)| {
+        let base = r * norm_size;
+        let arow = &a[base..base + norm_size];
+        let brow = &b[base..base + norm_size];
+        // Materialize a+b ONCE into the output row (also accumulating the mean
+        // sum), then normalize in place — no 3× recompute, no separate sum tensor.
+        let mut sum = 0.0f32;
+        for j in 0..norm_size {
+            let s = arow[j] + brow[j];
+            orow[j] = s;
+            sum += s;
+        }
+        let mean = sum * inv_n;
+        let mut vsum = 0.0f32;
+        for &s in orow.iter() {
+            let d = s - mean;
+            vsum += d * d;
+        }
+        let rstd = 1.0 / (vsum * inv_n + eps).sqrt();
+        for j in 0..norm_size {
+            let mut y = (orow[j] - mean) * rstd;
+            if let Some(w) = weight {
+                y *= w[j];
+            }
+            if let Some(bb) = bias {
+                y += bb[j];
+            }
+            orow[j] = y;
+        }
+    });
+    out
+}
+
 #[must_use]
 pub fn layer_norm_forward_with_stats_f64(
     x: &[f64],
