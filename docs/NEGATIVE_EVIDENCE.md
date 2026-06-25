@@ -7797,3 +7797,44 @@ index contract) and `mode_non_contiguous_f64_bounded_falls_back_and_matches_cont
 (a transposed `>=1<<13` f64 view does NOT error on the zero-copy borrow — it falls back to
 the slow path and matches a contiguous clone). Full ft-api `mode` suite: 17/17 green.
 AGENT BlackThrush.
+## 2026-06-25 - SURFACED + REVERTED (bit-exact but sub-2.0, narrow): bounded-integer counting fast path for quantile_dim
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Followed the shipped mode counting
+win (c79b47b5, 15.51x) into the selection family. The quantile lever had been CLOSED here
+on the "general-data partition wall" (Rust `select_nth_unstable` partition == the ~82ms
+floor; PyTorch's tuned introselect == 7ms median) — but that wall is about FLOAT data and
+never considered the **bounded-integer counting sidestep** (no partition at all). This
+note records that sidestep so it is not re-chased blindly: it WORKS and is bit-exact, but
+lands below the 2.0 bar for this op.
+
+Prototyped in `tensor_quantile_dim_multi_nograd_f64`: when every value is a finite integer
+in `[0,255]` (excluding -0.0 for bit-exactness), replace the per-lane quickselect with a
+256-bucket histogram + one cumulative prefix-walk reading the order statistic at each
+required rank. The r-th order statistic of a multiset is a UNIQUE value → bit-identical to
+quickselect. VERIFIED bit-exact: the existing torch-golden `quantile_dim_matches_torch`,
+`quantile_dim_multi_nograd_f64_fast_path_matches_stable_sort_reference`,
+`quantile_interpolation_modes_match_torch`, and `quantile_multi_q_torch_golden` all pass
+with the counting path; new hand-derived `quantile_dim_bounded_integer_counting_matches_
+reference` (all 5 interp modes) + `quantile_dim_non_integer_falls_back_to_quickselect`
+pass (37/37 mode+quantile suite green). value-sum rel `0.0` vs PyTorch.
+
+MEASURED `quantile(x, 0.5, dim=1) [4000,4000]` f64 bounded-int no-grad, 6-iter MIN, but
+ONLY under heavy peer-bench contention (a concurrent `franken_whisper native_engine_bench`,
+load 11-18, inflated torch to 127ms vs its ~73ms clean baseline — see
+[[feedback_peer_bench_contention]]): FT `89.7 ms` / torch `127.6 ms` => `1.42x`. A clean
+re-measure could not be obtained (the peer bench ran continuously). De-inflating both arms
+by torch's ~1.74x contention factor gives a clean estimate FT `~51 ms` / torch `~73 ms` =>
+`~1.43x`.
+
+WHY SUB-BAR (vs mode's 15x): unlike mode (FT started 2.9x SLOWER — a composed sort+gather
+per slice that counting fully replaced), FT's quantile was ALREADY at PyTorch parity via
+per-lane quickselect (the qntl routing fix, 82ms vs torch 73ms). Counting only shaves the
+partition CONSTANT, and that edge is then diluted by the shared, unavoidable fixed cost
+both paths pay: `tensor_values` materializes a full-numel (128MB) f64 copy + the output
+alloc. torch.quantile's sort is not slow enough, and FT's materialization floor (~51ms)
+is high enough, that the bit-exact counting edge lands ~1.4x — below the 2.0 Score bar.
+Even removing ALL FT overhead (clone-elision via `values_borrowed` + folding the bounded
+check into the kernel) tops out ~2.0-2.4x for a NARROW case (quantile on small-integer
+data is uncommon), at materially higher complexity/risk on shared main. SOURCE REVERTED;
+recorded as surfaced negative/marginal evidence. The counting lever's high-value target
+was mode (shipped 15.51x), not quantile. AGENT BlackThrush.
