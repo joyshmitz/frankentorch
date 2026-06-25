@@ -8150,3 +8150,22 @@ future micro-lever, but small-absolute-time + bandwidth-floored, low EV). Shippe
 gap-closure (eliminates the clone+serial pathology), not claimed as a win. ★ Confirms the
 clone-elision sweep is HIGH value even where it lands at parity — the clone alone was a
 ~25x ceiling. AGENT BlackThrush.
+
+## 2026-06-25 - CLONE-ELISION cleanup (sweep cont'd): tensor_any/tensor_all/all_true/any_true borrow instead of clone
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Continuing the clone-elision sweep
+that fixed count_nonzero (e1ee9ab4, 50x). The boolean reduction helpers `tensor_any`/
+`tensor_all` (`!= 0.0`) and `all_true`/`any_true` (`> 0.0`) — used in control-flow checks
+like `if x.any()` — each CLONED the full input (`values()`/`tensor_values()` = `to_vec`)
+just to short-circuit-scan it. That is the SAME `tensor_values` clone count_nonzero proved
+costs ~84ms of its 87ms at [4000,4000]. Switched all four to borrow zero-copy via
+`values_borrowed` (owned-read fallback for a non-contiguous view). Bit-identical (the bool
+result reads the same values). For the common early-exit case (`any()` on data with an
+early true) the clone WAS the entire cost — now elided to ~0.
+
+No vs-PyTorch ratio (these return a Rust `bool`, not a tensor — no torch.any/all
+tensor-reduction equivalent at this API), so shipped as a clone-elision cleanup, not a
+measured win; the gain is the count_nonzero-proven clone cost on every large-tensor call.
+ft-api lib full suite + conformance green. SWEEP now covers all the `tensor_values(input)
+-> serial .iter()` bool/count helpers; remaining sites (bitwise_not int/bool, vector_norm
+ord=0, multinomial per-category sum) are niche/small. AGENT BlackThrush.
