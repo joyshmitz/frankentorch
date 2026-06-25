@@ -27628,19 +27628,33 @@ pub fn linear_int8_dynamic_f32(
         assert_eq!(b.len(), n, "bias length must equal n");
     }
 
-    // Per-row dynamic quantization of the activations.
+    // Per-row dynamic quantization of the activations. Each row is independent
+    // (its own abs-max scale), so this is bit-identical whether run serially or
+    // across rayon — parallelize it to match the GEMM below instead of leaving a
+    // single-threaded scalar prologue in front of the parallel matmul (it is a
+    // real fraction of the wide FFN linears). Small inputs (few rows / tiny k)
+    // stay serial to avoid fan-out overhead.
     let mut x_i8 = vec![0i8; m * k];
     let mut a_scales = vec![0f32; m];
-    for s in 0..m {
-        let row = &x[s * k..(s + 1) * k];
+    let quant_row = |dst: &mut [i8], a_scale: &mut f32, row: &[f32]| {
         let amax = row.iter().fold(0f32, |acc, &v| acc.max(v.abs()));
         let scale = if amax > 0.0 { amax / 127.0 } else { 1.0 };
         let inv = 1.0 / scale;
-        let dst = &mut x_i8[s * k..(s + 1) * k];
-        for i in 0..k {
-            dst[i] = (row[i] * inv).round().clamp(-127.0, 127.0) as i8;
+        for (d, &v) in dst.iter_mut().zip(row.iter()) {
+            *d = (v * inv).round().clamp(-127.0, 127.0) as i8;
         }
-        a_scales[s] = scale;
+        *a_scale = scale;
+    };
+    if m >= 8 && m * k >= 8192 && rayon::current_num_threads() > 1 {
+        x_i8.par_chunks_mut(k)
+            .zip(a_scales.par_iter_mut())
+            .zip(x.par_chunks(k))
+            .for_each(|((dst, a_scale), row)| quant_row(dst, a_scale, row));
+    } else {
+        x_i8.chunks_mut(k)
+            .zip(a_scales.iter_mut())
+            .zip(x.chunks(k))
+            .for_each(|((dst, a_scale), row)| quant_row(dst, a_scale, row));
     }
 
     // i32-accumulate GEMM + dequant + bias, parallel over output rows. The inner
