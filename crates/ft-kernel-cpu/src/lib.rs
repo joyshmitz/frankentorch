@@ -27605,7 +27605,7 @@ pub fn quantize_per_output_channel_i8(w: &[f32], out: usize, in_: usize) -> (Vec
 /// par_iter), so each forward fans out across all cores safely. Additive
 /// inference-only kernel — independent of the f32/f64 GEMM dispatch.
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+#[allow(unsafe_code, clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 pub fn linear_int8_dynamic_f32(
     x: &[f32],
     m: usize,
@@ -27644,6 +27644,30 @@ pub fn linear_int8_dynamic_f32(
     // dot-product-accumulate instructions ONNX/MLAS relies on. (An earlier naive
     // `wide` SIMD attempt was 5x slower; SDOT/VNNI are the right primitives.)
     let mut out = vec![0f32; m * n];
+    // Register-blocked GEMM: on aarch64 with SDOT, process a 4-x-row x 4-w-row
+    // macro-tile so each loaded int8 vector feeds 4 dot-products before eviction
+    // (compute:load ~= 2:1) — eliminating the per-output-element dispatch and the
+    // activation re-load that bottlenecked the naive per-element path. Parallel
+    // over 4-row output blocks. Bit-identical: vdotq accumulates the same i32 sum.
+    #[cfg(target_arch = "aarch64")]
+    {
+        if k >= 16 && std::arch::is_aarch64_feature_detected!("dotprod") {
+            const MR: usize = 4;
+            out.par_chunks_mut(MR * n).enumerate().for_each(|(blk, out_blk)| {
+                let sp = blk * MR;
+                let rows = out_blk.len() / n;
+                // SAFETY: dotprod + k>=16 confirmed at runtime; rows<=MR and
+                // x-rows sp..sp+rows match out_blk (which is rows*n long).
+                unsafe {
+                    gemm_block4_sdot(
+                        &x_i8, &a_scales, sp, rows, k, w_i8, w_scales, n, bias, out_blk,
+                    );
+                }
+            });
+            return out;
+        }
+    }
+    // Portable fallback (non-aarch64, no dotprod, or k<16): per-element dispatch.
     out.par_chunks_mut(n)
         .zip(x_i8.par_chunks(k))
         .zip(a_scales.par_iter())
@@ -27659,6 +27683,91 @@ pub fn linear_int8_dynamic_f32(
             }
         });
     out
+}
+
+/// Register-blocked SDOT GEMM micro-kernel: computes up to `MR=4` output rows
+/// (x-rows `sp..sp+rows`) against all `n` weight rows, tiling the inner loop into
+/// 4-w-row groups. Each k-step loads 4 weight chunks once (reused across the up-to
+/// 4 activation rows) and each activation chunk once (reused across the 4 weight
+/// rows), so a loaded vector feeds ~4 `vdotq_s32`s before eviction (compute:load
+/// ~= 2:1). Bit-identical to the scalar sum: vdotq accumulates the identical i32
+/// dot, and the `k % 16` tail is an exact scalar add. The `n % 4` tail uses the
+/// per-element dot.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+#[allow(
+    unsafe_code,
+    unsafe_op_in_unsafe_fn,
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss
+)]
+unsafe fn gemm_block4_sdot(
+    x_i8: &[i8],
+    a_scales: &[f32],
+    sp: usize,
+    rows: usize,
+    k: usize,
+    w_i8: &[i8],
+    w_scales: &[f32],
+    n: usize,
+    bias: Option<&[f32]>,
+    out_blk: &mut [f32],
+) {
+    use std::arch::aarch64::{vaddvq_s32, vdotq_s32, vdupq_n_s32, vld1q_s8};
+    let kfull = (k / 16) * 16;
+    let np = (n / 4) * 4;
+    let xp = x_i8.as_ptr();
+    let wp = w_i8.as_ptr();
+    let mut o = 0;
+    while o < np {
+        // acc[r][j]: x-row (sp+r) dotted with w-row (o+j).
+        let mut acc = [[vdupq_n_s32(0); 4]; 4];
+        let mut kk = 0;
+        while kk < kfull {
+            let w0 = vld1q_s8(wp.add(o * k + kk));
+            let w1 = vld1q_s8(wp.add((o + 1) * k + kk));
+            let w2 = vld1q_s8(wp.add((o + 2) * k + kk));
+            let w3 = vld1q_s8(wp.add((o + 3) * k + kk));
+            for r in 0..rows {
+                let xv = vld1q_s8(xp.add((sp + r) * k + kk));
+                acc[r][0] = vdotq_s32(acc[r][0], xv, w0);
+                acc[r][1] = vdotq_s32(acc[r][1], xv, w1);
+                acc[r][2] = vdotq_s32(acc[r][2], xv, w2);
+                acc[r][3] = vdotq_s32(acc[r][3], xv, w3);
+            }
+            kk += 16;
+        }
+        for r in 0..rows {
+            let s = a_scales[sp + r];
+            let xr = xp.add((sp + r) * k);
+            for j in 0..4 {
+                let mut sum = vaddvq_s32(acc[r][j]);
+                let wr = wp.add((o + j) * k);
+                for i in kfull..k {
+                    sum += i32::from(*xr.add(i)) * i32::from(*wr.add(i));
+                }
+                let mut y = sum as f32 * s * w_scales[o + j];
+                if let Some(b) = bias {
+                    y += b[o + j];
+                }
+                out_blk[r * n + o + j] = y;
+            }
+        }
+        o += 4;
+    }
+    // n % 4 tail: per-element dot for each row.
+    while o < n {
+        let wr = &w_i8[o * k..(o + 1) * k];
+        for r in 0..rows {
+            let xr = &x_i8[(sp + r) * k..(sp + r + 1) * k];
+            let mut y = dot_i8(xr, wr) as f32 * a_scales[sp + r] * w_scales[o];
+            if let Some(b) = bias {
+                y += b[o];
+            }
+            out_blk[r * n + o] = y;
+        }
+        o += 1;
+    }
 }
 
 /// SIMD-dispatched exact int8 dot product with i32 accumulation. Bit-identical to
