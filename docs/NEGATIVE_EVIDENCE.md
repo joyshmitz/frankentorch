@@ -4,6 +4,27 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-24 - ★WIN: tensor_isin O(n*m) serial scan -> hash-set + parallel — flips 23.9x LOSS to 5.7-7.4x WIN vs PyTorch
+
+★Finding via the "torch op is serial" probe: **`torch.isin` is SERIAL** (177ms @8 ≈ 167ms @32 for
+n=4M elements, m=5000 test values, ratio 1.06x — does not thread-scale). FT's `tensor_isin` was even
+worse: a SERIAL **O(n*m)** per-element linear scan (`elem.iter().map(|e| test.iter().any(|t| e==t))`),
+~20e9 compares for that shape.
+
+Baseline MEASURED (`crates/ft-api/examples/isin_h2h.rs`, isin(elements[4M], test[5000]) f64, min):
+FT **3744.91ms vs PyTorch 156.94ms = 23.86x SLOWER** (membership-sum MATCH).
+
+LEVER (cc): two bit-exact fixes to the `==` scan. (1) LARGE m: build a hash set of the test keys once
+(O(m)) and probe each element (O(1)), collapsing O(n*m) -> O(n+m); keys canonicalize +0.0/-0.0 to the
+same bits (preserves +0==-0) and NaN test values are excluded (NaN is never a member; a NaN element is
+likewise never a member) — exactly the `==` semantics. splitmix64 keyer (u64 bit-pattern keys, full
+avalanche, no clustering). (2) SMALL m (<32): keep the auto-vectorizing linear scan. Both fan over
+Rayon (gated n>=8192) — torch.isin is serial.
+
+After MEASURED (best-of-runs, isin(4M, 5000)): FT **21.55ms = 5.74-7.42x FASTER than PyTorch**
+(157-180ms) — a ~174x internal speedup that flips the 23.86x loss. `cargo test -p ft-api isin` 6/0
+(output byte-identical). Source disposition: KEEP. AGENT cc.
+
 ## 2026-06-24 - ★WIN (kept): tensor_unique splitmix64 dedup hasher — common-case win 2.22x→3.39x vs PyTorch; all-distinct loss 8.38x→4.27x
 
 ★Finding via the cummax-style "torch op is serial" probe: **`torch.unique(sorted=True)` is SERIAL** —
