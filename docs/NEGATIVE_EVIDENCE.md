@@ -4,6 +4,30 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-24 - MIXED (measured, no source change): tensor_unique 2.22x FASTER than PyTorch on low-cardinality, 8.38x SLOWER on all-distinct
+
+★Finding via the cummax-style "torch op is serial" probe: **`torch.unique(sorted=True)` is SERIAL** —
+on a 33.5M-element f64 tensor it measures 1473ms @8 threads ≈ 1489ms @32 (ratio 0.99x, does NOT
+thread-scale; it is an O(n log n) serial sort + dedup). FT's `tensor_unique` (ft-api) instead dedups
+in O(n) via a `HashMap<u64,usize>` then sorts only the (usually far smaller) set of unique values.
+
+MEASURED (`crates/ft-api/examples/unique_h2h.rs`, N=8192*4096≈33.5M f64, sorted=true, 6-iter min,
+unique-count + value-sum MATCH vs torch):
+  - **few-unique (503 distinct)**: FT **720.40ms vs torch 1601ms = 2.22x FASTER** — the common,
+    real-world regime (labels/categories/indices). FT's O(n) hash with a tiny map crushes torch's
+    full O(n log n) serial sort. This is a genuine, previously-undocumented FT win vs PyTorch.
+  - **all-distinct (33.5M unique)**: FT **9008ms vs torch 1075ms = 8.38x SLOWER** — the
+    `HashMap<u64,usize>` is pathological at high cardinality (33.5M SipHash inserts + ~25 rehashes +
+    a 33.5M-entry sort), while torch's sort-based path handles it well.
+
+Disposition: NO SOURCE CHANGE this turn (FT already wins the common case; the bench is landed as the
+reproducible artifact). NEXT LEVER (flagged, not yet done — needs care): replace the high-cardinality
+hash path with an argsort-based dedup using FT's fast parallel sort (which beats torch's serial sort,
+so it would win the all-distinct regime too), gated so the O(n)-hash still serves low cardinality.
+MUST preserve the documented torch-exact semantics — NaN-is-its-own-unique, +0.0/-0.0 merge with the
+correct representative, subnormal distinctness, and first-occurrence order for `sorted=false` — which
+is the reason it was not done blind in a time-boxed turn. AGENT cc.
+
 ## 2026-06-24 - PARTIAL (kept): tensor_mode parallelized over outer slices — 1.8x faster, but still 2.7x slower than PyTorch
 
 `tensor_mode` (ft-api) computed the per-outer-slice mode in a FULLY SERIAL `for o in 0..outer`
