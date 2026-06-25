@@ -8341,3 +8341,20 @@ MEASURED [4000,4000] f64 no-grad:
 
 cat 5.64x / stack 6.04x SLOWER surfaced (the same tape division-unravel; cat/stack
 concatenate so output > input = more bandwidth, follow-up). AGENT BlackThrush.
+## 2026-06-25 - ★ cat WIN (5.94x LOSS -> 3.92x FASTER) + stack regression-fix (6.67x -> 1.58x slower) no-grad block-copy
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. `tensor_cat` (concatenate along
+`dim`) was 5.6-6x SLOWER than torch (the tape cat clones each input + per-element
+division-unravel). A concatenation is a CONTIGUOUS block copy per (outer slice, input):
+out[o, offset_k.., :] = input_k[o, :, :]. Added a no-grad fast path: borrow all inputs,
+parallelize over outer slices, block-copy each input's slice at its dim-offset — NO
+division. Bit-exact; falls through unless all inputs are no-grad, contiguous F64 with
+shapes matching off `dim`.
+
+MEASURED [4000,4000] f64 no-grad:
+- cat([x,x],dim=1): 5.94x SLOWER (289ms) -> FT `13.2ms` / torch `50.7ms` = **3.83x FASTER** (~23x swing)
+- stack([x,x],dim=0): 6.67x SLOWER (315ms) -> FT `73.9ms` / torch `46.6ms` = `1.58x SLOWER` (4.3x self-improvement, REGRESSION-FIX not a win — stack at dim=0 with 2 inputs yields only outer*num=2 blocks, so par_chunks_mut(inner) gives 2-way parallelism vs cat's outer=4000; parallelizing WITHIN the block for few-blocks is the follow-up WIN)
+
+Both via the proven division-unravel->block-copy lever (diff/flip/roll/index_select). cat/stack
+are the 5th/6th structural ops flipped LOSS->WIN this way. f64 only (f32/grad/non-contiguous fall
+through). ft-api lib + conformance green. AGENT BlackThrush.
