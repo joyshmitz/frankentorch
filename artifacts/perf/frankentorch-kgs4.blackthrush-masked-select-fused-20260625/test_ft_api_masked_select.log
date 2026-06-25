@@ -1,0 +1,75 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling autocfg v1.5.0
+   Compiling zerocopy v0.8.48
+   Compiling crossbeam-utils v0.8.21
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.228
+   Compiling either v1.15.0
+   Compiling rayon-core v1.13.0
+   Compiling zmij v1.0.21
+   Compiling serde v1.0.228
+   Compiling libm v0.2.16
+   Compiling libc v0.2.185
+   Compiling serde_json v1.0.149
+   Compiling rawpointer v0.2.1
+   Compiling memchr v2.8.0
+   Compiling ciborium-io v0.2.2
+   Compiling regex-syntax v0.8.10
+   Compiling anstyle v1.0.14
+   Compiling clap_lex v1.1.0
+   Compiling plotters-backend v0.3.7
+   Compiling itoa v1.0.18
+   Compiling same-file v1.0.6
+   Compiling cast v0.3.0
+   Compiling once_cell v1.21.4
+   Compiling anes v0.1.6
+   Compiling oorandom v11.1.5
+   Compiling walkdir v2.5.0
+   Compiling itertools v0.10.5
+   Compiling clap_builder v4.6.0
+   Compiling num-traits v0.2.19
+   Compiling matrixmultiply v0.3.10
+   Compiling plotters-svg v0.3.7
+   Compiling crossbeam-epoch v0.9.18
+   Compiling crossbeam-deque v0.8.6
+   Compiling syn v2.0.117
+   Compiling num-complex v0.4.6
+   Compiling plotters v0.3.7
+   Compiling regex-automata v0.4.14
+   Compiling is-terminal v0.4.17
+   Compiling rayon v1.12.0
+   Compiling criterion-plot v0.5.0
+   Compiling clap v4.6.1
+   Compiling regex v1.12.3
+   Compiling bytemuck_derive v1.10.2
+   Compiling zerocopy-derive v0.8.48
+   Compiling serde_derive v1.0.228
+   Compiling bytemuck v1.25.0
+   Compiling safe_arch v0.7.4
+   Compiling wide v0.7.33
+   Compiling tinytemplate v1.2.1
+   Compiling half v2.7.1
+   Compiling ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+   Compiling ciborium-ll v0.2.2
+   Compiling ciborium v0.2.2
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-runtime v0.1.0 (/data/projects/frankentorch/crates/ft-runtime)
+   Compiling criterion v0.5.1
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 23s
+     Running unittests src/lib.rs (/data/projects/.rch-targets/frankentorch-cod-a/debug/deps/ft_api-4fa2327a283f58d8)
+
+running 7 tests
+test tests::masked_select_basic ... ok
+test tests::masked_select_all_false ... ok
+test tests::masked_select_shape_mismatch_error ... ok
+test tests::masked_select_boolean_indexing_pattern ... ok
+test tests::masked_select_backward_gradient ... ok
+test tests::f16_masked_select_gather_preserve_dtype ... ok
+test tests::masked_select_broadcasts_mask_like_torch ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 2369 filtered out; finished in 0.00s

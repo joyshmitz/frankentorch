@@ -4,6 +4,44 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - NEGATIVE (reverted): masked_select fused no-grad typed gather still misses PyTorch
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Fresh worktree scan
+found no clean unlanded measured win: the only non-ancestor worktree was still
+`/data/projects/frankentorch-gxpb2-pass10`, an explicit large-n row-SIMD
+rejection.
+
+Alien route: vectorized execution selection-vector discipline suggested moving
+below the rejected kept-index-list compaction and fusing the no-grad
+same-shape contiguous f64/f32 `tensor_masked_select` case into one typed
+mask+gather pass. The attempted lever preserved the tracked/broadcast fallback
+and kept row-major order, dtype, and mask truthiness unchanged.
+
+Proof while the candidate was present:
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a cargo test -p
+ft-api masked_select --lib -- --nocapture` passed (`7 passed; 2369 filtered
+out`).
+
+Measured h2h while the candidate was present:
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python
+cargo run --release -p ft-api --example masked_select_h2h`, fixture
+`torch.masked_select(x[4_000_000], x > 0)`, f64 no-grad, 6-iteration minimum:
+
+- Candidate FrankenTorch: `32.28 ms`, kept `2_001_643`, checksum
+  `1.274286e6`.
+- PyTorch: `31.95 ms`, same kept count/checksum.
+- Ratio: FT `1.01x SLOWER`.
+- Prior serial-index baseline from the 2026-06-25 artifact: FrankenTorch
+  `38.50 ms`, PyTorch `29.21 ms`, FT `1.32x SLOWER`.
+
+Decision: REVERT/no source retained. This fused typed gather is a real internal
+improvement over the serial-index baseline, but it is effectively parity and
+does not clear the PyTorch win bar. Do not retry this surface as a standalone
+op-level lever without a lower-level session/materialization or dtype-native
+mask-read reduction. Artifacts:
+`artifacts/perf/frankentorch-kgs4.blackthrush-masked-select-fused-20260625/`.
+
 ## 2026-06-25 - NEGATIVE (reverted): masked_select parallel kept-index compaction regresses
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh BOLD-VERIFY pass

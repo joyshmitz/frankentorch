@@ -1,0 +1,9 @@
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `release` profile [optimized] target(s) in 57.27s
+     Running `/data/projects/.rch-targets/frankentorch-cod-a/release/examples/masked_select_h2h`
+masked_select(x[4000000], mask) f64 no-grad, 6 iters MIN:
+  FrankenTorch :     32.28 ms   kept 2001643  chk 1.274286e6
+  PyTorch      :     31.95 ms   kept 2001643  chk 1.274286e6  => FT 1.01x slower  [MATCH]
