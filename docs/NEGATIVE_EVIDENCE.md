@@ -8126,3 +8126,27 @@ also pass with the counting path. ft-api lib full suite + conformance green.
 clone alone was a ~14x ceiling on this op. mode borrowed from day one (15.5x); quantile did
 not and looked marginal until elided. SWEEP other counting/selection/scan no-grad fast paths
 for `tensor_values`-then-read patterns. AGENT BlackThrush.
+
+## 2026-06-25 - REGRESSION FIX (50.54x -> 1.82x slower; FT-side 25.9x): count_nonzero clone-elision + parallel
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. First fruit of the clone-elision
+sweep (see the quantile e0fcf54e win). `tensor_count_nonzero` CLONED the full input via
+`tensor_values`/`tensor_values_f32` (128MB at [4000,4000]) and counted SERIALLY
+(`.iter().filter(|&&v| v != 0.0).count()`) — just to produce a scalar count. MEASURED
+baseline `count_nonzero(x) [4000,4000]` f64 no-grad, 8-iter MIN: FT `87.45 ms` / torch
+`1.73 ms` => **50.54x SLOWER** — an egregious pathology on a common op.
+
+Fix (bit-exact — count is order-independent): borrow the storage zero-copy via
+`values_borrowed`/`values_f32_borrowed` (owned-clone fallback for a non-contiguous view)
+and `par_iter().filter().count()`. RESULT: FT `3.373 ms` / torch `1.851 ms` => `1.82x
+SLOWER`, count rel `0.0`. So 87.45 -> 3.37ms = **25.9x faster FT-side**; the 50x
+regression is GONE.
+
+NOT a vs-PyTorch win: count_nonzero is BANDWIDTH-WALLED — both arms stream the full
+128MB; torch's vectorized/streaming-SIMD count edges out FT's parallel SCALAR `!=0.0`
+scan at the memory-bandwidth floor (~2.5ms for 128MB). FT can reach near-parity but not
+2.0x-faster without a safe-SIMD (`wide`) vectorized compare+popcount kernel (a possible
+future micro-lever, but small-absolute-time + bandwidth-floored, low EV). Shipped as a
+gap-closure (eliminates the clone+serial pathology), not claimed as a win. ★ Confirms the
+clone-elision sweep is HIGH value even where it lands at parity — the clone alone was a
+~25x ceiling. AGENT BlackThrush.
