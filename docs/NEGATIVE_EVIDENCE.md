@@ -4,6 +4,29 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - ★WIN: tensor_fold (col2im) parallelized over (n,c) lanes — flips 2.72x LOSS to 6.8-7.4x WIN vs PyTorch
+
+★Finding via the "torch op is serial" probe extended to NN/signal ops: **`torch.nn.functional.fold`
+is SERIAL** (does not thread-scale). FT's `tensor_fold` forward was likewise a SERIAL nested
+col2im accumulation loop (`for n { for block { for c { for kh { for kw { result[out_idx] += ... }}}}`).
+
+Baseline MEASURED (`crates/ft-api/examples/fold_h2h.rs`, fold [64,576,2916] -> [64,64,56,56] f64,
+5-iter min, FT serial via `RAYON_NUM_THREADS=1`): FT **370.29ms vs PyTorch 136.25ms = 2.72x SLOWER**
+(output-sum MATCH).
+
+LEVER (cc): the col2im accumulation only races on overlapping output pixels WITHIN a single
+(batch n, channel c) lane — different (n,c) own DISJOINT contiguous `output_h*output_w` output
+blocks. So fan the `batch_size*channels` lanes over Rayon (`result.par_chunks_mut(output_h*output_w)`)
+and accumulate each lane's block from its contributing (block_idx, kh, kw) patches. For a fixed
+output pixel the contributing terms are summed in the SAME block_idx-then-kh-kw order as the serial
+loop, so the result is bit-for-bit identical (only the independent (n,c) lanes are reordered). Gated
+`out_numel >= PARALLEL_ELEMENTWISE_MIN && batch*channels >= 2`.
+
+After MEASURED (same shape, best-of-runs): FT **20.26-22.00ms = 6.8-7.4x FASTER than PyTorch**
+(~136-150ms) — a ~17x internal speedup that flips the 2.72x loss. `cargo test -p ft-api fold` 7/0
+(bit-exact). NOTE: the first probe showed torch fold at 2246ms but that was peer-bench-contention
+inflation; the clean torch number is ~136-150ms (still serial). Source disposition: KEEP. AGENT cc.
+
 ## 2026-06-25 - NEGATIVE (reverted, ~0-gain): tensor_unique all-distinct — par_sort_by of the unique set does NOT help
 
 Follow-up to the splitmix64 dedup-hasher win (3235b861) which left the all-distinct regime at
