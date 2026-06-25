@@ -1416,6 +1416,29 @@ impl DenseTensor {
         }
     }
 
+    /// Mutable view of a contiguous f32 tensor's values — the in-place counterpart
+    /// of [`Self::contiguous_values_f32`]. Lets an inference-only consumer rewrite a
+    /// dead intermediate's storage (e.g. a fused softmax / GELU) without
+    /// materializing a fresh tensor. The caller is responsible for the value being
+    /// used as a single-owner intermediate (no aliasing tape node depends on the
+    /// pre-mutation contents).
+    pub fn contiguous_values_f32_mut(&mut self) -> Result<&mut [f32], DenseTensorError> {
+        if !self.meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let start = self.meta.storage_offset();
+        let end = Self::storage_span_required_len(&self.meta)?;
+        let dtype = self.meta.dtype();
+        match &mut self.storage {
+            // `make_mut` mutates in place when this is the sole owner (the common
+            // case for a fresh single-use intermediate) and performs a safe
+            // copy-on-write clone if the storage is shared, so no other tensor's
+            // values are ever clobbered.
+            TensorStorage::F32(v) => Ok(&mut Arc::make_mut(v)[start..end]),
+            _ => Err(DenseTensorError::UnsupportedDType(dtype)),
+        }
+    }
+
     pub fn contiguous_values_qint8(&self) -> Result<&[i8], DenseTensorError> {
         if !self.meta.is_contiguous() {
             return Err(DenseTensorError::UnsupportedLayout);

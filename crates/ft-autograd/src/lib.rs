@@ -4596,6 +4596,15 @@ impl TensorTape {
         Ok(self.node(node)?.tensor.contiguous_values_f32()?)
     }
 
+    /// Mutable view of a contiguous f32 node's values — for inference-only in-place
+    /// elementwise rewrites (e.g. a fused softmax / GELU on a dead intermediate),
+    /// avoiding a fresh-tensor round-trip. The caller must ensure the node is a
+    /// single-owner intermediate (no other live node depends on its current
+    /// contents). Errors if the node is not contiguous f32.
+    pub fn values_f32_mut(&mut self, node: TensorNodeId) -> Result<&mut [f32], AutogradError> {
+        Ok(self.node_mut(node)?.tensor.contiguous_values_f32_mut()?)
+    }
+
     pub fn dtype(&self, node: TensorNodeId) -> Result<DType, AutogradError> {
         Ok(self.node(node)?.tensor.meta().dtype())
     }
