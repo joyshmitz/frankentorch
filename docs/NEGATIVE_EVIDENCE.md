@@ -4,6 +4,30 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-24 - PARTIAL (kept): tensor_mode parallelized over outer slices — 1.8x faster, but still 2.7x slower than PyTorch
+
+`tensor_mode` (ft-api) computed the per-outer-slice mode in a FULLY SERIAL `for o in 0..outer`
+loop, each slice an independent O(last_dim log last_dim) comparison sort + run-length count — every
+other outer-loop in the codebase is rayon-parallel, this one was missed.
+
+Baseline MEASURED (`crates/ft-api/examples/mode_h2h.rs`, mode(x, dim=-1) [4096,4096] f64, bounded
+values for real ties, 8-iter min): FT **328.54ms vs PyTorch 68.23ms = 4.82x SLOWER** (mode value-sum
+exact match, rel 0.0e0).
+
+LEVER (cc): fan the independent slices over Rayon (`(0..outer).into_par_iter().map(compute_mode)
+.collect()`, gated `outer >= 2 && numel >= 8192`). Each lane's sort+count is deterministic and
+`collect()` preserves `o` order → bit-for-bit identical (value-sum still rel 0.0e0).
+
+After MEASURED (best-of-3): FT **179.30ms = ~1.8x faster than before**, but still **2.69-2.83x
+SLOWER than PyTorch** (65-67ms). The residual gap is NOT the (now-parallel) sort loop — it is the
+surrounding serial overhead: the `tensor_values_lossy_f64` 134MB read + the downstream
+`tensor_gather`/`tensor_squeeze` tape composition that extracts the mode values for autograd, plus
+FT's general comparison sort vs torch's bounded-value fast path. Closing the rest needs an algorithmic
+mode (counting/no-gather no-grad path), a separate larger lever.
+
+Disposition: KEEP (a safe, zero-risk, bit-exact ~1.8x improvement with no downside — fixes a missed
+parallelization). NOT a win vs PyTorch yet. `cargo test -p ft-api mode` 28/0. AGENT cc.
+
 ## 2026-06-24 - ★WIN: sort/argsort dim=0 column-parallel transpose trick — flips 1.58x LOSS to 2.3x WIN vs PyTorch
 
 Same dim=0 transpose trick, now on the SORT family (compute-bound O(n log n)/radix). `sort_tensor`/
