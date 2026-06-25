@@ -1,0 +1,6 @@
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+    Finished `release` profile [optimized] target(s) in 0.70s
+     Running `/data/projects/.rch-targets/frankentorch-cod-b/release/examples/combinations_h2h`
+combinations(arange(3000), r=2) f64 no-grad, 5 iters MIN:
+  FrankenTorch :    141.22 ms   chk 1.349100e10
+  PyTorch      :    184.12 ms   chk 1.349100e10  => FT 1.30x FASTER  [MATCH]

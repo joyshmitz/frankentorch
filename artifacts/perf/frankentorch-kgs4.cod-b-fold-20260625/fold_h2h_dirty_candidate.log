@@ -1,0 +1,5 @@
+    Finished `release` profile [optimized] target(s) in 2.77s
+     Running `/data/projects/.rch-targets/frankentorch-cod-b/release/examples/fold_h2h`
+fold([64,576,2916] -> [64,64,56,56]) f64 no-grad, 5 iters MIN:
+  FrankenTorch :     22.68 ms   chk 2.232285e5
+  PyTorch      :    137.16 ms   chk 2.232285e5  => FT 6.05x FASTER  [MATCH]

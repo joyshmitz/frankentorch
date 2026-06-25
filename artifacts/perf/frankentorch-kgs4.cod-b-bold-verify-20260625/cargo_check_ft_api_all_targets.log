@@ -1,0 +1,21 @@
+    Checking ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+    Checking ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+    Checking ft-runtime v0.1.0 (/data/projects/frankentorch/crates/ft-runtime)
+    Checking ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+    Checking ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+    Checking ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+warning: unnecessary parentheses around closure body
+  --> crates/ft-api/examples/mode_h2h.rs:19:18
+   |
+19 |         .map(|i| (((i * 1_103_515_245usize + 12345) % 97) as f64))
+   |                  ^                                              ^
+   |
+   = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+   |
+19 -         .map(|i| (((i * 1_103_515_245usize + 12345) % 97) as f64))
+19 +         .map(|i| ((i * 1_103_515_245usize + 12345) % 97) as f64)
+   |
+
+warning: `ft-api` (example "mode_h2h") generated 1 warning (run `cargo fix --example "mode_h2h" -p ft-api` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.37s
