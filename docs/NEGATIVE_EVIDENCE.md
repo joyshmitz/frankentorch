@@ -54,6 +54,56 @@ fused forward+backward pass removes more than the two all-ones GEMMs.
 Artifacts:
 `artifacts/perf/frankentorch-cod-b-boldverify-sdpa-20260625/`.
 
+## 2026-06-25 - NEGATIVE (reverted): pdist f32 p=2 Gram-buffer compaction regresses
+
+Agent `BlackThrush`. Fresh scan found no unlanded measured win to land: the
+ahead worktree `/data/projects/frankentorch-gxpb2-pass10` was an explicit
+large-n row-SIMD rejection, the shared checkout contained peer-owned SDPA reject
+evidence, and the previous `searchsorted` win was already present on `main`.
+
+Target selection: current ledger evidence still showed `pdist f32 p=2`
+(`512x64`, no-grad contiguous input) as a large PyTorch gap after the shipped
+SGEMM/direct-output keeps, while prior direct-distance SIMD and row-parallel
+writers were already rejected. This retry used a different memory-locality
+lever below the direct-writer family: compute the existing `sgemm_bt` Gram
+matrix, then compact the strict upper triangle in place into the front of that
+same buffer instead of allocating and pushing into a second output `Vec`.
+
+FT baseline command:
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+rch exec -- cargo bench -p ft-api --bench cdist_bench --
+pdist_f32_p2_mm/512x64 --warm-up-time 1 --measurement-time 3 --sample-size 10
+--noplot`.
+
+- Baseline FT: `[946.49 us 971.13 us 1.0016 ms]` via RCH local fallback.
+- Candidate FT after Gram-buffer compaction:
+  `[993.67 us 1.0117 ms 1.0317 ms]`, Criterion change
+  `[+0.4751% +3.2916% +5.9250%]`, internal speedup `0.96x`.
+- PyTorch 2.12.1+cpu sidecar, same `512x64` f32 `sin(i*0.013)` input,
+  `torch.pdist(x, p=2.0)`: mean `0.051994 ms`, median `0.050571 ms`.
+- Ratio vs PyTorch: FT baseline `18.68x slower`; candidate `19.46x slower`.
+
+Validation before revert:
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+rch exec -- cargo test -p ft-api
+pdist_p2_f32_fused_nograd_matches_composed_path --lib -- --nocapture`: `1`
+test passed.
+
+Conformance after revert:
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+cargo test -p ft-conformance -- --nocapture`: green (all lib, bin,
+integration, smoke, and doc-test targets passed). Two `rch exec` attempts for
+this gate queued without starting, so the final gate was run directly with the
+same warm target directory.
+
+Decision: REVERT. The Gram-as-output compaction did not remove the real wall;
+it regressed within noise and worsened the PyTorch ratio. Do not retry
+allocation-only pdist f32 p=2 Gram compaction; the remaining gap is still the
+PyTorch tuned pairwise kernel versus FT's `sgemm_bt` plus session/output floor.
+
+Artifacts:
+`artifacts/perf/frankentorch-blackthrush-pdist-gram-compact-20260625/`.
+
 ## 2026-06-25 - BOLD-VERIFY (kept): affine-uniform searchsorted learned-index fast path
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Fresh worktree scan found
