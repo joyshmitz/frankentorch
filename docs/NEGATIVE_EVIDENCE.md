@@ -4,6 +4,54 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - BOLD-VERIFY (kept): affine-uniform searchsorted learned-index fast path
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Fresh worktree scan found
+no unlanded measured win to land; the only ahead worktree was
+`/data/projects/frankentorch-gxpb2-pass10`, an explicit large-n row-SIMD
+rejection. The prior 2026-06-22 `searchsorted/bucketize` note rejected more
+parallelism/materialization work, so this retry used a different lever:
+learned-index interpolation for strictly affine-uniform 1-D f64 boundaries,
+with exact local correction and fallback to the existing binary search for
+non-uniform, duplicate, descending, or non-finite sequences.
+
+Baseline command:
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+PYTORCH_PYTHON=/data/projects/frankentorch/.venv/bin/python
+cargo run --release -p ft-api --example searchsorted_h2h`.
+
+- `seq=10000 nq=50000000`: FT `365.612 ms`, PyTorch `538.846 ms`, FT `1.47x FASTER`, checksum `MATCH`.
+- `seq=1000 nq=20000000`: FT `117.573 ms`, PyTorch `62.101 ms`, FT `0.53x SLOWER`, checksum `MATCH`.
+- `seq=100000 nq=10000000`: FT `79.602 ms`, PyTorch `167.918 ms`, FT `2.11x FASTER`, checksum `MATCH`.
+
+Kept candidate command: same command on the affine-uniform fast-path source.
+
+- `seq=10000 nq=50000000`: FT `272.603 ms`, PyTorch `529.016 ms`, FT `1.94x FASTER`, checksum `MATCH`.
+- `seq=1000 nq=20000000`: FT `113.826 ms`, PyTorch `61.397 ms`, FT `0.54x SLOWER`, checksum `MATCH`.
+- `seq=100000 nq=10000000`: FT `56.535 ms`, PyTorch `161.615 ms`, FT `2.86x FASTER`, checksum `MATCH`.
+
+Decision: KEEP. The new affine-uniform path is not a full small-sequence win
+(`seq=1000` remains PyTorch-faster), but it converts already-positive uniform
+large rows from `1.47x -> 1.94x` and `2.11x -> 2.86x` versus PyTorch with
+bit-identical sums, and leaves the known small-row loss approximately flat
+(`0.53x -> 0.54x`). Do not retry generic `searchsorted` parallelism or
+materialization-only edits; the remaining small-sequence loss needs a different
+allocation/output representation lever or a narrower small-S direct-index path.
+
+Proof:
+
+- `cargo test -p ft-api searchsorted --lib -- --nocapture`: `9 passed`.
+- `cargo check -p ft-api --all-targets`: pass.
+- `cargo clippy -p ft-api --all-targets -- -D warnings`: pass.
+- `cargo test -p ft-conformance -- --nocapture`: pass (`199` lib tests plus
+  all conformance bins/integration/doc tests green).
+- `cargo fmt -p ft-api -- --check`: pre-existing FAIL from broad `ft-api`
+  formatting drift across `src/lib.rs`, examples, and tests; no rustfmt applied
+  to avoid unrelated churn.
+
+Artifacts:
+`artifacts/perf/frankentorch-kgs4.blackthrush-searchsorted-uniform-20260625/`.
+
 ## 2026-06-25 - NEGATIVE (reverted): cdist p=1 tiled Manhattan SIMD still loses to PyTorch
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh worktree scan found
