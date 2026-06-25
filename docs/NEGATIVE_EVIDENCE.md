@@ -8201,3 +8201,29 @@ FIX OPTIONS (parity-gated, focused follow-up):
    before shipping (run ft-api `var`/`std`/`prod` tests after wiring the parallel path;
    revert if any bit-exact golden fails). This is the highest-EV lever currently known.
 AGENT BlackThrush.
+
+## 2026-06-25 - ★★★ WIN (closes the b8dfa697 gap): global var/std FLIP 49x/46x LOSS -> 1.10x/1.11x FASTER; prod 47x -> 1.68x
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Fixed the prod/var/std 45-49x gap
+surfaced in b8dfa697. TWO compounding causes, both addressed:
+1. KERNEL: `prod_dim`/`var_dim` (ft-kernel-cpu) parallelize over OUTER lanes only; a
+   flattened global reduce has 1 lane → fully SERIAL over 16M. Added a within-lane
+   parallel fast path (inner_size==1, few lanes, reduce_size>=8192): var/std use the same
+   `pairwise_sum_map_f64_maybe_par` reducer norm uses; prod uses a rayon tree product.
+2. TAPE/SAVE (the dominant ~70ms): `tensor_prod`/`tensor_var`/`tensor_std` route through
+   the autograd dim kernels which SAVE the full 16M input for backward + build nodes even
+   in no-grad. Added a NO-GRAD bypass (count_nonzero/quantile playbook): borrow the
+   contiguous f64 storage, call the parallel kernel directly, wrap the scalar in a [1]
+   leaf (matches the dim-reduce-to-empty→[1] shape contract), rescale via
+   `apply_variance_correction_global`. Non-contiguous views fall through to the tape path.
+
+MEASURED `[4000,4000]` f64 no-grad, 6-iter MIN (reduction_scan_h2h):
+- prod: 47.24x SLOWER -> FT `3.14ms` / torch `1.87ms` = **1.68x SLOWER** (28x improvement;
+  prod is bandwidth-walled like count_nonzero — minimal per-element work).
+- var:  49.10x SLOWER -> FT `3.99ms` / torch `4.41ms` = **1.10x FASTER** (a ~54x swing).
+- std:  45.80x SLOWER -> FT `4.25ms` / torch `4.72ms` = **1.11x FASTER** (a ~51x swing).
+
+Reduction parity is tolerance-based (1e-5; the parallel accumulation order differs from
+serial). New test `global_var_std_prod_large_parallel_path_matches_reference` checks the
+parallel path vs analytic var/std/prod of 0..N (N=20000). ft-api lib + conformance green.
+F32 prod/var/std still slow (bypass is F64-only) — same fix applies, a follow-up. AGENT BlackThrush.

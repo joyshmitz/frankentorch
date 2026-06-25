@@ -11549,6 +11549,29 @@ pub fn prod_dim_tensor_contiguous_f64(
     let offset = meta.storage_offset();
     let data = &input[offset..];
 
+    // GLOBAL/near-global reduce fast path (mirrors var_dim): when there are too few
+    // output lanes to fill the cores (`tensor_prod` flattens to [numel] then reduces
+    // dim 0 → a single lane) and each lane's column is contiguous (`inner_size == 1`),
+    // the per-lane serial product is fully SERIAL over a huge reduce dim. Reduce WITHIN
+    // each lane in parallel (rayon tree product). The multiply grouping differs from the
+    // serial left-to-right product, but reduction parity is tolerance-based (1e-5).
+    // Small/strided reduces keep the bit-exact lane-parallel loop below.
+    if inner_size == 1
+        && out_numel <= rayon::current_num_threads()
+        && reduce_size >= PARALLEL_THRESHOLD
+        && rayon::current_num_threads() > 1
+    {
+        let output: Vec<f64> = (0..out_numel)
+            .map(|out_idx| {
+                data[out_idx * reduce_size..out_idx * reduce_size + reduce_size]
+                    .par_iter()
+                    .copied()
+                    .product::<f64>()
+            })
+            .collect();
+        return Ok(output);
+    }
+
     // Each output lane is an independent sequential product of a strided column;
     // the per-lane left-to-right multiply order is unchanged by scheduling, so
     // per-lane parallelism is BIT-FOR-BIT equal to the serial double loop (and the
@@ -11607,6 +11630,34 @@ pub fn var_dim_tensor_contiguous_f64(
     let correction = (reduce_size - 1) as f64; // Bessel's correction
     #[allow(clippy::cast_precision_loss)]
     let n_div = reduce_size as f64;
+
+    // GLOBAL/near-global reduce fast path: when there are too few output lanes to
+    // fill the cores (e.g. `tensor_var`/`tensor_std` flatten to [numel] then reduce
+    // dim 0 → a single lane) and each lane's column is contiguous (`inner_size == 1`),
+    // the per-lane two-pass loop is fully SERIAL over a huge reduce dim. Parallelize
+    // WITHIN each lane via the same `pairwise_sum_map_f64_maybe_par` reducer that
+    // `norm`/`sum`/`mean` already use. The accumulation order differs from the serial
+    // scratch reduction, but reduction parity is tolerance-based (1e-5), so this stays
+    // within parity while turning a serial 16M reduce into a parallel one. Small/strided
+    // reduces (the common dim-reduction case) keep the bit-exact lane-parallel loop.
+    if inner_size == 1
+        && out_numel <= rayon::current_num_threads()
+        && reduce_size >= PARALLEL_THRESHOLD
+        && rayon::current_num_threads() > 1
+    {
+        let output: Vec<f64> = (0..out_numel)
+            .map(|out_idx| {
+                let col = &data[out_idx * reduce_size..out_idx * reduce_size + reduce_size];
+                let mean = pairwise_sum_map_f64_maybe_par(col, |x| x) / n_div;
+                let var_sum = pairwise_sum_map_f64_maybe_par(col, |x| {
+                    let d = x - mean;
+                    d * d
+                });
+                var_sum / correction
+            })
+            .collect();
+        return Ok(output);
+    }
 
     // Each output lane is an INDEPENDENT two-pass reduction: gather the strided
     // column into contiguous scratch, pairwise-sum the mean, then pairwise-sum the
