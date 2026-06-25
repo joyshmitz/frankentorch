@@ -8169,3 +8169,35 @@ measured win; the gain is the count_nonzero-proven clone cost on every large-ten
 ft-api lib full suite + conformance green. SWEEP now covers all the `tensor_values(input)
 -> serial .iter()` bool/count helpers; remaining sites (bitwise_not int/bool, vector_norm
 ord=0, multinomial per-category sum) are niche/small. AGENT BlackThrush.
+
+## 2026-06-25 - ★MAJOR GAP SURFACED: global prod/var/std are 45-49x SLOWER than PyTorch (dim-kernel-for-global-reduction pathology)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. A multi-op global-reduction scan
+(`crates/ft-api/examples/reduction_scan_h2h.rs`, [4000,4000] f64 no-grad, 6-iter MIN)
+found THREE egregious gaps among common reductions:
+- `prod` : FT `86.70 ms` / torch `1.84 ms` => **47.24x SLOWER**
+- `var`  : FT `168.76 ms` / torch `3.44 ms` => **49.10x SLOWER**
+- `std`  : FT `156.11 ms` / torch `3.41 ms` => **45.80x SLOWER**
+(`sum` 1.46x / `mean` 1.25x / `norm_p2` ~1x are all FINE — they use the fast path.)
+
+ROOT CAUSE: `tensor_sum`/`tensor_mean` call `tensor_tape.sum` — a GLOBAL-parallel
+reduction kernel (fast). But `tensor_prod` flattens then calls `tensor_prod_dim(flat,0)`,
+and `tensor_var`/`tensor_std` reshape-flatten then call `tensor_var_dim`/`tensor_std_dim`
+(`tensor_tape.var_dim`/`std_dim`) — DIM-reduction kernels that parallelize over OUTER
+slices. For a flattened global reduce the outer count is 1, so they run FULLY SERIAL over
+16M elements AND build the autograd tape (var/std/prod backward save the input — the
+no-grad-save-skip vein), so ~150ms of the time is tape/save + serial reduce.
+
+FIX OPTIONS (parity-gated, focused follow-up):
+1. BIT-EXACT no-grad fast path: borrow the input + serial-reduce in the SAME order as the
+   kernel, skipping the tape/save. ~10x self-improvement (e.g. var 166->~15ms) but still
+   ~4-5x slower than torch (serial-vs-SIMD + bandwidth) — a regression fix, NOT a win.
+2. PARITY-GATED PARALLEL no-grad fast path: route global prod/var/std through a
+   global-parallel reduction like sum/mean already use → ~2-3ms = PARITY/WIN vs torch.
+   GATING QUESTION: does FT's reduction parity accept the parallel accumulation order?
+   `sum`/`mean` are ALREADY parallel and pass, so reduction parity is very likely
+   tolerance-based (FP summation order differs vs torch regardless) — if so, parallel
+   prod/var/std is a clean 45-49x WIN. MUST confirm against the var/std/prod parity tests
+   before shipping (run ft-api `var`/`std`/`prod` tests after wiring the parallel path;
+   revert if any bit-exact golden fails). This is the highest-EV lever currently known.
+AGENT BlackThrush.
