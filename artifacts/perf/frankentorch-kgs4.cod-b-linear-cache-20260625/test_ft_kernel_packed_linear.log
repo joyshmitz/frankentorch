@@ -1,0 +1,9 @@
+   Compiling ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.64s
+     Running unittests src/lib.rs (/data/projects/.rch-targets/frankentorch-cod-b/debug/deps/ft_kernel_cpu-d26c108ecd1e4673)
+
+running 1 test
+test tests::packed_linear_weight_f64_matches_linear_tensor_bit_exact ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 549 filtered out; finished in 0.10s
