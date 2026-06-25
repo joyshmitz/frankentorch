@@ -8276,3 +8276,26 @@ flip/roll are the same class (bandwidth ops at ~2.5GB/s vs torch ~12GB/s) but li
 ft-autograd tape kernels (tensor_tape.flip/roll) and affect the grad path — a follow-up
 (parallelize the kernel copy; bit-exact since pure permutation). These are bandwidth ops so
 the ceiling is ~parity (regression fixes), not clean wins, like count_nonzero. AGENT BlackThrush.
+## 2026-06-25 - ★ WIN: flip + roll no-grad fast paths — both flip from LOSS to FASTER vs PyTorch (structural vein cont'd after diff)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Closing the rest of the structural-
+bandwidth cluster (after diff b3504c79). `tensor_flip`/`tensor_roll` delegated to the
+ft-autograd tape op, which COMPACTS (clones) the input then runs a per-element
+DIVISION-based unravel (~2 divisions x numel) — that, not the memory move, was the ~4-6x
+gap (the permutation loop was already rayon-parallel). A SINGLE-dim flip is a block
+REVERSAL and a roll is a block ROTATION of the `mid`-axis — both are contiguous block
+copies per outer slice with NO division.
+
+Added no-grad fast paths in `tensor_flip` (single dim) and `tensor_roll`: borrow the
+contiguous storage, parallelize over outer slices, reverse (flip) / 2-segment-copy
+(roll) the `mid`-axis as `inner`-blocks, build the same-shape leaf. BIT-EXACT (pure
+copies). Multi-dim flip / non-contiguous / grad fall through to the unchanged tape op.
+
+MEASURED [4000,4000] f64 no-grad (op_scan2_h2h.rs):
+- flip: 4.64x SLOWER (93ms) -> FT `6.44ms` / torch `24.3ms` = **3.77x FASTER** (~14x swing)
+- roll: 5.14x SLOWER (158ms) -> FT `6.76ms` / torch `27.6ms` = **4.09x FASTER** (~21x swing)
+
+Existing flip/roll tests (session_flip_1d/2d_dim0, flip_roll_golden_matches_torch, the
+backward tests via the tape fallback) all pass; f64+f32. ft-api lib + conformance green.
+The same "torch.flip/roll materialize + FT's direct parallel block copy wins" pattern as
+diff — torch is NOT at the bandwidth wall here. AGENT BlackThrush.
