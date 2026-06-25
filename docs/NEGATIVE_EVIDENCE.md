@@ -4,6 +4,44 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - NEGATIVE (reverted): masked_select parallel kept-index compaction regresses
+
+Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh BOLD-VERIFY pass
+found no scratch/worktree commit ahead of `main` with a clean measured win; the
+only ahead worktree was `/data/projects/frankentorch-gxpb2-pass10`, an explicit
+large-n row-SIMD rejection.
+
+Alien route: vectorized execution / selection-vector thinking from the
+graveyard catalog suggested the kept-index predicate in `tensor_masked_select`
+as a candidate because the current path serially filters mask values before
+feeding `index_select`. One lever tried: use Rayon over the mask-value iterator
+to build the kept flat index list while relying on indexed parallel collect to
+preserve row-major order. Existing broadcast/autograd/index-select behavior was
+otherwise unchanged.
+
+Measured command:
+`AGENT_NAME=PearlReef CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python
+cargo run --release -p ft-api --example masked_select_h2h`
+
+Fixture: `torch.masked_select(x[4_000_000], x > 0)`, f64 no-grad,
+6-iteration minimum. Output matched PyTorch: kept `2_001_643`, checksum
+`1.274286e6`.
+
+- Candidate FrankenTorch: `116.36 ms`.
+- PyTorch: `31.74 ms`.
+- Ratio: FT `3.67x SLOWER`.
+- Prior serial-index baseline from the 2026-06-25 BOLD-VERIFY artifact:
+  FrankenTorch `38.50 ms`, PyTorch `29.21 ms`, FT `1.32x SLOWER`.
+
+Decision: REVERT/no source retained. Parallelizing only the kept-index list
+construction is the wrong level; scheduling and index-list materialization
+dominate before the existing serial `index_select` gather. Do not retry this
+family unless the implementation moves to a fused typed mask+gather kernel with
+one pass over input/mask and a proof for dtype/autograd/broadcast behavior.
+Artifacts:
+`artifacts/perf/frankentorch-kgs4.cod-b-masked-select-idx-20260625/`.
+
 ## 2026-06-25 - ★WIN (kept existing implementation): tensor_combinations r=2 beats PyTorch by 1.33x
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh BOLD-VERIFY pass
