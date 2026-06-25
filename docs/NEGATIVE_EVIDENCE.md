@@ -4,29 +4,33 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
-## 2026-06-24 - MIXED (measured, no source change): tensor_unique 2.22x FASTER than PyTorch on low-cardinality, 8.38x SLOWER on all-distinct
+## 2026-06-24 - ★WIN (kept): tensor_unique splitmix64 dedup hasher — common-case win 2.22x→3.39x vs PyTorch; all-distinct loss 8.38x→4.27x
 
 ★Finding via the cummax-style "torch op is serial" probe: **`torch.unique(sorted=True)` is SERIAL** —
 on a 33.5M-element f64 tensor it measures 1473ms @8 threads ≈ 1489ms @32 (ratio 0.99x, does NOT
-thread-scale; it is an O(n log n) serial sort + dedup). FT's `tensor_unique` (ft-api) instead dedups
-in O(n) via a `HashMap<u64,usize>` then sorts only the (usually far smaller) set of unique values.
+thread-scale; it is an O(n log n) serial sort + dedup). FT's `tensor_unique` (ft-api) dedups in O(n)
+via a `HashMap<u64,usize>` keyed by the f64 BIT PATTERN, then sorts only the (usually far smaller)
+set of unique values.
 
-MEASURED (`crates/ft-api/examples/unique_h2h.rs`, N=8192*4096≈33.5M f64, sorted=true, 6-iter min,
-unique-count + value-sum MATCH vs torch):
-  - **few-unique (503 distinct)**: FT **720.40ms vs torch 1601ms = 2.22x FASTER** — the common,
-    real-world regime (labels/categories/indices). FT's O(n) hash with a tiny map crushes torch's
-    full O(n log n) serial sort. This is a genuine, previously-undocumented FT win vs PyTorch.
-  - **all-distinct (33.5M unique)**: FT **9008ms vs torch 1075ms = 8.38x SLOWER** — the
-    `HashMap<u64,usize>` is pathological at high cardinality (33.5M SipHash inserts + ~25 rehashes +
-    a 33.5M-entry sort), while torch's sort-based path handles it well.
+LEVER (cc): the map keys are `u64` bit patterns, so std's SipHash (HashDoS-hardened for adversarial
+string keys) is pure overhead and dominated the dedup. Swap in a **splitmix64 integer finalizer** +
+the `entry` API (one hash per never-seen value instead of get-then-insert's two). The hasher changes
+ONLY speed — keys, insertion order, and outputs are byte-for-byte identical (ft-api unique 14/0,
+bench unique-count + value-sum MATCH torch). splitmix64 (NOT a weak single-multiply Fx hash, which
+buckets the highly structured consecutive-integer-float bit patterns into a near-O(n^2) collision
+chain — empirically hung the all-distinct bench) gives full avalanche, so no clustering.
 
-Disposition: NO SOURCE CHANGE this turn (FT already wins the common case; the bench is landed as the
-reproducible artifact). NEXT LEVER (flagged, not yet done — needs care): replace the high-cardinality
-hash path with an argsort-based dedup using FT's fast parallel sort (which beats torch's serial sort,
-so it would win the all-distinct regime too), gated so the O(n)-hash still serves low cardinality.
-MUST preserve the documented torch-exact semantics — NaN-is-its-own-unique, +0.0/-0.0 merge with the
-correct representative, subnormal distinctness, and first-occurrence order for `sorted=false` — which
-is the reason it was not done blind in a time-boxed turn. AGENT cc.
+MEASURED (`crates/ft-api/examples/unique_h2h.rs`, N=8192*4096≈33.5M f64, sorted=true, 6-iter min):
+  - **few-unique (503 distinct)** — the common labels/indices regime: 720.40 → **442.72ms = 3.39x
+    FASTER than torch** (1501ms), up from 2.22x. FT's O(n) hash crushes torch's serial O(n log n) sort.
+  - **all-distinct (33.5M unique)**: 9008 → **4623.94ms = 4.27x slower** than torch (1083ms), the loss
+    nearly HALVED from 8.38x (the 33.5M-entry hash + sort still trails torch's sort path).
+
+Disposition: KEEP — a safe, zero-semantic-risk improvement that widens the common-case win to 3.39x
+and ~2x's the high-cardinality path. REMAINING lever for the all-distinct regime (still a loss):
+argsort-based dedup via FT's fast parallel sort, gated to keep the O(n)-hash for low cardinality, and
+preserving the torch-exact NaN-is-its-own-unique / ±0.0-merge-representative / subnormal-distinctness
+/ first-occurrence(`sorted=false`) semantics — a separate, test-guarded lever. AGENT cc.
 
 ## 2026-06-24 - PARTIAL (kept): tensor_mode parallelized over outer slices — 1.8x faster, but still 2.7x slower than PyTorch
 
