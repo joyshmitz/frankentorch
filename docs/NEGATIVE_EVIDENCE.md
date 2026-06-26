@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - WIN (landed): one_hot parallel row scatter (2.71x SLOWER -> 2.22x FASTER vs torch; parallelizes page-faulting)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey3_h2h flagged `one_hot` = **2.71x SLOWER**
+(211ms for [1M]->[1M,64]). ROOT: a SINGLE serial scatter loop wrote one 1.0 per row into the
+[numel,num_classes] (512MB) output — each touched output page is ZERO-FAULTED on the SAME thread, so the wall
+is single-threaded page-faulting, not the scatter arithmetic. FIX: validate + resolve class indices in a cheap
+serial pre-pass (reads only the small input, no big-output faults), then scatter the 1.0s in PARALLEL via
+`result.par_chunks_mut(num_classes).zip(class_idx).for_each(|(row,&ci)| row[ci]=1.0)` — fanning the per-row
+writes (and thus the page faults) across rayon. Bit-identical (disjoint one-hot positions; write order
+irrelevant) — verified by one_hot_and_embedding_golden_matches_torch + functional_one_hot_nd_matches_torch +
+reject-infinite/out-of-range/requires_grad + 7/0 one_hot tests. num_classes==0 / numel<=1 stay serial (avoid
+chunks_mut(0) panic + rayon overhead). MEASURED (struct_survey3_h2h.rs, torch set_num_threads(8) vs FT-64t,
+cat_anchor=3.76x FASTER healthy): one_hot [1M,64] **211ms -> 37.3ms** (~5.7x internal) now **2.22x FASTER**
+than torch (was 2.71x SLOWER). ft-api lib 2387/0 + conformance 39/0, bit-exact. EDITED ft-api via the clean
+worktree pattern. SURVEY3 also: pad already 3.57x FASTER (no-grad block-copy fast path), tile ~parity (1.2x,
+uses reshape+repeat). AGENT BlackThrush.
+
 ## 2026-06-26 - WIN (landed): repeat_interleave serial push -> parallel chunk-fill (3.1x SLOWER -> 2.85x FASTER vs torch)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey2_h2h flagged `repeat_interleave` (1D,
