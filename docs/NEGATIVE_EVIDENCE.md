@@ -4,6 +4,25 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - WIN (landed): sinc no-grad single-pass fast path (flips 4.01x LOSS to 3.74x WIN) + unary special scan
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Unary special-function scan (examples/
+unary_special_h2h.rs, [4000,4000] f64 no-grad, cat-anchor healthy): erf 3.32x / erfc 4.39x / i0 1.07x
+already WIN (par_map). LOSERS: sinc 4.01x, erfinv 2.92x, digamma 1.78x, lgamma 1.05x SLOWER.
+
+WIN (landed): `tensor_sinc` was COMPOSED of ~9 autograd-aware ops (full_like x3 + mul + sin + eq +
+where x2 + div) = ~9 passes over numel, 157ms = 4.01x SLOWER. No-grad fast path: borrow input and compute
+sinc(x) = sin(pi*x)/(pi*x) (1.0 at x==0) in ONE parallel pass. Bit-exact with the composed path (same IEEE
+pi*x product, libm f64::sin, x==0->1.0 select incl -0.0/NaN). 157ms -> 10.5ms (~15x internal) = **3.74x
+FASTER**. f32 / grad / non-contiguous fall through to the composed (autograd-aware) path.
+
+NOT shipped (measured, compute-floor-limited): erfinv (2.92x) / digamma (1.78x) / lgamma (1.05x) are ALREADY
+parallel (par_map) but clone input-or-output for backward unconditionally; the save-skip (gate on
+needs_input_grad) saves ~one numel clone but the erfinv_approx / digamma_approx / lgamma series compute is
+the floor (~comparable to torch), so even with save-skip they stay ~1.4-2.3x SLOWER = NOT a win. The
+approximations themselves would need to be faster (accuracy-sensitive, risky) — DEFERRED, don't re-probe for
+a quick borrow win. 4 sinc tests + ft-api lib 2385/0 + conformance 39/0 green. AGENT BlackThrush.
+
 ## 2026-06-25 - WIN (landed): nextafter + heaviside no-grad borrow + parallelize (flips 22.12x / 8.82x LOSS to 2.29x / 3.15x WIN)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Continuing the elementwise-binary clone+serial vein
