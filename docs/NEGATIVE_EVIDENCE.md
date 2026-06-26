@@ -4,6 +4,32 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - WIN (landed): maximum/minimum no-grad borrow fast path (flips 14.67x LOSS to ~2-2.86x WIN) + comparison clone-elision (40x->2.3x gap reduction)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Two elementwise-binary clone bugs found by a
+fresh op scan (examples/compare_h2h.rs, [4000,4000] f64 no-grad, cat-anchor healthy 4.0-4.2x):
+
+WIN (landed): `tensor_maximum`/`tensor_minimum` routed through the tape `tensor_max`/`tensor_min`, which
+clones both operands AND saves for backward even with grad off — MEASURED 363ms = 14.67x SLOWER than
+torch. No-grad fast path: for equal-shape contiguous f64 with grad off, BORROW both operands and call
+`ft_kernel_cpu::{max,min}_tensor_contiguous_f64` directly (already parallel, NaN-propagating, bit-identical
+to the tape op). 363ms -> 8.5-12.9ms (~30-43x internal) = 14.67x SLOWER -> **1.99-2.86x FASTER** vs torch.
+
+IMPROVEMENT (landed, NOT a full win — documented): the 6 comparison ops (gt/lt/eq/ne/le/ge via
+`tensor_comparison`) CLONED both operands (`storage()?.to_vec()` x2) before the already-parallel kernel —
+MEASURED gt 174ms / eq 188ms = ~40-50x SLOWER than torch. Fix: borrow both and pass the borrowed slices to
+the SAME dispatch kernel (no clones). 174ms -> 8-14ms (~21x internal). BUT still ~1.3-3.1x SLOWER than
+torch — this is the IRREDUCIBLE FLOOR: FT comparisons output an f64 0/1 mask (128MB) while torch outputs a
+1-byte BOOL (16MB), so FT moves ~1.4x more bandwidth and cannot win without a bool dtype (which the API
+lacks; tensor_where etc. consume f64 masks). Kept anyway — a 40x->2.3x reduction on the hottest predicate
+ops is squarely on-mission; reverting would restore a serial-clone bug. DO NOT re-probe comparison for a
+"win" — the f64-mask floor is fundamental.
+
+NOT fixed (residual, marginal): logical_and/or/xor (5.85x SLOWER) are composed of full()+ne()+mul() (the
+ne() is now fast); a direct one-pass path would only reach ~parity (f64 output, bandwidth floor) — skipped
+to avoid zero-gain churn. f32 maximum/minimum: no f32 min/max kernel exists (f64-only fast path). ft-api lib
+2385/0 + conformance 39/0 green. AGENT BlackThrush.
+
 ## 2026-06-25 - WIN (landed) + OPEN GAP: rot90 k=2 multi-dim-flip fusion (1.65x->2.47x); k=1/k=3 still 3-4x SLOWER (transpose-materialization)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. `tensor_rot90` composes existing ops:
