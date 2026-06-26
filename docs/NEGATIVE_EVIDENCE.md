@@ -4,6 +4,20 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - WIN (landed): cummax last-dim lane parallelization (4.24x; cummax was the lone serial outlier vs cummin)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Serial-kernel hunt: `cummax_dim_tensor_contiguous_f64`
+had a leading-dim transpose-trick fast path (parallel) but its general `else` branch ran `for outer in
+0..outer_size` SERIALLY — so a LAST-dim cummax ([N,M] along dim=-1 = N independent row-scans) was
+single-threaded. ASYMMETRY: the sibling `cummin_dim_tensor_contiguous_f64` ALREADY had the parallel
+last-dim path (`else if numel>=THRESHOLD && outer_size>=2 { par_chunks_mut(lane).zip(indices)... }`); cummax
+was simply missing it. Added the identical par_chunks_mut-over-lane path to cummax — bit-for-bit identical
+(each lane block runs the SAME serial scan into disjoint values/indices chunks; per-lane order unchanged).
+MEASURED via same-worker RAYON A/B (examples/cummax_ab.rs, kernel called directly), cummax dim=1
+[4000,4000] f64: 1t **192.9ms** -> 64t **45.5ms** = **4.24x** (1t IS the old serial; ratio compressed by box
+load ~32, clean higher). ft-api lib 2387/0 + ft-kernel-cpu cummax 7/0 + cummax/cummin lib 12/0 + conformance
+39/0, bit-exact. AGENT BlackThrush.
+
 ## 2026-06-26 - WIN (landed): where + masked_fill kernels serial->parallel (3.09x / 2.78x same-worker)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Continuing the serial-kernel hunt (the

@@ -13701,6 +13701,25 @@ pub fn cummax_dim_tensor_contiguous_f64(
                     inner_size,
                 );
             });
+    } else if outer_size > 1 && numel >= PARALLEL_THRESHOLD && rayon::current_num_threads() > 1 {
+        // Each `outer` lane block is INDEPENDENT (disjoint values/indices slices), so fan the
+        // per-lane serial scan over the rayon pool. Bit-for-bit identical (per-lane scan order
+        // unchanged; disjoint par_chunks_mut). This is the last-dim case (large outer, e.g.
+        // [N, M] cummax along dim=-1) that the leading-dim transpose trick above doesn't cover.
+        values
+            .par_chunks_mut(lane)
+            .zip(indices.par_chunks_mut(lane))
+            .enumerate()
+            .for_each(|(outer, (vchunk, ichunk))| {
+                let base = outer * lane;
+                cummax_dim_lane_block_f64(
+                    &data[base..base + lane],
+                    vchunk,
+                    ichunk,
+                    dim_size,
+                    inner_size,
+                );
+            });
     } else {
         for outer in 0..outer_size {
             let base = outer * lane;
