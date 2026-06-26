@@ -4,6 +4,59 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - NEGATIVE (reverted): f64 where/masked_fill branchless select still loses to PyTorch
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Fresh worktree scan found
+no unlanded measured win to land: the only ahead worktree was
+`/data/projects/frankentorch-gxpb2-pass10`, an explicit large-n row-SIMD
+rejection. The current shipped `where`/`masked_fill` fast path was still a
+public PyTorch-facing gap after the 2026-06-25 select-op landing, so this pass
+tested a different lower-level lever: direct scalar masked-fill without a full
+fill tensor, followed by branchless `f64x4 cmp_ne(...).blend(...)` chunk helpers
+for f64 no-grad equal-shape contiguous `where` and `masked_fill`.
+
+Baseline command:
+`AGENT_NAME=BlackThrush PYTORCH_PYTHON=/data/projects/frankentorch/.venv-oracle/bin/python
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec --
+cargo run --release -p ft-api --example op_scan4_h2h`.
+
+Baseline from current `main` (RCH local fallback, same warm target):
+
+- `where [4000,4000]` f64 no-grad: FT `140.065 ms`, PyTorch `25.757 ms`,
+  FT `5.44x SLOWER`.
+- `masked_fill [4000,4000]` f64 no-grad: FT `78.016 ms`, PyTorch `29.579 ms`,
+  FT `2.64x SLOWER`.
+
+Measured candidates:
+
+- Direct scalar `masked_fill` no-grad fast path, same RCH-local h2h command:
+  `where` FT `134.147 ms` vs PyTorch `25.127 ms` = `5.34x SLOWER`;
+  `masked_fill` FT `70.076 ms` vs PyTorch `29.338 ms` = `2.39x SLOWER`.
+- Branchless chunked f64 select helpers. `rch exec` chose remote `ovh-a`, whose
+  Python lacked `torch`, so that run produced no PyTorch ratio. The local
+  direct cargo fallback initially failed because the warm target held artifacts
+  from `nightly-2026-06-09` while the shell default was `nightly-2026-06-07`;
+  rerun with the matching installed toolchain and same target dir:
+  `PYTORCH_PYTHON=/data/projects/frankentorch/.venv-oracle/bin/python
+  CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+  cargo +nightly-2026-06-09 run --release -p ft-api --example op_scan4_h2h`.
+  Final candidate ratios: `where` FT `130.398 ms` vs PyTorch `23.027 ms` =
+  `5.66x SLOWER`; `masked_fill` FT `65.096 ms` vs PyTorch `26.771 ms` =
+  `2.43x SLOWER`.
+
+Decision: REVERT. The direct/chunked select lever gives a small internal
+masked-fill improvement, but it does not cross PyTorch and does not change the
+dominant condition-bandwidth/output-floor gap. Do not retry f64 no-grad
+`where`/`masked_fill` branchless `wide` chunking or scalar masked-fill
+short-circuiting as standalone levers. Retry only if a deeper representation
+change removes the f64 mask bandwidth or avoids materializing the dense output.
+Score vs PyTorch for this lever: `0W / 2L / 0N`.
+
+Gates: `cargo check -p ft-api` passed via RCH remote `ovh-a`;
+`cargo test -p ft-conformance` passed via RCH remote `ovh-a` (199 lib tests,
+all conformance bins/integration/smoke/doc-test targets green). Candidate
+source was reverted before this ledger-only commit.
+
 ## 2026-06-26 - NEGATIVE (reverted): pdist f32 p=2 blocked upper-GEMM condensed writer regresses
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh worktree scan found
