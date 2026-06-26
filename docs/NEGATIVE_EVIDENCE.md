@@ -70,6 +70,69 @@ Score vs PyTorch for this lever: `0W / 1L / 0N`.
 Artifacts:
 `artifacts/perf/frankentorch-kgs4.cod-b-f32-prod-zero-20260626T012000Z/`.
 
+## 2026-06-26 - NEGATIVE vs PyTorch (kept): no-grad last-dim unfold direct-copy is still view-walled
+
+Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh land-or-dig scan
+found no landable measured worktree win outside `origin/main`:
+
+- `ivorydeer/kgs4-56-duplicate-keep-evidence` (`cache packed f64 linear
+  weights`) and `ivorydeer/kgs4-54-packed-bt-stale-20260613`
+  (`dgemm_bt` B-panel packing) are older positive-looking Criterion commits,
+  but current main already carries later rejection artifacts for the same
+  persistent-linear-cache and per-call panel-pack families.
+- `/data/projects/frankentorch-5oqum-boldfalcon` is already contained in
+  `origin/main`; its dirty files are untracked evidence only.
+- `/data/projects/frankentorch-sif85-rubylotus` had an unmeasured dirty
+  row-vector FMA sketch and no current PyTorch-ratio evidence.
+
+New lever tested: avoid building the giant `usize` gather table in
+`tensor_unfold` when the input is f64, no-grad, and unfolding the last
+dimension. The new path copies each row's sliding windows directly from
+contiguous storage and returns a detached f64 leaf. Grad-enabled unfold and
+overlap-accumulating backward remain on the existing gather/scatter path.
+
+Baseline command:
+`PYTORCH_PYTHON=/data/projects/frankentorch/.venv-oracle/bin/python
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec --
+cargo run --release -p ft-api --example op_scan4_h2h`.
+
+Baseline from clean `origin/main` `b3be8ddf` (RCH local fallback; no admissible
+worker slots):
+
+- `unfold [4000,4000].unfold(1,64,32)` f64 no-grad: FT `612.791 ms`,
+  PyTorch `0.001 ms`, FT `557082.76x SLOWER`.
+- Supporting rows from the same run: `cat` FT `3.83x FASTER`; `stack` FT
+  `2.94x FASTER`; `where` FT `5.07x SLOWER`; `masked_fill` FT
+  `2.62x SLOWER`.
+
+Candidate command: same h2h command after the direct-copy hunk.
+
+Candidate result (RCH local fallback; same target dir):
+
+- `unfold`: FT `13.409 ms`, PyTorch `0.001 ms`, FT `12190.03x SLOWER`.
+- Internal FT delta: `612.791 / 13.409 = 45.70x` faster than the current
+  gather-table path.
+- Supporting rows from the same run: `cat` FT `3.49x FASTER`; `stack` FT
+  `2.81x FASTER`; `where` FT `2.69x SLOWER`; `masked_fill` FT
+  `2.25x SLOWER`.
+
+Literal requested bench probe:
+`AGENT_NAME=PearlReef CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+rch exec -- cargo bench --release -p ft-api --bench ops_bench -- --help`
+failed before benchmarking because this Cargo rejects `--release` for
+`cargo bench` (`unexpected argument '--release' found`). `ops_bench` has no
+unfold row; the accepted PyTorch-ratio gate for this pass is the existing
+`op_scan4_h2h` example.
+
+Decision: KEEP the source hunk because it is not zero-gain and removes a
+massive FrankenTorch materialization overhead for no-grad f64 last-dim unfold.
+Record as NEGATIVE vs PyTorch because PyTorch's `Tensor.unfold` row is a
+metadata view, while FrankenTorch still materializes dense output. Do not retry
+direct materialized-copy unfold as a route to PyTorch parity; the next attempt
+must add real view/stride storage semantics or fuse unfold into the consumer
+that would otherwise materialize it. Score vs PyTorch for this lever:
+`0W / 1L / 0N`.
+
 ## 2026-06-26 - NEGATIVE (reverted): masked_fill direct no-grad Criterion row reconfirms no-ship
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh worktree scan found
