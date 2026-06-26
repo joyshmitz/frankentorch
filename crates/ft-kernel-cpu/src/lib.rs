@@ -12687,20 +12687,45 @@ pub fn cat_tensor_contiguous_f64(
     if out_numel == 0 {
         return Ok(Vec::new());
     }
-    let mut output = Vec::with_capacity(out_numel);
-
-    for outer in 0..outer_size {
-        for (data, meta) in inputs {
-            let shape = meta.shape();
-            let cat_size = shape[dim];
-            if cat_size == 0 {
+    // Precompute each input's per-outer block (offset window + block_len), then build the
+    // output by PARALLELIZING over outer rows: each outer owns a disjoint `out_row_len`
+    // output region into which every input's contiguous block is copied. Bit-identical to the
+    // serial extend (same bytes at the same offsets). The serial form left grad/large cat
+    // single-threaded.
+    let out_row_len = total_cat_size * inner_size;
+    let mut blocks: Vec<(&[f64], usize)> = Vec::with_capacity(inputs.len());
+    for (data, meta) in inputs {
+        let cat_size = meta.shape()[dim];
+        if cat_size == 0 {
+            // Skip empty inputs WITHOUT slicing (an empty input may have an offset past
+            // data.len()); they contribute nothing, exactly like the serial `continue`.
+            continue;
+        }
+        let offset = meta.storage_offset();
+        let block_len = checked_mul(cat_size, inner_size, "cat slice range overflow")?;
+        blocks.push((&data[offset..], block_len));
+    }
+    let mut output = vec![0.0_f64; out_numel];
+    let fill_row = |outer: usize, orow: &mut [f64]| {
+        let mut w = 0usize;
+        for &(window, block_len) in &blocks {
+            if block_len == 0 {
                 continue;
             }
-            let offset = meta.storage_offset();
-            let d = &data[offset..];
-            let block_len = checked_mul(cat_size, inner_size, "cat slice range overflow")?;
-            let range = checked_contiguous_range(outer, block_len, "cat slice range overflow")?;
-            output.extend_from_slice(&d[range]);
+            let base = outer * block_len;
+            orow[w..w + block_len].copy_from_slice(&window[base..base + block_len]);
+            w += block_len;
+        }
+    };
+    if outer_size > 1 && out_numel >= PARALLEL_THRESHOLD && rayon::current_num_threads() > 1 {
+        use rayon::prelude::*;
+        output
+            .par_chunks_mut(out_row_len)
+            .enumerate()
+            .for_each(|(outer, orow)| fill_row(outer, orow));
+    } else {
+        for (outer, orow) in output.chunks_mut(out_row_len).enumerate() {
+            fill_row(outer, orow);
         }
     }
 

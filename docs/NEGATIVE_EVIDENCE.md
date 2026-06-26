@@ -4,6 +4,20 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - WIN (landed): cat kernel serial->parallel block-copy (3.76x; grad-path / direct-caller)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. `cat_tensor_contiguous_f64` built the output with a
+SERIAL `for outer { for input { output.extend_from_slice(block) } }` double loop. The ft-api no-grad cat is
+already block-copy-parallel, but the SERIAL kernel still backs grad cat + direct callers. Rewrote: precompute
+each input's per-outer block (offset window + block_len), pre-allocate the output, then PARALLELIZE over
+outer rows — each outer owns a disjoint `out_row_len` region into which every input's contiguous block is
+copied via copy_from_slice. Bit-identical to the serial extend (same bytes at the same offsets); empty
+inputs (cat_size==0, possibly with an offset past data.len()) are skipped WITHOUT slicing, matching the
+serial `continue` (caught by `cat_skips_empty_input_with_offset` — fixed before landing). MEASURED via
+same-worker RAYON A/B (examples/cat_ab.rs, kernel called directly), cat dim=1 [4000,4000]x2 f64: 1t
+**139.5ms** -> 64t **37.1ms** = **3.76x** (1t IS old serial; compressed by box DRAM contention). ft-api lib
+2387/0 + ft-kernel-cpu 548/0 (17/0 cat) + conformance 39/0, bit-exact. AGENT BlackThrush.
+
 ## 2026-06-26 - WIN (landed): lerp kernel serial->parallel (3.63x; grad-path / direct-caller)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Serial-kernel hunt (comprehensive awk classifier over
