@@ -97,6 +97,80 @@ from this session's landed tensor_mul/add/log/scalar fast paths), so the true vs
 the measured siblings (smooth_l1/bce 2.96-5.13x). Conclusion: 52169ffe is a confirmed bit-exact win; only the
 exact vs-torch NUMBER (not the win itself) awaits a clean window. AGENT BlackThrush.
 
+## 2026-06-26 - WIN (landed): rot90 k=1/k=3 no-grad fused 2D copy flips transpose-materialization loss
+
+Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh land-or-dig scan
+found no measured unlanded worktree win to land:
+
+- `ivorydeer/kgs4-56-duplicate-keep-evidence` (`cache packed f64 linear
+  weights`) and `ivorydeer/kgs4-54-packed-bt-stale-20260613`
+  (`dgemm_bt` B-panel packing) are old positive-looking commits already
+  superseded by mainline `dgemm_bt`/packed-linear reject entries.
+- `/data/projects/frankentorch-5oqum-boldfalcon` is already contained in
+  `origin/main`.
+- `/data/projects/frankentorch-sif85-rubylotus` still has only an unmeasured
+  dirty row-vector FMA sketch, with no current PyTorch-ratio evidence.
+
+New lever: `tensor_rot90` k=1/k=3 previously composed
+`tensor_transpose + tensor_flip`; for f64 no-grad contiguous 2D `[0,1]`
+inputs, the transpose materialization was the wall. Added a narrow direct
+copy path that writes the final `[cols, rows]` output in one pass using the
+same element mapping as PyTorch/old composition:
+
+- k=1: `out[r,c] = input[c, cols - 1 - r]`
+- k=3: `out[r,c] = input[rows - 1 - c, r]`
+
+Grad-enabled, non-f64, non-contiguous, non-2D, and non-`[0,1]` dim cases still
+fall through to the existing autograd-aware composition.
+
+Baseline command:
+`PYTORCH_PYTHON=/data/projects/frankentorch/.venv-oracle/bin/python CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo run --release -p ft-api --example rot90_h2h`.
+RCH selected `hz2`, then local-fell-back because the worker preflight reported
+a missing synced example entrypoint. Clean main `52169ffe`, healthy anchor:
+
+- `cat_anchor`: FT `19.772 ms`, PyTorch `67.813 ms`, FT `3.43x FASTER`.
+- `rot90_k1`: FT `106.552 ms`, PyTorch `30.031 ms`, FT `3.55x SLOWER`.
+- `rot90_k2`: FT `27.610 ms`, PyTorch `31.042 ms`, FT `1.12x FASTER`.
+- `rot90_k3`: FT `106.256 ms`, PyTorch `31.039 ms`, FT `3.42x SLOWER`.
+
+Candidate command: the same harness in
+`/data/projects/.scratch/frankentorch-pearlreef-boldverify-20260626T060333Z`.
+The first `rch exec` remote run completed on `ovh-a` but produced no PyTorch
+rows because worker Python lacked `torch`. A direct local rerun used
+`RUSTUP_TOOLCHAIN=nightly-2026-06-09-x86_64-unknown-linux-gnu` to match the
+warm target dir's existing rustc hash instead of cleaning the shared target:
+
+- `cat_anchor`: FT `15.745 ms`, PyTorch `53.381 ms`, FT `3.39x FASTER`.
+- `rot90_k1`: FT `12.681 ms`, PyTorch `26.607 ms`, FT `2.10x FASTER`.
+- `rot90_k2`: FT `7.894 ms`, PyTorch `25.318 ms`, FT `3.21x FASTER`.
+- `rot90_k3`: FT `10.915 ms`, PyTorch `27.234 ms`, FT `2.50x FASTER`.
+
+The literal requested probe
+`AGENT_NAME=PearlReef CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo bench --release -p ft-api --bench ops_bench -- --help`
+still fails before benchmarking because Cargo rejects `--release` for
+`cargo bench` (`unexpected argument '--release' found`); there is also no
+`ops_bench` rot90 row, so `rot90_h2h` is the accepted PyTorch-ratio gate for
+this pass.
+
+Proof gates:
+
+- `cargo test -p ft-api rot90 --lib -- --nocapture`: `8 passed`.
+- `cargo check -p ft-api --all-targets`: passed on RCH worker `hz2`.
+- `cargo test -p ft-conformance`: `199` lib tests plus all conformance bins,
+  `5` e2e training tests, PyTorch conformance tests, `39` smoke tests, and
+  doc-tests passed.
+- `git diff --check`: passed.
+- `cargo fmt -p ft-api --check` remains blocked by pre-existing example-format
+  drift unrelated to this hunk; file-only `rustfmt --check` on the huge
+  `crates/ft-api/src/lib.rs` was stopped after 90s with no diagnostics.
+- `ubs crates/ft-api/src/lib.rs docs/NEGATIVE_EVIDENCE.md` was attempted and
+  stopped after 90s with no findings emitted; the same large `lib.rs` scan is
+  a known timeout path in this repo.
+
+Score vs PyTorch for this lever: `2W / 0L / 0N`. Retry only for a broader
+stride/view-backed `rot90` implementation that also covers grad or higher-rank
+planes without changing the current autograd composition.
+
 ## 2026-06-26 - WIN (landed, bit-exact; vs-torch confirmation BLOCKED by peer DRAM contention): gaussian_nll/kl_div/hinge_embedding 'none' no-grad
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Continuing the loss-fn vein (examples/loss2_h2h.rs).
