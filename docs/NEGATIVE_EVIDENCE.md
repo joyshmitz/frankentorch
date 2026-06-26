@@ -4,6 +4,18 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - WIN (landed): lerp no-grad parallel (flips 2.21x LOSS to 1.65x WIN)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Resolving the lerp lead from the addcmul entry:
+the lerp KERNEL (lerp_tensor_contiguous_f64) is SERIAL — `s.iter().zip(e).map(|(sv,ev)| sv + weight*(ev-sv))`
+— and the tape op adds a backward clone, so no-grad lerp measured 2.21x SLOWER than torch ([4000,4000] f64,
+fused3_h2h, cat-anchor healthy 3.81x). No-grad equal-shape contiguous f64 fast path borrows both operands
+and computes the IDENTICAL formula `sv + weight*(ev - sv)` in PARALLEL. Bit-exact with the kernel (same
+per-element expression — formula confirmed: start + weight*(end-start), NOT (1-w)*start+w*end). 67ms ->
+13.2ms (~5x internal) = **1.65x FASTER** (bandwidth-bound: 2 reads + 1 write, so ~1.65x is near the
+parallel ceiling vs torch's fused kernel). grad / non-f64 / non-contiguous fall through. 5 lerp tests +
+ft-api lib 2385/0 + conformance 39/0 green. AGENT BlackThrush.
+
 ## 2026-06-25 - WIN (landed): addcmul + addcdiv no-grad fused single-pass (flips 3.16x / 3.36x LOSS to 2.52x / 1.78x WIN)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Fused 3-input scan (examples/fused3_h2h.rs,
