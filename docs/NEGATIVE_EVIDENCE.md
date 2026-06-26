@@ -4,6 +4,25 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - WIN (landed): cummax (flattened) no-grad value-direct scan (4.38x SLOWER -> parity; 4.3x internal, kills gather+clones)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey5_h2h flagged flattened `tensor_cummax` =
+**4.38x SLOWER** (584ms for a [16M] scan). cummax is a SCAN (inherently serial) so the gap was OVERHEAD: the
+old body did a `values_lossy_f64` clone, the argmax scan, then `tensor_index_select`-GATHERED `x[cum_idx[i]]`
+(a 16M RANDOM gather + tape node) to make the values branch autograd-aware, plus `cum_idx.clone()` + reshape
+nodes (~5×numel allocations + cache-hostile gather = the wall). KEY: the running cummax VALUE is `vals[max_idx]`,
+ALREADY known during the scan — so the gather is redundant. FIX: no-grad f64 contiguous fast path BORROWS the
+input and builds cum_vals DIRECTLY in the scan (`cum_vals.push(vals[max_idx])`) alongside cum_idx, returning
+two leaves — no gather, no clone, no reshape. Bit-identical (same >=/NaN-propagation; vals[max_idx] IS what
+the gather returned) — verified by cumprod_cummax_golden_matches_torch + cummax_cummin_propagate_nan +
+tie_indices + propagates_gradient_via_argmax_routing (grad path UNCHANGED) + 7/0 cummax tests. grad / f32 /
+f16 / non-contiguous fall through. MEASURED (struct_survey5_h2h.rs, torch set_num_threads(8) vs FT-64t,
+cat_anchor 3.53x FASTER healthy): **584ms -> 134.6ms (4.3x internal)**, gap **4.38x SLOWER -> 1.03x (parity)**.
+The residual is the INHERENT serial scan + 2×128MB output writes (torch is also serial-scan-bound at 131ms);
+beating it would need a parallel-scan rewrite (max is associative) but the 256MB output write is bandwidth-
+walled anyway. ft-api lib 2387/0 + conformance 39/0, bit-exact. EDITED ft-api via the clean worktree pattern.
+SURVEY5: diff/cumsum/flip already 2-3x FASTER, sort 1.27x SLOWER (algorithmically bound). AGENT BlackThrush.
+
 ## 2026-06-26 - WIN (landed): kron 2-D row-structured fast path (24.35x SLOWER -> 3.08x FASTER vs torch; ~73x internal)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. kron_h2h flagged `tensor_kron` = **24.35x SLOWER**
