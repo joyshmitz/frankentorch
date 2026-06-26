@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - WIN (landed): repeat + tile no-grad block-copy fast path (last-dim repeat)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. `tensor_repeat`/`tensor_tile` (tile
+routes through repeat) were ~2.2x SLOWER than torch (tape repeat clones + per-element
+division-unravel). For the common LAST-DIM-only repeat (repeats==[1,..,1,f]) each input row
+is tiled `f` times: out position maps to input position `within_out % last`. Added a no-grad
+fast path: borrow the contiguous storage, grain-based parallel copy (one division per
+`last`-run boundary, not per element — robust to few/large rows, same trick that flipped
+stack to a win). Bit-exact. Other repeat patterns / f32 / grad / non-contiguous fall through.
+Overflow guard via checked_mul falls back to tape repeat.
+
+MEASURED repeat([1,2]) / tile([1,2]) [4000,4000] f64 no-grad (output [4000,8000]): ~2.2x
+SLOWER -> repeat 10.709ms vs torch 46.691ms = FT 4.36x FASTER; tile 11.374ms vs torch
+44.227ms = FT 3.89x FASTER (op_scan3_h2h, 64-core worker). index_select 3.48x (confirms
+already-landed win).
+
+ft-api lib (2383/0) + conformance green. AGENT BlackThrush.
+
 ## 2026-06-25 - NEGATIVE (reverted): f64 SDPA all-ones dout reduction improves FT but still loses to PyTorch
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh worktree scan found
