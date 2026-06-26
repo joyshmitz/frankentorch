@@ -12996,27 +12996,49 @@ pub fn expand_tensor_contiguous_f64(
     let input_strides = broadcast_strides(shape, target_shape, "expand input strides overflow")?;
     let offset = meta.storage_offset();
 
-    // Row-major output strides so each flat index `i` unravels its coords
-    // independently (no sequential coords state) → the gather parallelizes. The
-    // per-element div/mod index math dominates the single read, so it scales like
-    // the broadcast path. Index order preserved → bit-identical. frankentorch-kgs4.94.
-    let mut out_strides = vec![1usize; ndim];
+    // ROW-STRUCTURED broadcast (was: per-element ndim div/mod gather, frankentorch-kgs4.94). The
+    // innermost output dim of a contiguous expand is either BROADCAST (input stride 0 → the whole
+    // `inner`-length row is one repeated value → fill) or COPIED (input stride 1 → the row is a
+    // contiguous slice of `input` → copy_from_slice). So unravel the OUTER coords ONCE PER ROW
+    // (not per element) to get the row's input base, then fill/copy the inner run — turning 16M
+    // per-element div/mod into out_numel/inner per-row unravels + vectorized fill/copy. Bit-
+    // identical to the per-element gather (same value at every output position). frankentorch-kgs4.
+    let inner = target_shape[ndim - 1];
+    let inner_stride = input_strides[ndim - 1]; // 0 (broadcast) or 1 (copy) for a contiguous input
+    // Outer-space strides over the first ndim-1 dims (row index r unravels into outer coords).
+    let mut outer_strides = vec![1usize; ndim.saturating_sub(1)];
     for d in (0..ndim.saturating_sub(1)).rev() {
-        out_strides[d] = out_strides[d + 1] * target_shape[d + 1];
+        if d + 1 < ndim - 1 {
+            outer_strides[d] = outer_strides[d + 1] * target_shape[d + 1];
+        }
     }
-    let eval = |i: usize| {
+    let row_base = |r: usize| -> usize {
         let mut idx = offset;
-        for d in 0..ndim {
-            let c = (i / out_strides[d]) % target_shape[d];
+        for d in 0..ndim - 1 {
+            let c = (r / outer_strides[d]) % target_shape[d];
             idx += c * input_strides[d];
         }
-        input[idx]
+        idx
     };
-    let output: Vec<f64> = if out_numel >= PARALLEL_THRESHOLD {
-        (0..out_numel).into_par_iter().map(eval).collect()
+    let mut output = vec![0.0_f64; out_numel];
+    let fill_row = |r: usize, row: &mut [f64]| {
+        let base = row_base(r);
+        if inner_stride == 0 {
+            row.fill(input[base]);
+        } else {
+            row.copy_from_slice(&input[base..base + inner]);
+        }
+    };
+    if out_numel >= PARALLEL_THRESHOLD {
+        output
+            .par_chunks_mut(inner)
+            .enumerate()
+            .for_each(|(r, row)| fill_row(r, row));
     } else {
-        (0..out_numel).map(eval).collect()
-    };
+        for (r, row) in output.chunks_mut(inner).enumerate() {
+            fill_row(r, row);
+        }
+    }
 
     Ok(output)
 }
@@ -29725,26 +29747,44 @@ pub fn expand_tensor_contiguous_f32(
     }
     let input_strides = broadcast_strides(shape, target_shape, "expand_f32 strides overflow")?;
     let offset = meta.storage_offset();
-    // Per-flat-index unravel so the gather parallelizes (the per-element div/mod
-    // index math dominates the single read). Index order preserved → bit-identical
-    // to the serial coords sweep. frankentorch-kgs4.94.
-    let mut out_strides = vec![1usize; ndim];
+    // f32 mirror of expand_tensor_contiguous_f64's ROW-STRUCTURED broadcast: innermost dim is
+    // either broadcast (stride 0 → fill) or copied (stride 1 → copy_from_slice); unravel the outer
+    // coords once per row, fill/copy the inner run. Bit-identical to the per-element div/mod gather.
+    let inner = target_shape[ndim - 1];
+    let inner_stride = input_strides[ndim - 1];
+    let mut outer_strides = vec![1usize; ndim.saturating_sub(1)];
     for d in (0..ndim.saturating_sub(1)).rev() {
-        out_strides[d] = out_strides[d + 1] * target_shape[d + 1];
+        if d + 1 < ndim - 1 {
+            outer_strides[d] = outer_strides[d + 1] * target_shape[d + 1];
+        }
     }
-    let eval = |i: usize| {
+    let row_base = |r: usize| -> usize {
         let mut idx = offset;
-        for d in 0..ndim {
-            let c = (i / out_strides[d]) % target_shape[d];
+        for d in 0..ndim - 1 {
+            let c = (r / outer_strides[d]) % target_shape[d];
             idx += c * input_strides[d];
         }
-        input[idx]
+        idx
     };
-    let output: Vec<f32> = if out_numel >= PARALLEL_THRESHOLD {
-        (0..out_numel).into_par_iter().map(eval).collect()
+    let mut output = vec![0.0_f32; out_numel];
+    let fill_row = |r: usize, row: &mut [f32]| {
+        let base = row_base(r);
+        if inner_stride == 0 {
+            row.fill(input[base]);
+        } else {
+            row.copy_from_slice(&input[base..base + inner]);
+        }
+    };
+    if out_numel >= PARALLEL_THRESHOLD {
+        output
+            .par_chunks_mut(inner)
+            .enumerate()
+            .for_each(|(r, row)| fill_row(r, row));
     } else {
-        (0..out_numel).map(eval).collect()
-    };
+        for (r, row) in output.chunks_mut(inner).enumerate() {
+            fill_row(r, row);
+        }
+    }
     Ok(output)
 }
 
