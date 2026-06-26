@@ -27303,6 +27303,11 @@ fn mish_value_f32(x: f32) -> f32 {
     x * softplus_value_f32(x).tanh()
 }
 
+/// Round to nearest integer with half-way values rounded to the even integer.
+/// This matches the `.focrq` converter contract and keeps dynamic activation
+/// quantization deterministic at exact tie boundaries.
+#[inline]
+#[must_use]
 fn round_ties_even_f32(value: f32) -> f32 {
     value.round_ties_even()
 }
@@ -27774,10 +27779,11 @@ pub fn matmul_tensor_contiguous_f32_into(
 /// `[out_features, in_features]`) to symmetric per-output-channel int8.
 ///
 /// For each output channel `o`, `scale[o] = max(|w[o, :]|) / 127` (or `1.0`
-/// when the whole row is zero), and `w_i8[o, i] = clamp(round(w[o,i]/scale[o]),
-/// -127, 127)`. Zero-point is implicitly 0 (symmetric). Returns `(w_i8,
-/// scales)` ready to feed [`linear_int8_dynamic_f32`]. Pure, deterministic,
-/// allocation-only — does not touch any existing f32/f64 path.
+/// when the whole row is zero), and
+/// `w_i8[o, i] = clamp(round_ties_even(w[o,i] / scale[o]), -127, 127)`.
+/// Zero-point is implicitly 0 (symmetric). Returns `(w_i8, scales)` ready to
+/// feed [`linear_int8_dynamic_f32`]. Pure, deterministic, allocation-only —
+/// does not touch any existing f32/f64 path.
 #[must_use]
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 pub fn quantize_per_output_channel_i8(w: &[f32], out: usize, in_: usize) -> (Vec<i8>, Vec<f32>) {
@@ -27788,10 +27794,9 @@ pub fn quantize_per_output_channel_i8(w: &[f32], out: usize, in_: usize) -> (Vec
         let row = &w[o * in_..(o + 1) * in_];
         let amax = row.iter().fold(0f32, |acc, &v| acc.max(v.abs()));
         let scale = if amax > 0.0 { amax / 127.0 } else { 1.0 };
-        let inv = 1.0 / scale;
         let dst = &mut w_i8[o * in_..(o + 1) * in_];
         for i in 0..in_ {
-            dst[i] = (row[i] * inv).round().clamp(-127.0, 127.0) as i8;
+            dst[i] = round_ties_even_f32(row[i] / scale).clamp(-127.0, 127.0) as i8;
         }
         scales[o] = scale;
     }
@@ -27800,10 +27805,11 @@ pub fn quantize_per_output_channel_i8(w: &[f32], out: usize, in_: usize) -> (Vec
 
 /// Per-row symmetric int8 dynamic quantization of `[m, k]` activations: returns
 /// `(x_i8, a_scales)` with `a_scale[s] = max(|x[s,:]|)/127` (or `1.0` for an
-/// all-zero row) and `x_i8[s,i] = round(x[s,i]/a_scale[s])`. Each row is
-/// independent, so the result is bit-identical serial-vs-parallel; rows are
-/// quantized across rayon when the input is large enough to amortize the fan-out.
-/// Shared by the row-major and pre-packed int8 GEMM kernels.
+/// all-zero row) and
+/// `x_i8[s,i] = round_ties_even(x[s,i] / a_scale[s])`. Each row is independent,
+/// so the result is bit-identical serial-vs-parallel; rows are quantized across
+/// rayon when the input is large enough to amortize the fan-out. Shared by the
+/// row-major and pre-packed int8 GEMM kernels.
 #[must_use]
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 pub fn quantize_rows_i8(x: &[f32], m: usize, k: usize) -> (Vec<i8>, Vec<f32>) {
@@ -27814,9 +27820,8 @@ pub fn quantize_rows_i8(x: &[f32], m: usize, k: usize) -> (Vec<i8>, Vec<f32>) {
     let quant_row = |dst: &mut [i8], a_scale: &mut f32, row: &[f32]| {
         let amax = row.iter().fold(0f32, |acc, &v| acc.max(v.abs()));
         let scale = if amax > 0.0 { amax / 127.0 } else { 1.0 };
-        let inv = 1.0 / scale;
         for (d, &v) in dst.iter_mut().zip(row.iter()) {
-            *d = (v * inv).round().clamp(-127.0, 127.0) as i8;
+            *d = round_ties_even_f32(v / scale).clamp(-127.0, 127.0) as i8;
         }
         *a_scale = scale;
     };
@@ -27965,6 +27970,7 @@ pub fn linear_int8_dynamic_f32(
     unsafe_code,
     unsafe_op_in_unsafe_fn,
     clippy::too_many_arguments,
+    clippy::needless_range_loop,
     clippy::cast_precision_loss
 )]
 unsafe fn gemm_block4_sdot(
@@ -28128,6 +28134,7 @@ pub fn linear_int8_dynamic_prepacked_f32(
     unsafe_code,
     unsafe_op_in_unsafe_fn,
     clippy::too_many_arguments,
+    clippy::needless_range_loop,
     clippy::cast_precision_loss
 )]
 unsafe fn gemm_block4_sdot_packed(
@@ -31759,6 +31766,76 @@ mod tests {
         let a = super::linear_int8_dynamic_f32(&x, m, k, &w_i8, &w_scales, n, None);
         let b = super::linear_int8_dynamic_f32(&x, m, k, &w_i8, &w_scales, n, None);
         assert_eq!(a, b, "int8 linear must be bit-identical across runs");
+    }
+
+    #[test]
+    fn int8_quantizers_round_signed_ties_to_even() {
+        let ties = [-127.0f32, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 127.0];
+        let expected = [-127i8, -2, -2, 0, 0, 2, 2, 127];
+
+        let (w_i8, w_scales) = super::quantize_per_output_channel_i8(&ties, 1, ties.len());
+        assert_eq!(w_scales, vec![1.0]);
+        assert_eq!(
+            w_i8, expected,
+            "weight quant must use round_ties_even, not round-half-away"
+        );
+
+        let (x_i8, a_scales) = super::quantize_rows_i8(&ties, 1, ties.len());
+        assert_eq!(a_scales, vec![1.0]);
+        assert_eq!(
+            x_i8, expected,
+            "activation quant must use round_ties_even, not round-half-away"
+        );
+    }
+
+    #[test]
+    fn activation_quant_is_byte_identical_across_serial_and_parallel_sized_rows() {
+        let tie_row = [-127.0f32, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 127.0];
+        let expected = [-127i8, -2, -2, 0, 0, 2, 2, 127];
+
+        let (serial_i8, serial_scales) = super::quantize_rows_i8(&tie_row, 1, tie_row.len());
+        assert_eq!(serial_scales, vec![1.0]);
+        assert_eq!(serial_i8, expected);
+
+        let k = 1024usize;
+        let m = 8usize;
+        let mut large = Vec::with_capacity(m * k);
+        for row in 0..m {
+            for col in 0..k {
+                let v = match col % 8 {
+                    0 => -127.0,
+                    1 => -2.5,
+                    2 => -1.5,
+                    3 => -0.5,
+                    4 => 0.5,
+                    5 => 1.5,
+                    6 => 2.5,
+                    _ => 127.0,
+                };
+                large.push(if row == m - 1 { 0.0 } else { v });
+            }
+        }
+
+        let (first_i8, first_scales) = super::quantize_rows_i8(&large, m, k);
+        let (second_i8, second_scales) = super::quantize_rows_i8(&large, m, k);
+        assert_eq!(
+            first_i8, second_i8,
+            "dynamic activation quant must be byte-identical"
+        );
+        assert_eq!(
+            first_scales, second_scales,
+            "activation scales must be byte-identical"
+        );
+
+        for row in 0..m - 1 {
+            assert_eq!(first_scales[row], 1.0);
+            assert_eq!(&first_i8[row * k..row * k + expected.len()], &expected);
+        }
+        assert_eq!(first_scales[m - 1], 1.0);
+        assert!(
+            first_i8[(m - 1) * k..m * k].iter().all(|&q| q == 0),
+            "all-zero activation row must stay all-zero with finite unit scale"
+        );
     }
 
     #[test]
