@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - WIN (landed): logsumexp no-grad apply_function bypass (4.93x SLOWER -> 8.32x FASTER vs torch; ~40x internal)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey6_h2h flagged `tensor_logsumexp(dim)` =
+**4.93x SLOWER** (239ms for [4000,4000] reduce dim=1). ROOT: it had NO no-grad path — always went through
+`apply_function_with_create_graph`, which (a) `save_for_backward(vals.to_vec())` CLONES the whole 128MB input
+and (b) runs the per-lane (outer,inner) reduction SERIALLY. With grad off both are pure waste. FIX: no-grad f64
+contiguous fast path BORROWS the input (no clone) and fans the independent output lanes across rayon (each lane
+= a max-pass + exp-sum-pass logsumexp over `dim`; exp is compute-bound so it scales). Bit-identical to the
+serial reduction (same max-then-sum order per lane, same ±inf rule) — verified by sum_mean_logsumexp_over_
+multiple_dims_torch_golden + logsumexp_infinities_match_torch + large_stable + shift_property + propagates_
+gradient (grad path UNCHANGED) + 8/0 logsumexp tests. grad / f32 / f16 / non-contiguous fall through. MEASURED
+(struct_survey6_h2h.rs, torch set_num_threads(8) vs FT-64t, cat_anchor 3.29x FASTER healthy): **239ms ->
+5.98ms (~40x internal)** flipped **4.93x SLOWER -> 8.32x FASTER**. NOTE: the old "logsumexp fwd = 1.83x
+apply_function input-clone floor" memory note was the parallelize-WITHIN-apply_function ceiling; the no-grad
+BYPASS elides the clone floor entirely (don't trust "clone-floor" exclusions until a no-grad bypass is tried).
+ft-api lib 2387/0 + conformance 39/0, bit-exact. EDITED ft-api via the clean worktree pattern. SURVEY6:
+topk 1.2x FASTER, median 3.07x SLOWER (sort-based/algo-bound), prod/amax/var tiny-absolute. AGENT BlackThrush.
+
 ## 2026-06-26 - WIN (landed): cummin (flattened) no-grad value-direct scan (4.33x SLOWER -> parity; 4.3x internal; asymmetry sibling of cummax)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. ASYMMETRY METHOD: cummax shipped (prev entry) → its
