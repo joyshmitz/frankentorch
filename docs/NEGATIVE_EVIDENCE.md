@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - WIN (landed): kron 2-D row-structured fast path (24.35x SLOWER -> 3.08x FASTER vs torch; ~73x internal)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. kron_h2h flagged `tensor_kron` = **24.35x SLOWER**
+(449ms for [200,200]⊗[20,20] -> [4000,4000]) — the BIGGEST measured gap this session. ROOT: the no-grad path
+ran a SERIAL doubly-nested `for a_linear { for b_linear { ... } }` loop that, PER OUTPUT ELEMENT, did `rank`
+checked integer divides + 2 checked muls + 2 checked adds to recompute out_linear (O(total·rank) checked
+arithmetic) — single-threaded. FIX: 2-D fast path (the dominant case; also covers 1-D⊗2-D / 2-D⊗1-D via rank-2
+alignment): output row i = a_row·b_rows+b_row, and each a-column writes the block `a[a_row,a_col]·B[b_row,:]`
+at cols [a_col·b_cols..] — a per-row scalar·vector fill with NO per-element div/mod, parallel over output rows
+(par_chunks_mut(out_cols)). Bit-identical to the general loop (out_linear=i·out_cols+j, same a_val·b_val order)
+— verified by kron_2d / kron_1d / kron_left_pads_lower_rank (1D⊗2D) / kron_2d_preserves_autograd / repeat_
+interleave_outer_kron_golden_matches_torch + 8/0 kron tests; rank>=3 + grad paths fall through UNCHANGED
+(kron_3d/kron_4d still pass). MEASURED (examples/kron_h2h.rs, torch set_num_threads(8) vs FT-64t, cat_anchor
+4.06x FASTER healthy): **449ms -> 6.13ms (~73x internal)** flipped **24.35x SLOWER -> 3.08x FASTER**. ft-api
+lib 2387/0 + conformance 39/0, bit-exact. EDITED ft-api via the clean worktree pattern. LESSON: per-element
+CHECKED-arithmetic index decode in a hot serial loop is a giant hidden cost — a structured row formula elides
+it entirely. AGENT BlackThrush.
+
 ## 2026-06-26 - WIN (landed): embedding parallel row gather (3.40x SLOWER -> 1.19x FASTER vs torch; NLP-hot)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Applied the parallel-page-faulting sub-vein (one_hot)
