@@ -4,6 +4,25 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - WIN (landed): constant pad no-grad block-copy fast path (flips 3.70x LOSS to 3.76x WIN)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. `tensor_pad` (constant mode — the common
+zero-pad for conv) went straight to the tape `pad`, which clones the input (compact_typed_storage)
+and builds the output by a per-OUTPUT-ELEMENT O(ndim) coordinate decode (`pad_slice`: ~16M divides
+for a 4k×4k pad) even with grad off — measured 3.70x SLOWER than torch. But constant padding is pure
+contiguous data movement: each input row maps to exactly one contiguous run in the output (offset by
+the last-dim pad), every other output element is `value`. LEVER: no-grad fast path memsets the border
+value once (calloc-fast for value==0.0) then block-copies each input row into its run via
+`par_chunks_mut(out_last)` — ~out_outer ROW decodes instead of out_numel ELEMENT decodes. Bit-identical
+to the tape pad (same values, each output written once). f64 contiguous no-grad only; non-f64 /
+non-contiguous / grad / empty / overflow fall through to the tape op. The non-constant pad modes
+(reflect/replicate/circular) already had a no-grad fast path (kgs4.96); this closes the constant-mode gap.
+
+MEASURED constant_pad [4000,4000] f64 no-grad, pad 16 each side (out [4032,4032]): FT 101.058ms -> 8.1-8.7ms
+(~12x internal); vs torch F.pad ~30-32ms = 3.70x SLOWER -> FT 3.70-3.76x FASTER (pad_h2h, two runs,
+cat-anchor healthy 3.58-3.79x both times). 45 pad lib tests pass (bit-exact); ft-api lib 2383/0 +
+conformance 39/0 green. AGENT BlackThrush.
+
 ## 2026-06-26 - NEGATIVE (reverted): f32 prod finite-zero scan regresses the PyTorch gap
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh worktree scan found
