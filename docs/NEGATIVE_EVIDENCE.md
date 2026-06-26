@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - WIN (landed): tril+triu serial apply_function closure -> parallel (1.95x SLOWER -> 5.1x FASTER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Data-driven dig: with the box verified CLEAR (Rust 200MB
+memcpy anchor 13ms), ran a vs-torch structural-op survey (examples/struct_survey_h2h.rs, cat_anchor = landed
+win). Found `tensor_tril`/`tensor_triu` were **1.93x/1.95x SLOWER** than torch: their apply_function FORWARD
+(and BACKWARD) closures ran a SERIAL nested `for i { for j }` mask over all m*n. The tril/triu mask is
+PER-ROW independent (row i keeps j<=i+diag / j>=i+diag) → parallelized over rows via par_chunks_mut(n) above
+PARALLEL_ELEMENTWISE_MIN. Bit-identical to the serial nested loop (same values, indexed write — verified by
+triu_tril_diagonal_golden_matches_torch + tril_triu_backward_apply_mask_and_value_parity). MEASURED
+[4000,4000] f64 no-grad (torch set_num_threads(8), FT rayon-64t — same convention as binops_h2h/cat_anchor):
+tril FT **41.06ms -> 4.28ms** (9.6x internal) now **5.17x FASTER** than torch (was 1.93x SLOWER); triu
+**42.01 -> 4.44ms** now **5.13x FASTER** (was 1.95x SLOWER). ft-api lib 2386/0 (18/0 tril/triu) + conformance
+39/0, bit-exact. EDITED ft-api via a CLEAN throwaway worktree at origin/main (peer PearlReef has uncommitted
+count_nonzero WIP in the main checkout — a different fn, so their later rebase merges cleanly). NOTE: same
+survey flagged `tensor_diagonal` = **68ms** to extract a 4000-elt diagonal (it reshapes [4000,4000]->[16M],
+cloning 128MB, then index_selects 4000 — a no-grad direct strided-gather fast path would cut ~68ms->~0.1ms;
+NEXT lever, ft-api). AGENT BlackThrush.
+
 ## 2026-06-26 - WIN (landed): narrow F64+F32 per-element-push -> parallel copy_from_slice (4.11x / 3.43x)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Broad serial-kernel classifier (awk over all
