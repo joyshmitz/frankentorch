@@ -4,6 +4,26 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - WIN (landed): layer_norm + rms_norm no-grad BORROW input (3.81x/1.78x SLOWER -> 2.59x/5.40x FASTER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey7_h2h flagged `layer_norm` = **3.81x
+SLOWER** (91.7ms) + `rms_norm` = 1.78x SLOWER, despite both having a no-grad FUSED kernel fast path. ISOLATED
+the cost: the parallel kernel is only ~7-19ms, but the ft-api fast path `let x = self.tensor_values(input)?`
+CLONES the [4000,4000] input into a FRESH numel·8B (128MB) buffer whose pages are SERIALLY zero-faulted =
+**~64ms** (the kernel only READS x; `tensor_variable(out)` MOVES the kernel's already-parallel-faulted output,
+~free). So the wall was a single-threaded page-faulting CLONE at the session-accessor level — the same
+parallel-page-faulting tax, one layer up. FIX: BORROW the contiguous input via
+`self.tensor_tape.tensor(input)?.contiguous_values()?` (returns &[f64], no allocation → no faulting) and hand
+it straight to the kernel; non-contiguous inputs fall back to the materializing clone; applied to layer_norm
+f64+f32 and rms_norm f64+f32. Bit-identical (kernel reads the same bytes) — 17/0 layer_norm+rms_norm tests
+(incl torch-golden + affine + grad-path-unchanged). MEASURED (struct_survey7_h2h.rs, torch set_num_threads(8)
+vs FT-64t, cat_anchor 3.23x FASTER healthy): layer_norm **91.7ms -> 9.1ms (~10x internal)** now **2.59x
+FASTER** (was 3.81x SLOWER); rms_norm **-> 8.6ms** now **5.40x FASTER** (was 1.78x SLOWER). ft-api lib 2387/0 +
+conformance 39/0, bit-exact. EDITED ft-api via the clean worktree pattern. ★ LESSON: `tensor_values(id)` in a
+no-grad fast path is a SERIAL-FAULTED 8B·numel clone — always prefer `tensor.contiguous_values()?` (BORROW)
+when the kernel only reads. SAME PATTERN remains at group_norm f64/f32 + batch_norm forward fast paths (L~29479
+/29517/30613) — NEXT sweep. SURVEY7: softmax/log_softmax already 2-3x FASTER. AGENT BlackThrush.
+
 ## 2026-06-26 - WIN (landed): logsumexp no-grad apply_function bypass (4.93x SLOWER -> 8.32x FASTER vs torch; ~40x internal)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey6_h2h flagged `tensor_logsumexp(dim)` =
