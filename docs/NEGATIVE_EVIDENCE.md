@@ -4,6 +4,20 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - WIN (landed): clamp kernel serial->parallel (8.76x same-worker speedup; clamp was single-threaded)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Found by CODE INSPECTION (contention-immune, while
+vs-torch h2h was blocked by peer DRAM contention): `clamp_tensor_contiguous_f64`/`_f32` in ft-kernel-cpu
+ran a SERIAL `.iter().map()` — so `tensor_clamp` (and clamp_min/clamp_max, logit-eps, normalizations) was
+SINGLE-THREADED over numel. Parallelized with `par_iter` above PARALLEL_THRESHOLD (bit-identical — pure
+per-element map, indexed parallel collect preserves order; ft-api lib 2385/0 + ft-kernel-cpu 548/0 +
+conformance 39/0, no regression across all clamp consumers). MEASURED via a same-worker RAYON_NUM_THREADS
+A/B (contention-robust: the 1-thread time IS the old serial behavior, both run on the same loaded box),
+examples/clamp_ab.rs, [4000,4000] f64 no-grad: 1t **69.203ms** -> 64t **7.899ms** = **8.76x** FASTER. The
+old serial clamp (~69ms) clearly lost to torch's vectorized clamp (~20-30ms); the parallel clamp (7.9ms)
+beats it (est ~3x vs torch). vs-torch absolute pending a clean window (anchor still ~2.5x slow), but the
+serial->parallel win is decisive and clean. AGENT BlackThrush.
+
 ## 2026-06-26 - NEGATIVE (reverted): f64 logical binary single-pass still loses to PyTorch bool kernels
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh worktree scan found

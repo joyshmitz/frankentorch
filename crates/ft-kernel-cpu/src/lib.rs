@@ -3075,27 +3075,33 @@ pub fn clamp_tensor_contiguous_f64(
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
 
-    Ok(window
-        .iter()
-        .map(|value| {
-            // clamp is min(max(x, min_val), max_val): lower bound first,
-            // then upper, so when min_val > max_val the upper bound wins.
-            if value.is_nan() {
-                f64::NAN
+    // clamp is min(max(x, min_val), max_val): lower bound first, then upper, so when
+    // min_val > max_val the upper bound wins. Pure per-element map → fan over the rayon pool
+    // above PARALLEL_THRESHOLD (bit-for-bit identical to the serial map; index order
+    // preserved by the indexed parallel collect). The serial `.iter().map()` left this
+    // bandwidth-bound op single-threaded; clamp is hot (clamp_min/max, logit-eps, norms).
+    let clamp_one = |value: &f64| -> f64 {
+        if value.is_nan() {
+            f64::NAN
+        } else {
+            let lo = if !min_val.is_nan() && *value < min_val {
+                min_val
             } else {
-                let lo = if !min_val.is_nan() && *value < min_val {
-                    min_val
-                } else {
-                    *value
-                };
-                if !max_val.is_nan() && lo > max_val {
-                    max_val
-                } else {
-                    lo
-                }
+                *value
+            };
+            if !max_val.is_nan() && lo > max_val {
+                max_val
+            } else {
+                lo
             }
-        })
-        .collect())
+        }
+    };
+    if numel >= PARALLEL_THRESHOLD {
+        use rayon::prelude::*;
+        Ok(window.par_iter().map(clamp_one).collect())
+    } else {
+        Ok(window.iter().map(clamp_one).collect())
+    }
 }
 
 pub fn min_tensor_contiguous_f64(
@@ -27433,27 +27439,30 @@ pub fn clamp_tensor_contiguous_f32(
     }
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
-    Ok(window
-        .iter()
-        .map(|value| {
-            // clamp is min(max(x, min_val), max_val): lower bound first,
-            // then upper, so when min_val > max_val the upper bound wins.
-            if value.is_nan() {
-                f32::NAN
+    // Parallel above PARALLEL_THRESHOLD (bit-identical to the serial map; f32 companion of
+    // clamp_tensor_contiguous_f64).
+    let clamp_one = |value: &f32| -> f32 {
+        if value.is_nan() {
+            f32::NAN
+        } else {
+            let lo = if !min_val.is_nan() && *value < min_val {
+                min_val
             } else {
-                let lo = if !min_val.is_nan() && *value < min_val {
-                    min_val
-                } else {
-                    *value
-                };
-                if !max_val.is_nan() && lo > max_val {
-                    max_val
-                } else {
-                    lo
-                }
+                *value
+            };
+            if !max_val.is_nan() && lo > max_val {
+                max_val
+            } else {
+                lo
             }
-        })
-        .collect())
+        }
+    };
+    if numel >= PARALLEL_THRESHOLD {
+        use rayon::prelude::*;
+        Ok(window.par_iter().map(clamp_one).collect())
+    } else {
+        Ok(window.iter().map(clamp_one).collect())
+    }
 }
 
 /// F32 companion to `pairwise_sum_f64` — see that function for the
