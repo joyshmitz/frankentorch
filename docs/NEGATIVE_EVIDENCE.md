@@ -4,6 +4,18 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - WIN (landed): softshrink no-grad single-pass (flips 8.14x LOSS to 3.13x WIN) + activation scan
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Unary activation scan (examples/activation_h2h.rs,
+[4000,4000] f64 no-grad, cat-anchor healthy 4.2-4.3x): hardswish/hardsigmoid/hardtanh/mish/softplus/silu/
+elu/tanhshrink ALL already WIN (2.6-3.75x). Sole loser: `tensor_softshrink` COMPOSED of const_tensor_like
+x3 + gt + lt + sub + add + where x2 (~9 passes), MEASURED 176ms = 8.14x SLOWER. No-grad fast path: borrow
+input and compute `x > λ ? x-λ : (x < -λ ? x+λ : 0)` in ONE parallel pass — bit-exact with the composed
+three-way where (mutually-exclusive masks; x==±λ and NaN fall to 0). 176ms -> 7.3ms (~24x internal) =
+**3.13x FASTER**. f32 / grad / non-contiguous fall through. 3 softshrink tests + ft-api lib 2385/0 +
+conformance 39/0 green. NOTE: the activation surface is otherwise CLEAN (only softshrink was composed-slow);
+don't re-scan activations. AGENT BlackThrush.
+
 ## 2026-06-25 - WIN (landed): xlogy + xlog1py + logaddexp no-grad single-pass (flips 4.32x/3.77x/7.47x LOSS to ~2.3-2.6x WIN)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Two-input log-family scan (examples/logops_h2h.rs,
