@@ -4,6 +4,25 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - WIN (landed): narrow F64+F32 per-element-push -> parallel copy_from_slice (4.11x / 3.43x)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Broad serial-kernel classifier (awk over all
+`*_contiguous` kernels, flag serial + large outer loop) surfaced `narrow_tensor_contiguous_f64`/`_f32`:
+both built the output with a triply-nested SERIAL `for outer { for r { for inner { output.push } } }`.
+KEY INSIGHT: for each `outer`, the narrowed region is a CONTIGUOUS `length*inner_size` run (the
+(start+r)*inner_size+inner walk over r,inner is contiguous from start*inner_size) — i.e. narrow is
+`outer_size` independent contiguous block copies (the cat/stack pattern in disguise). Rewrote: pre-allocate,
+copy each outer's block via copy_from_slice (memcpy, not per-element push) and PARALLELIZE over outer rows
+(par_chunks_mut). Bit-identical (same elements in the same order — caught by narrow_dim0/dim1/3d/edge tests).
+narrow backs slicing / chunk / split / unbind; `torch.narrow(...).contiguous()` is the comparable realized
+copy. MEASURED LOCALLY (examples/narrow_ab.rs, kernels called directly; box DRAM verified clear via a 200MB
+Rust memcpy anchor = 14.6ms), narrow dim=1 [8000,8000]->len4000: ORIGINAL per-element-push serial f64
+**162.6ms** -> new parallel copy_from_slice **39.6ms** = **4.11x** total (1.16x from push->copy_from_slice +
+3.54x from parallelism); f32 RAYON A/B 1t **72.5ms** -> 64t **21.1ms** = **3.43x** (+ the same copy_from_slice
+serial improvement on top). ft-kernel-cpu 548/0 (6/0 narrow) + conformance green, bit-exact, no warnings.
+NOTE: built/measured LOCALLY because the rch fleet's shared cc-main had transient E0514 rustc-skew on the
+example's matrixmultiply/criterion build-deps (lib + conformance still build clean on rch). AGENT BlackThrush.
+
 ## 2026-06-26 - WIN (landed): cat+stack F32 kernels serial->parallel block-copy (4.26x / 4.17x; asymmetry method)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. ASYMMETRY METHOD: having landed cat+stack **f64**

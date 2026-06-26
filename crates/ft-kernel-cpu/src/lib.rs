@@ -12845,14 +12845,28 @@ pub fn narrow_tensor_contiguous_f64(
     }
     let offset = meta.storage_offset();
     let data = &input[offset..];
-    let mut output = Vec::with_capacity(out_numel);
-
-    for outer in 0..outer_size {
-        for r in 0..length {
-            for inner in 0..inner_size {
-                let idx = outer * dim_size * inner_size + (start + r) * inner_size + inner;
-                output.push(data[idx]);
-            }
+    // For each `outer`, the narrowed slice is a CONTIGUOUS run of `length*inner_size` elements
+    // (the original (start+r)*inner_size + inner walk over r,inner is contiguous from
+    // start*inner_size). So narrow = `outer_size` independent contiguous block copies — copy each
+    // via copy_from_slice (memcpy, not the old per-element push) and PARALLELIZE over outer rows.
+    // Bit-identical to the serial push (same elements in the same order).
+    let out_row = length * inner_size;
+    let src_stride = dim_size * inner_size;
+    let src_start = start * inner_size;
+    let mut output = vec![0.0_f64; out_numel];
+    let fill_row = |outer: usize, orow: &mut [f64]| {
+        let base = outer * src_stride + src_start;
+        orow.copy_from_slice(&data[base..base + out_row]);
+    };
+    if outer_size > 1 && out_numel >= PARALLEL_THRESHOLD && rayon::current_num_threads() > 1 {
+        use rayon::prelude::*;
+        output
+            .par_chunks_mut(out_row)
+            .enumerate()
+            .for_each(|(outer, orow)| fill_row(outer, orow));
+    } else {
+        for (outer, orow) in output.chunks_mut(out_row).enumerate() {
+            fill_row(outer, orow);
         }
     }
 
@@ -29652,13 +29666,25 @@ pub fn narrow_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let data = &input[offset..];
-    let mut output = Vec::with_capacity(out_numel);
-    for outer in 0..outer_size {
-        for r in 0..length {
-            for inner in 0..inner_size {
-                let idx = outer * dim_size * inner_size + (start + r) * inner_size + inner;
-                output.push(data[idx]);
-            }
+    // f32 mirror of narrow_tensor_contiguous_f64: each `outer` narrows a CONTIGUOUS
+    // `length*inner_size` run → copy_from_slice (memcpy) + parallelize over outer rows. Bit-exact.
+    let out_row = length * inner_size;
+    let src_stride = dim_size * inner_size;
+    let src_start = start * inner_size;
+    let mut output = vec![0.0_f32; out_numel];
+    let fill_row = |outer: usize, orow: &mut [f32]| {
+        let base = outer * src_stride + src_start;
+        orow.copy_from_slice(&data[base..base + out_row]);
+    };
+    if outer_size > 1 && out_numel >= PARALLEL_THRESHOLD && rayon::current_num_threads() > 1 {
+        use rayon::prelude::*;
+        output
+            .par_chunks_mut(out_row)
+            .enumerate()
+            .for_each(|(outer, orow)| fill_row(outer, orow));
+    } else {
+        for (outer, orow) in output.chunks_mut(out_row).enumerate() {
+            fill_row(outer, orow);
         }
     }
     Ok(output)
