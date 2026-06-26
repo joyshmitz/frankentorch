@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - WIN (landed): cummin (flattened) no-grad value-direct scan (4.33x SLOWER -> parity; 4.3x internal; asymmetry sibling of cummax)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. ASYMMETRY METHOD: cummax shipped (prev entry) → its
+sibling `tensor_cummin` (flattened) had the IDENTICAL pattern (compute cum_idx, then index_select-GATHER
+x[cum_idx[i]] + cum_idx.clone() + reshapes = ~5×numel allocs + cache-hostile gather). Same FIX mirrored with
+`<=` / `min_val=INFINITY`: no-grad f64 contiguous fast path borrows the input and builds cum_vals DIRECTLY in
+the argmin scan (`cum_vals.push(vals[min_idx])`) — no gather/clone/reshape. Bit-identical (same <=/NaN-prop;
+vals[min_idx] = gather result) — verified by prod_dim_cummin_golden_matches_torch + cummax_cummin_propagate_nan
++ tie_indices + cummin_propagates_gradient_via_argmin_routing (grad path UNCHANGED) + 7/0 cummin tests. grad /
+f32 / f16 / non-contiguous fall through. MEASURED (examples/cummin_h2h.rs, torch set_num_threads(8) vs FT-64t,
+cat_anchor 4.1x FASTER healthy; OLD baseline measured by reverting lib.rs in-worktree): **578.9ms (4.33x
+SLOWER) -> 134.4ms (1.01x, parity)** = 4.3x internal. Residual = inherent serial scan (torch also scan-bound
+~133ms). ft-api lib 2387/0 + conformance 39/0, bit-exact. EDITED ft-api via the clean worktree pattern. The
+cummax/cummin flattened-scan pair is now BOTH at parity (gap was the redundant gather-after-scan, not the scan).
+AGENT BlackThrush.
+
 ## 2026-06-26 - WIN (landed): cummax (flattened) no-grad value-direct scan (4.38x SLOWER -> parity; 4.3x internal, kills gather+clones)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey5_h2h flagged flattened `tensor_cummax` =
