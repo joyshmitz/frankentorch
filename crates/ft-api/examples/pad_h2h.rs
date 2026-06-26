@@ -27,6 +27,20 @@ fn time_ft<F: Fn(&mut FrankenTorchSession, ft_autograd::TensorNodeId)>(data: &[f
     best
 }
 
+fn time_ft_f32_constant_pad() -> f64 {
+    let data: Vec<f32> = (0..R * C).map(|i| ((i % 17) as f32) - 8.0).collect();
+    let mut best = f64::INFINITY;
+    for _ in 0..7 {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable_f32(data.clone(), vec![R, C], false).unwrap();
+        let t = Instant::now();
+        let _ = s.tensor_pad(x, &[P, P, P, P], 0.0);
+        let el = t.elapsed().as_secs_f64() * 1e3;
+        if el < best { best = el; }
+    }
+    best
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data: Vec<f64> = (0..R * C).map(|i| ((i % 17) as f64) - 8.0).collect();
     let ops: Vec<(&str, fn(&mut FrankenTorchSession, ft_autograd::TensorNodeId))> = vec![
@@ -43,6 +57,7 @@ torch.set_num_threads(8)
 R,C,P=4000,4000,16
 idx=torch.arange(R*C,dtype=torch.int64)
 x=((idx%17).double()-8.0).reshape(R,C)
+xf=((idx%17).float()-8.0).reshape(R,C)
 def t(fn,n=7):
     for _ in range(2):
         try: fn()
@@ -53,6 +68,7 @@ def t(fn,n=7):
     return min(ts)
 for name,fn in [("cat_anchor",lambda:torch.cat([x,x],1)),
                 ("constant_pad",lambda:F.pad(x,(P,P,P,P),mode='constant',value=0.0)),
+                ("constant_pad_f32",lambda:F.pad(xf,(P,P,P,P),mode='constant',value=0.0)),
                 ("reflect_pad",lambda:F.pad(x,(P,P,P,P),mode='reflect')),
                 ("replicate_pad",lambda:F.pad(x,(P,P,P,P),mode='replicate'))]:
     print("PT %s %.4f"%(name,t(fn)))
@@ -62,17 +78,23 @@ for name,fn in [("cat_anchor",lambda:torch.cat([x,x],1)),
     let out = child.wait_with_output();
     let pt = out.ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
     println!("op            FT(ms)    PT(ms)   ratio(PT/FT, <1=FT slower)");
-    for (name, f) in &ops {
-        let ftv = time_ft(&data, *f);
-        let p = pt.lines().find_map(|l| {
+    let lookup = |name: &str| -> Option<f64> {
+        pt.lines().find_map(|l| {
             let mut it = l.strip_prefix("PT ")?.split_whitespace();
-            if it.next()? == *name { it.next()?.parse::<f64>().ok() } else { None }
-        });
+            if it.next()? == name { it.next()?.parse::<f64>().ok() } else { None }
+        })
+    };
+    let report = |name: &str, ftv: f64, p: Option<f64>| {
         if let Some(p) = p {
             let r = p / ftv;
             let tag = if r >= 1.0 { format!("FT {r:.2}x FASTER") } else { format!("FT {:.2}x SLOWER", 1.0 / r) };
-            println!("  {name:<14} {ftv:8.3} {p:8.3}   {tag}");
+            println!("  {name:<16} {ftv:8.3} {p:8.3}   {tag}");
         }
+    };
+    for (name, f) in &ops {
+        let ftv = time_ft(&data, *f);
+        report(name, ftv, lookup(name));
     }
+    report("constant_pad_f32", time_ft_f32_constant_pad(), lookup("constant_pad_f32"));
     Ok(())
 }

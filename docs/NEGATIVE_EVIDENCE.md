@@ -23,6 +23,13 @@ MEASURED constant_pad [4000,4000] f64 no-grad, pad 16 each side (out [4032,4032]
 cat-anchor healthy 3.58-3.79x both times). 45 pad lib tests pass (bit-exact); ft-api lib 2383/0 +
 conformance 39/0 green. AGENT BlackThrush.
 
+FOLLOW-UP (same vein): extended the fast path to f32 (the tape `pad_slice<T>` is dtype-generic, so
+f32 constant pad hit the same per-element-division loss). Shared row-decode/block-copy; only the
+borrow (`contiguous_values_f32`), the `value as f32` fill, and the `tensor_variable_f32` constructor
+differ. Added bit-exact test `session_pad_2d_both_dims_f32_fast_path_matches_reference`. MEASURED
+constant_pad_f32 [4000,4000] no-grad, pad 16/side: FT 4.569ms vs torch 13.180ms = FT 2.88x FASTER
+(cat-anchor healthy 3.23x). ft-api lib 2384/0 + conformance 39/0 green. AGENT BlackThrush.
+
 ## 2026-06-26 - NEGATIVE (reverted): f32 prod finite-zero scan regresses the PyTorch gap
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh worktree scan found
