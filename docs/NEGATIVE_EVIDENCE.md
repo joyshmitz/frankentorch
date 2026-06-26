@@ -4,6 +4,18 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - NEGATIVE (no lever): structural big-output ops (outer/vander/diag_embed) are bandwidth-walled / already fast
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Following the cross-product win (narrow/cat composed,
+17x), scanned the OTHER structural ops whose output is much LARGER than the input (so output-write-bandwidth
+dominates, unlike cross where output≈input). examples/struct3_h2h.rs, f64 no-grad, cat-anchor ~parity at
+[1M,4]: outer [5000]x[5000]->25M = FT 1.18x FASTER (bandwidth floor); vander [5000]->[5000,5000] = FT 3.35x
+FASTER (already win); diag_embed [10000,50] = FT 278x FASTER (FT has a fast/lazy path). NO loss, NO lever —
+these are output-bandwidth-dominated, so FT (parallel) is already at parity-or-better. LESSON: the cross win
+was special (small output [N,3] + ~13 narrow/mul/sub/cat passes); structural ops with output >> input are
+bandwidth-walled and NOT cross-like. Don't re-scan outer/vander/diag_embed/kron (kron already documented
+bandwidth-bound). No code change. AGENT BlackThrush.
+
 ## 2026-06-25 - WIN (landed): batched cross-product no-grad single-pass (flips 17.04x LOSS to 2.17x WIN)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. `tensor_cross` batched path composes
