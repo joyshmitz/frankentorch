@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - WIN (landed) + OPEN GAP: rot90 k=2 multi-dim-flip fusion (1.65x->2.47x); k=1/k=3 still 3-4x SLOWER (transpose-materialization)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. `tensor_rot90` composes existing ops:
+k=1/k=3 = transpose + single-dim flip; k=2 = TWO separate single-dim flips. WIN (landed): k=2 now
+issues ONE multi-dim `flip([d0,d1])` (the no-grad multi-dim flip fast path does it in one pass) instead
+of two flip materializations — bit-identical (disjoint dims commute; covered by the existing rot90 k=2
+value test), MEASURED [4000,4000] f64 no-grad 1.65x -> 2.47x FASTER (13.7ms -> 9.8ms).
+
+OPEN GAP (NOT yet fixed, documented for next session): rot90 k=1 / k=3 MEASURED 3.05-3.27x / 3.21-4.25x
+SLOWER than torch (FT ~67-87ms vs ~20-22ms, cat-anchor healthy 3.0-4.3x). ROOT CAUSE: FT `tensor_transpose`
+MATERIALIZES a full copy (no lazy views), so rot90 k=1/k=3 do TWO passes (transpose copy + flip) where
+torch uses a transpose VIEW + one flip = one strided pass. The transpose materialization IS the whole gap.
+FIX = a FUSED cache-blocked transpose+flip gather (out[i,j] = input[j, C-1-i] for k=1) — essentially the
+permute/transpose kernel (vein 450bf7d2) with a flip offset; a naive strided fused gather likely won't beat
+the existing cache-blocked transpose, so it needs the blocked kernel. Deferred: more complex + less-common
+op than pad/flip. Benchmark: examples/rot90_h2h.rs. ft-api lib 2385/0 + conformance 39/0 green. AGENT BlackThrush.
+
 ## 2026-06-25 - WIN (landed): multi-dim + outer-dim flip col_map fast path (flips 3.61x / 2.95x LOSS to ~2.2-2.4x WIN)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. `tensor_flip` only fast-pathed `dims.len()==1`,
