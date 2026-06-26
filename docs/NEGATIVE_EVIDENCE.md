@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - WIN (landed): cat+stack F32 kernels serial->parallel block-copy (4.26x / 4.17x; asymmetry method)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. ASYMMETRY METHOD: having landed cat+stack **f64**
+parallel (c96bd5eb/bcfc4792), checked the **f32** siblings — `cat_tensor_contiguous_f32` and
+`stack_tensor_contiguous_f32` were STILL the serial `for outer { for input { extend_from_slice } }` double
+loop (the lone remaining serial outliers of this family). Mirrored the f64 fix exactly: precompute per-input
+blocks (cat skips empty inputs WITHOUT slicing; stack uses uniform inner_size with no empty edge),
+pre-allocate the output, PARALLELIZE over outer rows via par_chunks_mut(out_row_len) + copy_from_slice.
+Bit-identical to the serial extend (same bytes at same offsets). Removed the now-dead `checked_contiguous_range`
+helper (its last callers — the f64+f32 serial cat/stack — are all gone; build is warning-clean). MEASURED via
+same-worker RAYON A/B (examples/catstack_f32_ab.rs, kernels called directly): cat dim=1 [4000,4000]x4 f32 1t
+**153.3ms** -> 64t **36.0ms** = **4.26x**; stack dim=1 [4000,4,4000] f32 1t **152.0ms** -> 64t **36.4ms** =
+**4.17x** (1t IS old serial). ft-kernel-cpu 548/0 (20/0 cat+stack incl f32 + empty-edge) + conformance 0
+failures, bit-exact, no warnings. ✅ SERIAL BLOCK-COPY KERNEL SURFACE NOW FULLY DONE across BOTH dtypes
+(cat/stack × f64/f32 all parallel). AGENT BlackThrush.
+
 ## 2026-06-26 - WIN (landed): stack kernel serial->parallel block-copy (4.52x; grad-path / direct-caller)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. SIBLING of cat: `stack_tensor_contiguous_f64` built
