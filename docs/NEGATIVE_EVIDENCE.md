@@ -4,6 +4,19 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - WIN (landed): batched cross-product no-grad single-pass (flips 17.04x LOSS to 2.17x WIN)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. `tensor_cross` batched path composes
+narrow/mul/sub/cat (multi-pass) — MEASURED at [5_000_000, 3] f64 no-grad **655ms = 17.04x SLOWER** than
+torch.linalg.cross (examples/cross_h2h.rs, cat-anchor healthy 3.39x). The cross is trivial bilinear compute.
+No-grad fast path: when the (first) size-3 axis IS the last dim (the common batched [..,3] case, matching
+FT's first-size-3-dim rule, gated via `position(d==3) == last`), each row is a contiguous 3-vector; borrow
+both and compute `[a1*b2-a2*b1, a2*b0-a0*b2, a0*b1-a1*b0]` per row via `par_chunks_mut(3)` in ONE pass.
+Bit-exact with the composed path (same products). 655ms -> 13.4ms (~49x internal) = **2.17x FASTER**. Grad /
+non-f64 / non-contiguous / size-3-not-last (e.g. [3,N]) fall through to the composed cross_along_dim. 28
+cross tests + ft-api lib 2385/0 + conformance 39/0 green. NOTE: rel_entr (composed, similar to entr) is
+scipy-only — torch has NO rel_entr, so it can't be h2h'd vs torch; skip. AGENT BlackThrush.
+
 ## 2026-06-25 - WIN (landed): logit + entr no-grad single-pass (flips 3.27x / 4.97x LOSS to 1.83x / 1.52x WIN)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. More special-function scan (examples/special2_h2h.rs,
