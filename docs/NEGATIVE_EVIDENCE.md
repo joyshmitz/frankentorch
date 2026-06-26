@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - WIN (landed): addcmul + addcdiv no-grad fused single-pass (flips 3.16x / 3.36x LOSS to 2.52x / 1.78x WIN)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Fused 3-input scan (examples/fused3_h2h.rs,
+[4000,4000] f64 no-grad, cat-anchor healthy 4.17x). `tensor_addcmul` (= input + value*t1*t2) composed
+mul + scale + add (3 passes), 116ms = 3.16x SLOWER; `tensor_addcdiv` (= input + value*t1/t2) composed
+div + scale + add, 124ms = 3.36x SLOWER vs torch's FUSED kernels. No-grad equal-shape contiguous f64 fast
+path: borrow all three operands and compute `input + value*(t1*t2)` (resp. `t1/t2`) in ONE parallel pass.
+Bit-exact with the composed path (same t1*t2 / t1/t2 grouping then value scale [scalar mul commutes] then
+add). addcmul 116->10ms (~12x internal) = **2.52x FASTER**; addcdiv 124->14ms (~9x internal) = **1.78x
+FASTER** (division is costlier per-element, hence the lower ratio — still a win). grad / non-f64 /
+non-contiguous / broadcast fall through. 4 tests + ft-api lib 2385/0 + conformance 39/0 green.
+
+ALSO SCANNED: clamp_tensor already WIN (1.25x — composes my fast maximum/minimum). lerp 2.21x SLOWER
+(tape op) — NOT yet fixed: the lerp kernel's exact formula (start + w*(end-start) vs (1-w)*start + w*end)
+must be confirmed for bit-exactness before a borrow fast path; deferred (formula-ambiguity risk). AGENT
+BlackThrush.
+
 ## 2026-06-25 - WIN (landed): softshrink no-grad single-pass (flips 8.14x LOSS to 3.13x WIN) + activation scan
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Unary activation scan (examples/activation_h2h.rs,
