@@ -4,6 +4,61 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - NEGATIVE (reverted): masked_fill direct no-grad Criterion row reconfirms no-ship
+
+Bead/thread `frankentorch-kgs4`, agent `PearlReef`. Fresh worktree scan found
+no unlanded measured win to land: the only worktree ahead of `origin/main` was
+`/data/projects/frankentorch-gxpb2-pass10`, an explicit large-n row-SIMD
+rejection. This pass then measured the unstaged equal-shape f64 no-grad
+`tensor_masked_fill` direct-output hunk already present in the shared checkout.
+While the run was in progress, `origin/main` advanced with the broader
+BlackThrush f64 `where`/`masked_fill` branchless-select rejection above; this
+entry records the independent Criterion row from this pass and leaves product
+source reverted.
+
+Temporary harness: added and then removed a `masked_fill_direct/f64_2000x2000`
+row in `crates/ft-api/benches/ops_bench.rs`. Both baseline and candidate used
+the same temporary row, same warm
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b`, and local
+RCH fallback because no worker slot was admissible.
+
+Required literal command probe:
+`AGENT_NAME=PearlReef CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo bench --release -p ft-api --bench ops_bench --
+masked_fill_direct/f64_2000x2000 --warm-up-time 1 --measurement-time 3
+--sample-size 10 --noplot` failed because this Cargo rejects `--release` for
+`cargo bench`; artifact:
+`artifacts/perf/frankentorch-kgs4.cod-b-masked-fill-direct-20260626T010143Z/literal_cargo_bench_release.log`.
+
+Accepted per-crate bench command:
+`AGENT_NAME=PearlReef CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo bench -p ft-api --bench ops_bench --
+masked_fill_direct/f64_2000x2000 --warm-up-time 1 --measurement-time 3
+--sample-size 10 --noplot`.
+
+Measured:
+
+- Clean `origin/main` baseline from detached worktree:
+  `[26.281 ms 28.667 ms 31.490 ms]`.
+- Candidate direct-output hunk:
+  `[27.531 ms 31.574 ms 37.172 ms]`, Criterion change
+  `[-20.744% -4.2864% +17.286%]`, `p = 0.71`, no change detected by
+  Criterion and a `1.10x` slower midpoint.
+- Fresh PyTorch sidecar, torch `2.12.0+cpu`, 8 threads, same `2000x2000` f64
+  `x.masked_fill(mask, 0.0)` fixture: `min=4.047852 ms`, `p50=4.994658 ms`,
+  checksum `-8.000000`.
+
+FT/PyTorch ratio by PyTorch min: clean baseline `7.08x SLOWER`
+(`28.667 / 4.047852`); candidate `7.80x SLOWER`
+(`31.574 / 4.047852`). Decision: REVERT. This smaller Criterion row agrees
+with the broader h2h rejection above: direct f64 no-grad masked-fill output
+does not remove the dense mask/output bandwidth wall and should not be retried
+as a standalone lever. Source and temporary bench harness were reverted before
+this ledger-only commit. Score vs PyTorch for this lever: `0W / 1L / 0N`.
+
+Artifacts:
+`artifacts/perf/frankentorch-kgs4.cod-b-masked-fill-direct-20260626T010143Z/`.
+
 ## 2026-06-26 - NEGATIVE (reverted): f64 where/masked_fill branchless select still loses to PyTorch
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Fresh worktree scan found
