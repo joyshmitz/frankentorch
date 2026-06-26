@@ -4,6 +4,26 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - WIN (landed): reflect/replicate/circular pad no-grad col_map fast path (flips ~3.3-3.8x LOSS to ~3.5x WIN)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. The no-grad reflect/replicate/circular pad
+path (kgs4.96) gathered the output with a per-OUTPUT-ELEMENT O(ndim) coordinate decode +
+reflect/clamp/wrap (`build`) AND cloned the input via `tensor_values` — MEASURED at 4D
+([8,32,256,256], pad 8/side) 3.83x/3.68x/3.34x SLOWER than torch (FT ~105ms vs ~28ms). LEVER: the
+LAST dim's source-column map is identical for every output row, so precompute `col_map[out_last]`
+ONCE; then per output row decode only the OUTER coords (reflect/clamp/wrap the padded outer dims →
+source row base) and gather via `col_map`. ~out_outer ROW decodes + out_numel cheap map-lookups
+instead of out_numel full ELEMENT decodes, and the input is BORROWED (`contiguous_values`) not cloned.
+Bit-identical to `build` (computes the same per-element source index, factored last-dim vs outer —
+proof + 2D reflect golden test `session_pad_2d_reflect_both_dims_fast_path_matches_torch`). f64
+contiguous no-grad only; non-f64 / non-contiguous fall through to the original clone+build gather; the
+grad path (index_select) is untouched.
+
+MEASURED [8,32,256,256] f64 no-grad, pad 8/side: FT ~105ms -> 7.7-8.4ms (~13x internal); vs torch
+F.pad: reflect 3.46-3.55x / replicate 3.03-3.52x / circular 3.48-3.63x FASTER (pad_modes_4d_h2h, two
+runs, cat-anchor healthy 2.09-2.14x). constant_4d also confirmed 4.67x FASTER on this shape. 47 pad
+lib tests pass (bit-exact); ft-api lib 2385/0 + conformance 39/0 green. AGENT BlackThrush.
+
 ## 2026-06-25 - WIN (landed): constant pad no-grad block-copy fast path (flips 3.70x LOSS to 3.76x WIN)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. `tensor_pad` (constant mode — the common
