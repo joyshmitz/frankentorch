@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-25 - WIN (landed): logit + entr no-grad single-pass (flips 3.27x / 4.97x LOSS to 1.83x / 1.52x WIN)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. More special-function scan (examples/special2_h2h.rs,
+[4000,4000] f64 no-grad, input in (0,1), cat-anchor 2.7x). ndtr 6.65x / ndtri 2.61x already WIN; i1 1.02x
+and erfcx 1.75x ~parity/marginal (series-floor, left alone). Two clear losers, both composed:
+
+`tensor_logit` (eps=None) composed full + sub + div + log (~4 passes), 89ms = 3.27x SLOWER. `tensor_entr`
+composed log + neg + mul + full + eq + where + lt + full + where (~9 passes), 137ms = 4.97x SLOWER. No-grad
+contiguous f64 fast paths: borrow input and compute logit(x)=ln(x/(1-x)) (resp. entr(x)= x<0 ? -inf :
+(x==0 ? 0 : -x*ln(x))) in ONE parallel pass. Bit-exact with the composed paths (same 1-x / x/(1-x) / libm
+ln for logit; same (-x)*ln(x) grouping + x==0->0 / x<0->-inf / NaN->NaN three-way for entr). logit 89->17ms
+= 1.83x FASTER; entr 137->19ms = 1.52x FASTER (this run cat-anchor 2.7x = somewhat contended, so FT ms
+slightly inflated; both clearly flip the loss). logit eps-clamp variant / grad / non-contiguous fall through.
+35 logit/entr tests + ft-api lib 2385/0 + conformance 39/0 green. NOTE: ndtr/ndtri win, i1/erfcx are
+series-floor (don't re-probe for a borrow win). AGENT BlackThrush.
+
 ## 2026-06-25 - WIN (landed): lerp no-grad parallel (flips 2.21x LOSS to 1.65x WIN)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Resolving the lerp lead from the addcmul entry:
