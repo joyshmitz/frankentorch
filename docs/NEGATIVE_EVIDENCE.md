@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): F32 where no-grad parallel select (23.8x SLOWER -> 2.4x FASTER) + opens F64-only-gate vein
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Following the f32-cat fix, swept the F64-only-gate vein
+(`grep "== DType::F64"` in ft-api): a survey_f32_h2h of hot ops (cat_anchor 3.65x FASTER, healthy) found ALL
+F64-only no-grad fast paths silently regress f32 to the slow tape/composed path: **where 23.80x SLOWER (288ms)**,
+addcmul 21.74x (268ms), maximum 11.68x (153ms), lerp 8.90x (119ms), mul_scalar 5.69x (69ms). FIXED THE BIGGEST:
+`tensor_where` no-grad fast path was gated `dtype==F64` for all of cond/x/y → f32 fell to the tape where (clone
+cond+x+y). Added the F32 mirror: borrow contiguous f32 buffers (`contiguous_values_f32()`) + parallel select
+(`(0..n).into_par_iter().map(|i| if cd[i]!=0.0 {xd[i]} else {yd[i]})`), return `tensor_variable_f32`. Bit-exact
+(truthy==nonzero; grad/non-contig/non-f32 fall through). 12/0 where tests, ft-api lib 2388/0 + conformance 39/0.
+MEASURED (examples/survey_f32_h2h.rs, [4000,4000] f32, torch set_num_threads(8) vs FT-64t): where **288ms ->
+5.3ms (~54x internal)** now **2.14-2.44x FASTER** (was 23.8x SLOWER). ⏳⏳ VEIN STILL OPEN (same F32-mirror fix,
+measured gaps, UNSHIPPED): addcmul 21.7x / maximum 11.7x / lerp 8.9x / mul_scalar 5.7x SLOWER — NEXT sweep
+(maximum needs an f32 min/max kernel or borrow+composed; lerp/addcmul/mul_scalar are borrow+single-parallel-pass).
+AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): F32 cat no-grad parallel block-copy fast path (9.3x SLOWER -> 3.4x FASTER vs torch)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Surfaced as a bad anchor in the f32 transpose work: f32
