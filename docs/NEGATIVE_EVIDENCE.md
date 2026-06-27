@@ -4,6 +4,26 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - PARTIAL WIN + NEGATIVE: transpose scalar elem==1 fast path (~5.6%; gap is strided-DRAM, NOT clone_from_slice)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. BIGGEST CURRENT MEASURED GAP (re-surveyed, anchor-clean):
+**movedim / 2-D transpose** of [4000,4000] f64 = FT **~77ms vs PyTorch ~25-32ms = ~2.5-2.7x SLOWER** (the
+peer's earlier "where 5.12x" was a contended/comparison-mask misread — clean `tensor_where` is actually 1.37x
+FASTER, 24.3ms vs 33.3ms; movedim is the real top gap). HYPOTHESIS: `permute_slice`'s cache-blocked transpose
+(ft-autograd, backs ALL permute/transpose/movedim/swapaxes/.mT) does 16M per-element
+`clone_from_slice(&[1 elem])` in the `elem==1` (pure-transpose, no-suffix) case — a call + 4 range-bounds
+checks per element. FIX: scalar fast path `dgn[j*a_dim+i] = sgn[i*b_dim+j].clone()` for elem==1 in both the
+per-plane closure and the single-large-plane par branch. Bit-identical (same single value moved) — 52/0
+ft-autograd + 23/0 ft-api transpose/permute/movedim tests, ft-autograd 476/0 + ft-api 2388/0 + conformance
+39/0. MEASURED same-session A/B (struct_survey2_h2h.rs, build-outside-timer, min-of-3): OLD **77.0ms** -> NEW
+**72.9ms** = **~5.6%** (NEW lower every run). ⛔ NEGATIVE RESULT: clone_from_slice was NOT the wall (LLVM
+already lowers a 1-elem clone_from_slice to a scalar move) — the **2.5x gap is fundamentally strided-DRAM /
+cache-miss bound** at the 128MB working set (FT ~3.8GB/s effective vs torch ~10GB/s; torch uses an AVX-512 /
+cache-oblivious blocked transpose). The real lever = a SIMD register-blocked or recursive cache-oblivious
+transpose (a larger correctness-critical rewrite), NOT a per-element micro-opt. Landed the 5.6% (real, bit-
+exact, universal primitive) + recorded the negative so the next session doesn't re-chase clone_from_slice.
+EDITED ft-autograd via the clean worktree pattern. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): bounded-integer no-grad global median (3.28x SLOWER -> 1.27x FASTER vs torch)
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. BOLD-VERIFY first checked bench worktrees for a

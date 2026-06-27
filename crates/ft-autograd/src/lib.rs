@@ -10210,12 +10210,25 @@ impl TensorTape {
                         let mut jj = 0;
                         while jj < b_dim {
                             let j_end = (jj + TILE).min(b_dim);
-                            for i in ii..i_end {
-                                for j in jj..j_end {
-                                    let s_off = (i * b_dim + j) * elem;
-                                    let d_off = (j * a_dim + i) * elem;
-                                    dgn[d_off..d_off + elem]
-                                        .clone_from_slice(&sgn[s_off..s_off + elem]);
+                            if elem == 1 {
+                                // SCALAR fast path for the pure transpose (no suffix dims — the
+                                // dominant 2-D / matrix_transpose case). A direct element move is
+                                // ~3x faster than `clone_from_slice` of a 1-element slice, which
+                                // pays a call + 4 range-bounds checks PER ELEMENT (16M of them at
+                                // 4k×4k). Bit-identical (same single value moved).
+                                for i in ii..i_end {
+                                    for j in jj..j_end {
+                                        dgn[j * a_dim + i] = sgn[i * b_dim + j].clone();
+                                    }
+                                }
+                            } else {
+                                for i in ii..i_end {
+                                    for j in jj..j_end {
+                                        let s_off = (i * b_dim + j) * elem;
+                                        let d_off = (j * a_dim + i) * elem;
+                                        dgn[d_off..d_off + elem]
+                                            .clone_from_slice(&sgn[s_off..s_off + elem]);
+                                    }
                                 }
                             }
                             jj += TILE;
@@ -10253,12 +10266,20 @@ impl TensorTape {
                             let mut ii = 0;
                             while ii < a_dim {
                                 let i_end = (ii + TILE).min(a_dim);
-                                for j in jj..j_end {
-                                    for i in ii..i_end {
-                                        let s_off = (i * b_dim + j) * elem;
-                                        let d_off = ((j - jj) * a_dim + i) * elem;
-                                        dblk[d_off..d_off + elem]
-                                            .clone_from_slice(&src[s_off..s_off + elem]);
+                                if elem == 1 {
+                                    for j in jj..j_end {
+                                        for i in ii..i_end {
+                                            dblk[(j - jj) * a_dim + i] = src[i * b_dim + j].clone();
+                                        }
+                                    }
+                                } else {
+                                    for j in jj..j_end {
+                                        for i in ii..i_end {
+                                            let s_off = (i * b_dim + j) * elem;
+                                            let d_off = ((j - jj) * a_dim + i) * elem;
+                                            dblk[d_off..d_off + elem]
+                                                .clone_from_slice(&src[s_off..s_off + elem]);
+                                        }
                                     }
                                 }
                                 ii += TILE;
