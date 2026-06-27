@@ -678,6 +678,37 @@ fn bench_addcmul(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_threshold(c: &mut Criterion) {
+    let mut group = c.benchmark_group("threshold");
+    let rows = 4000usize;
+    let cols = 4000usize;
+    let n = rows * cols;
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(8));
+    group.throughput(Throughput::Elements(n as u64));
+    let input_values: Vec<f32> = (0..n)
+        .map(|i| {
+            let v = ((i % 2000) as f32 - 1000.0) * 0.01;
+            if i % 997 == 0 { f32::NAN } else { v }
+        })
+        .collect();
+
+    group.bench_function("f32_4000x4000_nograd", |b| {
+        b.iter_batched(
+            || {
+                let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+                let input = session
+                    .tensor_variable_f32(input_values.clone(), vec![rows, cols], false)
+                    .unwrap();
+                (session, input)
+            },
+            |(mut session, input)| black_box(session.tensor_threshold(input, 0.0, -1.0).unwrap()),
+            BatchSize::LargeInput,
+        );
+    });
+    group.finish();
+}
+
 fn bench_lerp(c: &mut Criterion) {
     let mut group = c.benchmark_group("lerp");
     let rows = 4000usize;
@@ -2399,6 +2430,7 @@ criterion_group!(
     bench_pow,
     bench_add,
     bench_addcmul,
+    bench_threshold,
     bench_lerp,
     bench_pad,
     bench_backward_matmul,

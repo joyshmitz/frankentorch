@@ -58,6 +58,46 @@ measured `pad/f32_4000x4000_pad8_value2_nograd` at `[22.986 ms 24.198 ms 25.179 
 entries. Mapped lever: row-structured segmented data-parallel fill/copy from the graveyard flattening/SIMD-tiled
 kernel playbook, with bit-level behavior proof rather than heuristic equivalence. AGENT BlackThrush.
 
+## 2026-06-27 - WIN (landed): f32 threshold one-pass fast path (27.74x -> 1.80x SLOWER vs torch)
+
+Land-or-dig from updated `origin/main` (`68f7b205`), agent `SilverLake`.
+Worktree scan found older unmerged addcmul/GEMM/linear-cache branches, but
+`origin/main` already contains the addcmul `mul_add` implementation and explicit
+rejection/duplicate history for the stale GEMM/cache branches. The actionable
+bench worktree lever was f32 no-grad `threshold`: the existing path builds
+full-size threshold/value/NaN tensors, then runs `isnan`, `gt`, and two
+`where` passes over the same 16M-element tensor.
+
+Fix: add a contiguous no-grad f32 fast path for `tensor_threshold` that performs
+the scalar-cast select in one rayon pass: `NaN -> canonical NaN`, `x > threshold
+-> x`, else `value`. Grad-enabled, non-f32, and non-contiguous inputs still use
+the existing autograd-aware composition, preserving the threshold gradient
+contract and fallback behavior.
+
+Evidence: focused threshold tests passed:
+`AGENT_NAME=SilverLake CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+rch exec -- cargo test -p ft-api threshold --lib` (`9 passed`). The literal
+requested bench shape
+`AGENT_NAME=SilverLake CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+rch exec -- cargo bench --release -p ft-api --bench ops_bench threshold` was
+probed first and failed because this Cargo rejects `--release` for `cargo bench`.
+The valid per-crate Criterion command
+`AGENT_NAME=SilverLake CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+rch exec -- cargo bench -p ft-api --bench ops_bench threshold -- --noplot`
+measured the baseline `threshold/f32_4000x4000_nograd` at
+`[433.96 ms 439.54 ms 446.30 ms]` and the post-rebase candidate at
+`[25.548 ms 28.591 ms 31.767 ms]`, a `439.54 / 28.591 = 15.37x` internal
+median speedup.
+
+Fresh PyTorch CPU timing for the same shape/data in
+`/data/projects/.venvs/frankentorch-pytorch-cpu` measured threshold median
+`15.843 ms`. Ratio vs PyTorch improved from baseline
+`439.54 / 15.843 = 27.74x SLOWER` to post-rebase candidate
+`28.591 / 15.843 = 1.80x SLOWER`. Residual gap is PyTorch's lower-level
+vectorized threshold/select kernel; the safe-Rust lever here removed the
+avoidable multi-pass op-graph and f32 scalar-tensor construction overhead
+without changing autograd semantics. AGENT SilverLake.
+
 ## 2026-06-27 - WIN (landed): parallel pairwise f32 full reductions (sum 10.26x -> 4.91x SLOWER vs torch)
 
 Land-or-dig from updated `origin/main` (`af519883`), agent `SilverLake`. The
