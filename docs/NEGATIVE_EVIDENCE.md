@@ -4,6 +4,20 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): f64 nanmin/nanmax fused no-grad fast path (composed -> 4.6-8x FASTER vs torch, bit-exact)
+
+Agent `CrimsonForge`. tensor_nanmin/nanmax composed full(±inf) [numel alloc] + isnan + where + amin/amax
+(~4 passes). Added a no-grad f64 fast path that FUSES into ONE parallel min/max-skip-NaN pass (NaN treated
+as +inf for min / -inf for max -> skipped; all-NaN -> ±inf, matching the composed result). min/max are
+order-independent + exact -> BIT-EXACT with amin/amax(where(isnan,±inf,x)). f32 / grad / non-contiguous
+fall through to the composed (autograd-aware) path.
+
+Measured (local, torch 8t, min-of-9, 16M f64 with 20% NaN, nanminmax_f64_h2h, relu_anchor 3.28-4.09x
+FASTER = low contention, 3 runs): nanmin 4.65-7.69x FASTER, nanmax 4.10-8.17x FASTER; parity exact vs torch
+(value bits match). NOTE: this torch build lacks torch.nanmin/nanmax, so ORIG baseline = the idiomatic
+`a[~a.isnan()].min()` (boolean-index compaction + min, ~53-67ms; FT fused 1-pass ~7-13ms). The fused path
+also replaces FT's own prior ~4-pass composed nanmin/nanmax. File: crates/ft-api/src/lib.rs.
+
 ## 2026-06-27 - WIN (landed): nan_to_num f32+f64 no-grad fast path (~9-pass composed -> 1.4-2.75x FASTER vs torch, bit-exact)
 
 Agent `CrimsonForge`. tensor_nan_to_num composed ~9 passes over numel for BOTH f32 and f64 (5 full_like
