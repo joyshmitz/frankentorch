@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): f32 bincount no-upcast parallel fast path (8.34x SLOWER -> 1.60x, bit-exact)
+
+Bead/thread `frankentorch-kgs4.177`, agent `BlackThrush`. count_membership_h2h flagged f32 `bincount` (8M, ints
+0..4096) at **8.34x SLOWER** than torch (62ms vs 7.5ms). ROOT (the histc/median anti-pattern + a serial count):
+`tensor_values_lossy_f64` UPCASTS f32->f64 + a SERIAL validate/max loop + a SERIAL `counts[v as usize] += 1`
+counting loop. FIX: f32 unweighted no-grad fast path — borrow `contiguous_values_f32()` (no upcast), parallel
+validate (any non-integer / any negative) + parallel max, then parallel per-thread local-array counting + merge
+(out_len capped at 1<<16 to bound per-job memory; larger falls through). ★BIT-IDENTICAL: integer counts are
+order-invariant + `v as usize` == `(v as f64) as usize` for integer v; torch parity (bincount_f32_parity, 300007
+vals) **0 mismatches** (len + all bins). Weighted (scatter_add for grad) / non-contiguous / huge-out_len fall
+through unchanged. ft-api bincount 11/0, conformance smoke 39/0. MEASURED: 62ms -> 10.4ms (~6x internal) now
+**1.60x SLOWER** = ~parity (was 8.34x); residual is the 3 validate/max passes + the local-array merge vs torch's
+fused kernel — close enough, low priority. ★OTHER count/membership verdicts: isin **11.72x FASTER** (torch isin
+slow), ★histogram **5.39x SLOWER** (same upcast+serial pattern as histc — NEXT target). The `tensor_values_lossy_f64`
+anti-pattern vein (median/histc/bincount shipped) keeps paying. Finder = count_membership_h2h.rs + bincount_f32_parity.rs.
+AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): f32 histc no-upcast fast path (3.42x SLOWER -> 2.89x FASTER vs torch, bit-exact)
 
 Bead/thread `frankentorch-kgs4.176`, agent `BlackThrush`. select_search_h2h flagged f32 `histc` (16M, 256 bins)
