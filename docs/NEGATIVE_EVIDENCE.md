@@ -4,6 +4,21 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): F32 cat no-grad parallel block-copy fast path (9.3x SLOWER -> 3.4x FASTER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Surfaced as a bad anchor in the f32 transpose work: f32
+`tensor_cat` of [4000,4000]×2 was **~250ms vs torch ~26ms = ~9.3x SLOWER** while f64 cat was already FASTER.
+ROOT: the no-grad cat fast path was **F64-ONLY** (`matches!(dtype, Ok(DType::F64))`); f32 inputs fell through
+to the tape cat = clone-each-input + per-element division-unravel. FIX: added the F32 mirror of the f64 fast
+path — borrow all inputs' contiguous f32 storage (`contiguous_values_f32()`) and parallel block-copy per outer
+slice (`par_chunks_mut`, `copy_from_slice`, no division), return via `tensor_variable_f32`. Cat along `dim` is a
+contiguous block copy per (outer, input) ⇒ bit-exact. Grad / non-contiguous / mixed-dtype still take the tape
+path. 84/0 cat tests, ft-api lib 2388/0 + conformance 39/0. MEASURED (examples/movedim_f32_h2h.rs cat_anchor,
+[4000,4000]×2 f32, torch set_num_threads(8) vs FT-64t): **~250ms -> 7.5ms (~33x internal)** now **3.14-3.67x
+FASTER** than torch (3-run). LESSON: when a no-grad fast path is gated to F64 only, the F32 path silently
+regresses to the slow tape (clone) path — mirror these fast paths to F32 (the dominant ML dtype). AGENT
+BlackThrush.
+
 ## 2026-06-27 - WIN (landed): AVX2 8×8 register-blocked F32 transpose (2.7x SLOWER -> 1.6x FASTER vs torch)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. f32 sibling of the f64 AVX2 transpose (prev entry) —
