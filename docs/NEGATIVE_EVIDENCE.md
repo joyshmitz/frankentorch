@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): f32 histc no-upcast fast path (3.42x SLOWER -> 2.89x FASTER vs torch, bit-exact)
+
+Bead/thread `frankentorch-kgs4.176`, agent `BlackThrush`. select_search_h2h flagged f32 `histc` (16M, 256 bins)
+at **3.42x SLOWER** than torch (85ms vs 25ms). ROOT: the binning was ALREADY parallel (kgs4.100 local-bins+merge),
+but f32 went through `tensor_values_lossy_f64` which UPCASTS f32->f64 (128MB clone) + a SERIAL finite-check loop
+over 16M f64 — both dead serial overhead. FIX: f32 fast path borrows `contiguous_values_f32()` (no upcast) +
+parallel finite-check (`par_iter().any(!finite)`) + parallel auto-range (par min/max) + the same parallel
+local-bins histogram, with each bin computed `v as f64` (f32->f64 EXACT) in the SAME f64 bin math. ★BIT-IDENTICAL:
+same f64 bin assignment + integer counts are order-invariant; torch parity (histc_f32_parity, 500003 vals incl
+exact bin boundaries + out-of-range) **0/8 bins**. ft-api histc 9/0, conformance smoke 39/0. MEASURED: 85ms ->
+8.4ms (~10x internal) now **2.89x FASTER** than torch (was 3.42x SLOWER). NOTE: histc returns F64 counts for BOTH
+dtypes (torch f32->f32) — a pre-existing dtype quirk, UNCHANGED (integer counts are exact in f64). The
+"F64-fast-path / F32-lossy_f64-upcast" anti-pattern (median kgs4.175 + histc here) is a RICH non-elementwise vein
+— grep `tensor_values_lossy_f64` callers with a parallel/heavy body. Finder = select_search_h2h.rs +
+histc_f32_parity.rs. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN+BUGFIX (landed): f32 median quickselect fast path (4.18x SLOWER -> parity) + NaN propagation fix (both dtypes)
 
 Bead/thread `frankentorch-kgs4.175`, agent `BlackThrush`. select_search_h2h flagged f32 `median` (16M) at **4.18x
