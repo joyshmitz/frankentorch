@@ -4,6 +4,31 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-26 - PARTIAL KEEP / residual loss: count_nonzero IEEE bit classifier (5.90x SLOWER -> 1.13x SLOWER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `PearlReef`. BOLD-VERIFY first checked the bench worktrees for a
+measured win not already on main: none found. The largest fresh reduction gap was global
+`count_nonzero`; baseline `count_nonzero_h2h` on current source was FT `18.789 ms` vs PyTorch `3.183 ms`
+= **5.90x SLOWER**, while `reduction_scan_h2h` all-nonzero showed FT `31.967 ms` vs PyTorch `3.545 ms`
+= **9.02x SLOWER**. Root cause after the earlier clone-elision fix: the hot path still did
+floating-point compares in a branchy predicate. Lever: classify IEEE bits directly and count
+`abs_bits != 0`, with large Rayon morsels (`262144` f64 lanes, `524288` f32 lanes), preserving
+PyTorch semantics: both `+0.0` and `-0.0` are zero; NaN/inf/nonzero values count as nonzero.
+Commit `1436d2bd` added the code and the signed-zero/NaN test.
+
+MEASURED against PyTorch: best confirmation run was FT `2.473 ms` vs PyTorch `2.181 ms` =
+**1.13x SLOWER** (about **7.6x FT-internal** vs the 18.789ms baseline); all-nonzero scan improved to
+FT `3.109 ms` vs PyTorch `2.251 ms` = **1.38x SLOWER**. This is not a PyTorch win, but it is not
+zero-gain, so the landed code is retained as a gap closure. Do not retry the scalar bit-classifier
+or chunk-size tuning family alone; the remaining PyTorch residual needs a different representation or
+kernel class (true SIMD/popcount over compact bool/mask storage, or a PyTorch-like vectorized reduction).
+Validation: `rch exec -- cargo test -p ft-api count_nonzero --lib -- --nocapture` passed 4/0 on
+`ovh-a`; `rch exec -- cargo test -p ft-conformance` passed 199/0 unit plus integration/doc tests on
+`ovh-a`. Literal `rch exec -- cargo bench --release -p ft-api -- count_nonzero` was probed and Cargo
+rejected `--release` for `cargo bench`; artifact:
+`artifacts/perf/frankentorch-kgs4.pearlreef-boldverify-20260626T0635Z/count_nonzero_literal_cargo_bench_release.log`.
+AGENT PearlReef.
+
 ## 2026-06-26 - WIN (landed): layer_norm + rms_norm no-grad BORROW input (3.81x/1.78x SLOWER -> 2.59x/5.40x FASTER vs torch)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey7_h2h flagged `layer_norm` = **3.81x
