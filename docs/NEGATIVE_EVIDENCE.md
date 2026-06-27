@@ -9553,3 +9553,34 @@ mask-density strategy, not a scalar par-iter rewrite. `rch exec -- cargo bench -
 does not accept `--release` for `bench`; the per-crate `rch exec -- cargo run --release
 -p ft-api --example op_scan4_h2h` build succeeded on `vmi1227854` but that worker lacks
 `torch`, so the PyTorch ratio above is from the local oracle run. AGENT PearlReef.
+
+## 2026-06-26 - REJECT: row-vector FMA path for m=1 RHS-transposed matmul regressed recurrent LSTM
+
+Agent `PearlReef`. Inspected the dirty `/data/projects/frankentorch-sif85-rubylotus`
+row-vector FMA sketch for `matmul_rhs_transposed_contiguous_f64_into` and re-tested the
+idea on current `origin/main` (`23c69ac5`). Candidate gate: only `m == 1` and runtime FMA
+hosts bypassed `gemm::dgemm_bt`, using a direct `mul_add` dot for each output column.
+
+Correctness probe passed before rejection:
+
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo test -p ft-kernel-cpu row_vector_fma_rhs_transposed_matches_dgemm_bt_for_recurrent_shapes -- --nocapture`
+
+Per-crate Criterion bench, same current-base worktree, RCH local fallback due no admissible
+workers:
+
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo bench -p ft-api --bench ops_bench -- recurrent_forward/lstm_seq64_batch1_128x128 --warm-up-time 1 --measurement-time 3 --sample-size 10`
+
+- Baseline `recurrent_forward/lstm_seq64_batch1_128x128`: FT median `3.4903 ms`.
+- Candidate row-vector FMA path: FT median `10.834 ms`, a `3.10x` regression versus baseline.
+
+Local PyTorch oracle (`/data/projects/frankentorch/.venv-oracle/bin/python`, torch CPU,
+8 threads) for the same LSTM shape:
+
+- PyTorch best `2.049542 ms`.
+- Baseline FT/PyTorch: `3.4903 / 2.049542 = 1.70x SLOWER`.
+- Candidate FT/PyTorch: `10.834 / 2.049542 = 5.29x SLOWER`.
+
+Verdict: measured loss. Candidate code and candidate-only test were manually removed; no
+source diff remains. The lower-level direct dot defeats the existing GEMM microkernel for
+this recurrent shape, so do not land the `m == 1` FMA bypass without a different shape gate
+and same-worker h2h proof. AGENT PearlReef.
