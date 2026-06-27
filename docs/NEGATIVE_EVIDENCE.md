@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): F32 scalar ops (add/sub/mul/div_scalar) no-grad parallel map (5.7x SLOWER -> 2-3x FASTER)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Continuing the F64-only-gate sweep: `no_grad_scalar_map_f64`
+(the helper behind add_scalar/sub_scalar/mul_scalar/div_scalar) was F64-only → f32 scalar ops fell to the tape
+fallback (`scalar_leaf_matching_dtype` + tensor op = clone + broadcast-mul + tape nodes), ~5.7x SLOWER than
+torch (mul_scalar 69ms at [4000,4000] f32). Added `no_grad_scalar_map_f32` and an f32 fast-path call in all four
+ops. KEY parity check: the fallback's `scalar_leaf_matching_dtype` makes an f64 leaf then `to_dtype(F32)` = the
+scalar cast to f32, then an f32 tensor op; so `|x: f32| x {+,-,*,/} (scalar as f32)` (the `as` binds tighter
+than the operator) is BIT-EXACT with that fallback. grad / non-f32 / non-contiguous fall through. 93/0 scalar
+tests, ft-api lib 2388/0 + conformance 39/0. MEASURED (examples/survey_f32_h2h.rs, [4000,4000] f32, torch
+set_num_threads(8) vs FT-64t, cat_anchor 3.5-3.9x FASTER healthy): mul_scalar **69ms -> 4-5ms** now **2.08-3.00x
+FASTER** (was 5.69x SLOWER); add/sub/div_scalar share the helper (same flip, hot in every elementwise scale).
+⏳⏳ VEIN STILL OPEN: addcmul 21.7x / maximum 11.7x / lerp 8.9x SLOWER — addcmul/lerp have a value-scaling parity
+subtlety (composed fallback uses `scale_by_constant` = `full`(F64)+mul → verify the f32 intermediate dtype
+before mirroring); maximum needs an f32 min/max kernel (f64-only today). AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): F32 where no-grad parallel select (23.8x SLOWER -> 2.4x FASTER) + opens F64-only-gate vein
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Following the f32-cat fix, swept the F64-only-gate vein
