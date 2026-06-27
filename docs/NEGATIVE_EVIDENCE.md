@@ -4,6 +4,20 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - BUGFIX + WIN (landed): f32 unique_dim was BROKEN (errored) — now works + 10.06x FASTER
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Second f32-error-audit fix (after unique). `tensor_unique_dim`
+read operands via F64-only `tensor_values` → `UnsupportedDType(F32)`, so dim-wise unique was entirely BROKEN on
+f32 (torch supports it). Same recipe as the 1-D `unique` fix: read via `tensor_values_lossy_f64` (accepts f32,
+reads as f64) and narrow the single unique-SLICES output node back to the input dtype (inverse/counts stay index
+tensors). Bit-exact: slice dedup keys on the f64 BIT PATTERN (`v.to_bits()`), exact for an f32 value read as f64;
+sort uses partial_cmp + NaN rule, also exact. Probe: f32 [3,2] with a duplicate row → OK dtype=F32 shape=[2,2]
+correct unique rows (= torch.unique(dim=0)). ft-api lib 2388/0 + conformance 39/0. MEASURED
+(examples/udim_check.rs, [200000,16] f32 ~3000 unique rows, torch set_num_threads(8) vs FT-64t): **was BROKEN
+(errored) -> FT 30.3ms vs torch 304.8ms = 10.06x FASTER**. ⏳⏳ REMAINING f32-broken (UNFIXED): lerp_ / addcmul_
+in-place (UnsupportedDType — but carry addcmul/lerp arithmetic-parity risk), smooth_l1_loss (composed-path
+comparison-dtype-mismatch on small f32). AGENT BlackThrush.
+
 ## 2026-06-27 - BUGFIX + WIN (landed): f32 unique was BROKEN (errored) — now works + 3.15x FASTER; + f32-error AUDIT
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Acting on the silent-error lesson (heaviside), ran an f32
