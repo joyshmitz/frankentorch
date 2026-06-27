@@ -4,6 +4,19 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): f64 hardshrink no-grad fast path (composed ~23x SLOWER -> 1.6-2.6x FASTER vs torch, bit-exact)
+
+Agent `CrimsonForge`. Sibling-gap: tensor_hardshrink had an f32 no-grad fast path (frankentorch-t503)
+but f64 FELL THROUGH to the ~5-pass composed path (const_tensor_like x2 + abs + gt + where; the f32
+form of that path measured 23.1x SLOWER). Added the f64 mirror: borrow contiguous_values() and compute
+the inside-zeroing `(x >= -λ && x <= λ) ? 0 : x` in ONE parallel pass. Bit-exact with the composed
+three-way where (boundaries x==±λ inclusive -> 0; NaN not inside -> kept, matching torch — same form
+verified bit-exact vs torch.nn.functional.hardshrink for f32 under t503; dtype-agnostic logic).
+
+Measured (local, torch 8t, min-of-9, 16M f64, hardshrink_f64_h2h, anchor-validated: relu_anchor 2.05-2.26x
+FASTER across 4 runs = low contention): hardshrink 1.58-2.59x FASTER (median ~1.7x); parity 0/11 vs torch
+(dtype now F64, value bits). File: crates/ft-api/src/lib.rs (tensor_hardshrink).
+
 ## 2026-06-27 - WIN (landed): f64 hardswish/hardsigmoid/hardtanh SIMD (scalar -> 3.5-3.8x FASTER vs torch, bit-exact)
 
 Agent `CrimsonForge`. The f64 sibling of the f32 hard* SIMD win (4c698ca3). relu_f64 already used
