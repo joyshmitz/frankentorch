@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - NEGATIVE (reverted): F32 addcmul fast path — parity-blocked + exposes a real DTYPE BUG
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Tried to close the f32 addcmul gap (survey: 21.7x SLOWER,
+268ms) by mirroring the f64 borrow+single-pass fast path. ★ FOUND A REAL BUG: f32 `tensor_addcmul` currently
+returns **F64** (confirmed via a dtype probe — torch returns f32). ROOT: the composed fallback's
+`scale_by_constant` builds an F64 `full` leaf, so `tensor_mul(prod_f32, const_f64)` UPCASTS the whole result to
+F64 (also writes a 2x-size f64 output). ⛔ PARITY BLOCKER: a pure-f32 fast path computing `input + (value·t1)·t2`
+measured **165 ULP** off torch f32 (exact-bit inputs, 1088/4096 mismatches); f64-internal-then-round-to-f32
+measured **116 ULP** off. Neither matches torch's exact f32 addcmul rounding sequence (values are large here,
+b·c ~6600, so intermediate f32 rounding dominates). Could not determine torch's exact algorithm within the
+window (the rch venv has torch but NO numpy, blocking element-level debug). Under "parity absolute", REVERTED
+rather than ship a ~1e-5-relative-off version. ⏳ FOLLOW-UP (2 separate tasks): (1) FIX THE DTYPE BUG —
+`scale_by_constant` should use a dtype-matching const (like `const_tensor_like`) so f32 addcmul/addcdiv/lerp
+return f32 not f64; (2) then a bit-exact f32 fast path needs torch's exact addcmul rounding (try FMA
+`(v*t1).mul_add(t2, input)` and pure-`((v*t1)*t2)+input` with a numpy-enabled torch to pin it). maximum/minimum
+(11.7x) + lerp (8.9x) f32 gaps remain (lerp shares the scale_by_constant dtype issue). AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): F32 scalar ops (add/sub/mul/div_scalar) no-grad parallel map (5.7x SLOWER -> 2-3x FASTER)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Continuing the F64-only-gate sweep: `no_grad_scalar_map_f64`
