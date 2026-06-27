@@ -4,6 +4,19 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - BUGFIX+WIN (landed): f64 pow trivial-exponent elision (fixes 1-ULP parity; pow2 already faster, now 4.4x)
+
+Bead/thread `frankentorch-kgs4.172`, agent `BlackThrush`. f64 sibling of kgs4.171 (f32 pow elision). pow_f64_probe
+found ft's f64 `powf(x,2.0)` was **1 ULP off torch for 6/20011 values** (`powf_torch_signed_zero_f64` per element
+for ALL exponents; torch special-cases integers to repeated mul). PERF was already OK (f64 pow2 FT 10.6ms vs
+torch 24ms = 2.28x FASTER — f64 has NO round-trip, native), so this is primarily a PARITY fix + bonus speedup.
+FIX: same trivial-exponent elision in `pow_tensor_contiguous_f64` — x^1=x, x^2=x*x, x^3=x*x*x, x^-1=1/x (BIT-EXACT
+vs torch f64, verified pow_f64_probe over 20k vals incl ±0/±inf/NaN/1e±300; 0.5 NOT elided — torch f64 pow(.,0.5)
+!= sqrt, 138/20k ULP diffs, same as f32). PARITY: ft_pow(2) f64 now **0/20011** (was 6). ft-kernel-cpu 556/0
+(pow 11/0), conformance smoke 39/0. MEASURED: f64 pow2 10.6ms -> 7.2ms = now **4.44x FASTER** than torch (x*x
+beats powf even on f64). The pow trivial-exponent + round-trip surface (f32 kgs4.171 + f64 kgs4.172) is now
+COMPLETE for both dtypes. Finder = examples/pow_f64_probe.rs. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN+BUGFIX (landed): f32 pow trivial-exponent elision + native dispatch (11x SLOWER -> ~2x FASTER, fixes 1-ULP parity)
 
 Bead/thread `frankentorch-kgs4.171`, agent `BlackThrush`. roundtrip_f32_h2h flagged f32 `pow(x,2.0)` at **11.1x

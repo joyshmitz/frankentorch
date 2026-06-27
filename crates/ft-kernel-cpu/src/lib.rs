@@ -3032,20 +3032,34 @@ pub fn pow_tensor_contiguous_f64(
     let window = &input[start..start + numel];
 
     // powf is ~exp+log per element (compute-bound), so spread it across the
-    // rayon pool for large tensors; torch's pow is multi-threaded. The map is a
-    // pure per-element function, so the parallel result is bit-identical to the
-    // serial one (no accumulation order to disturb).
-    if numel >= PARALLEL_THRESHOLD {
-        Ok(window
-            .par_iter()
-            .map(|value| powf_torch_signed_zero_f64(*value, exponent))
-            .collect())
-    } else {
-        Ok(window
-            .iter()
-            .map(|value| powf_torch_signed_zero_f64(*value, exponent))
-            .collect())
+    // rayon pool for large tensors. The map is a pure per-element function, so the
+    // parallel result is bit-identical to the serial one.
+    #[inline]
+    fn run<F: Fn(f64) -> f64 + Sync>(window: &[f64], numel: usize, f: F) -> Vec<f64> {
+        if numel >= PARALLEL_THRESHOLD {
+            window.par_iter().map(|&v| f(v)).collect()
+        } else {
+            window.iter().map(|&v| f(v)).collect()
+        }
     }
+    // Trivial-exponent elision (f64 sibling of the f32 kgs4.171 fix): torch
+    // special-cases integer exponents to repeated multiplication, and ft's powf was
+    // 1 ULP off torch for 6/20011 values at exp=2. x^1=x, x^2=x*x, x^3=x*x*x,
+    // x^-1=1/x are BIT-EXACT vs torch f64 (verified pow_f64_probe over 20k vals incl
+    // ±0/±inf/NaN/1e±300) and skip the powf cost. 0.5 is NOT elided — torch f64
+    // pow(.,0.5) != sqrt bit-for-bit (138/20k ULP diffs). frankentorch-kgs4.172.
+    let out = if exponent == 1.0 {
+        run(window, numel, |v| v)
+    } else if exponent == 2.0 {
+        run(window, numel, |v| v * v)
+    } else if exponent == 3.0 {
+        run(window, numel, |v| v * v * v)
+    } else if exponent == -1.0 {
+        run(window, numel, |v| 1.0 / v)
+    } else {
+        run(window, numel, |v| powf_torch_signed_zero_f64(v, exponent))
+    };
+    Ok(out)
 }
 
 pub fn clamp_tensor_contiguous_f64(
