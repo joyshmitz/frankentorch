@@ -43,6 +43,38 @@ FASTER = low contention, 3 runs): nanmin 4.65-7.69x FASTER, nanmax 4.10-8.17x FA
 `a[~a.isnan()].min()` (boolean-index compaction + min, ~53-67ms; FT fused 1-pass ~7-13ms). The fused path
 also replaces FT's own prior ~4-pass composed nanmin/nanmax. File: crates/ft-api/src/lib.rs.
 
+## 2026-06-27 - WIN (landed): f32 normalize no-grad fused p=2 path (14.66x SLOWER -> 2.82x FASTER vs torch, dtype-preserving)
+
+Agent `SilverLake`. BOLD-VERIFY land-or-dig found no unlanded measured bench-worktree win: the addcmul FMA
+worktree was already represented on `origin/main`, and the gxpb2 worktree was an explicit reject
+(0.920x/0.778x vs baseline). Dug the largest current non-walled measured f32 gap from `f32_survey_d`:
+`tensor_normalize(x, 2.0, dim=1, eps=1e-12)` on `[4000,4000]` was still using the f64-only fused normalize
+special case as a wall marker, while f32 fell through `norm_dim -> unsqueeze -> maximum -> expand -> divide`.
+
+Lever: add a f32 no-grad contiguous p=2 fast path beside the f64 path. It keeps each slice's r-ascending
+`sum += v*v` order identical to `norm_dim_tensor_contiguous_f32`, propagates NaN through the denominator like
+`tensor_maximum`, divides in the same pass, and returns an F32 tensor directly. Grad, non-contiguous, non-f32,
+and non-p2 cases fall through to the existing autograd-aware path. Graveyard/optimization mapping:
+vectorized/morsel-style independent row chunks, but without changing intra-slice arithmetic order.
+
+Evidence: ORIG clean worktree H2H, `AGENT_NAME=SilverLake PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo run --release -p ft-api --example f32_survey_d`
+(RCH local fallback) measured `normalize` FT `212.033 ms`, PyTorch `14.462 ms` = **14.66x SLOWER**; controls
+healthy (`cat_anchor` 4.48x FASTER, `floor_div` 3.24x FASTER, `fmin` 3.02x FASTER). Candidate salted H2H
+measured `normalize` FT `5.167 ms`, PyTorch `14.595 ms` = **2.82x FASTER** with healthy controls
+(`cat_anchor` 3.38x FASTER, `floor_div` 3.15x FASTER, `fmin` 3.02x FASTER). Ratio vs ORIG: `212.033/5.167`
+= **41.04x internal speedup** and PyTorch-relative `14.66x SLOWER -> 2.82x FASTER`, so KEEP.
+
+Per-crate bench: valid bench-profile command
+`AGENT_NAME=SilverLake CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+RUSTFLAGS='-Cmetadata=cod_a_ce9954c0c' rch exec -- cargo bench -p ft-api --bench ops_bench
+normalize_f32_4000x4000_dim1_nograd` measured `[7.1802 ms 7.6733 ms 8.2155 ms]` (1.95-2.23 Gelem/s).
+The literal `cargo bench --release` form remains invalid for this Cargo; no new invalid rerun. Correctness:
+focused f32 dtype/value/grad regression passed; `ft-conformance` GREEN (`199/0` lib, binaries/integration/smoke/doc
+all ok). RCH note: remote `hz2` lacked PyTorch, so PyTorch-ratio H2H used the local PyTorch venv with the same
+target dir and metadata salt after remote artifact cache mismatch. Files: `crates/ft-api/src/lib.rs`,
+`crates/ft-api/benches/ops_bench.rs`.
+
 ## 2026-06-27 - WIN (landed): nan_to_num f32+f64 no-grad fast path (~9-pass composed -> 1.4-2.75x FASTER vs torch, bit-exact)
 
 Agent `CrimsonForge`. tensor_nan_to_num composed ~9 passes over numel for BOTH f32 and f64 (5 full_like

@@ -542,6 +542,17 @@ fn bench_norm(c: &mut Criterion) {
             b.iter(|| black_box(session.tensor_norm(x, 2.0).unwrap()));
         });
     }
+
+    let (rows, cols) = (4000usize, 4000usize);
+    group.throughput(Throughput::Elements((rows * cols) as u64));
+    group.bench_function("normalize_f32_4000x4000_dim1_nograd", |b| {
+        let values: Vec<f32> = (0..rows * cols).map(|i| (i % 17) as f32 - 8.0).collect();
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable_f32(values, vec![rows, cols], false)
+            .unwrap();
+        b.iter(|| black_box(session.tensor_normalize(x, 2.0, 1, 1e-12).unwrap()));
+    });
     group.finish();
 }
 
