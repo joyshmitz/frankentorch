@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): f32 nanmedian no-upcast quickselect fast path (1.42x SLOWER -> 1.16x FASTER vs torch, bit-exact)
+
+Bead/thread `frankentorch-kgs4.179`, agent `BlackThrush`. dedup_select_h2h flagged f32 `nanmedian` (8M) at
+**1.42x SLOWER** than torch (52ms vs 37ms). ROOT (the median/lossy_f64 pattern): `tensor_values_lossy_f64` UPCASTS
+f32->f64 before the NaN-filter + quickselect. FIX: f32 no-grad fast path — borrow `contiguous_values_f32()`, filter
+NaN + quickselect on f32 directly (no upcast), with the SAME comparator (`partial_cmp.unwrap_or(Equal)`) as the f64
+path. ★BIT-IDENTICAL: nanmedian is the rank-((m-1)/2) order statistic of the non-NaN values (unique value) +
+f32->f64 is exact/order-preserving; torch parity (nanmedian_f32_parity: odd/even/±0/all-NaN/inf+NaN/50k-mixed)
+**0/8 mismatches**. ft-api median 11/0, conformance smoke 39/0. MEASURED: 52ms -> 31ms (~1.7x internal) now
+**1.16x FASTER** than torch (was 1.42x SLOWER) — beats torch (f32-direct filter+select is leaner than
+f64-upcast+filter+select). dedup_select verdicts: mode ~parity (1.07x, both ~340ms expensive), unique 1.49x FASTER.
+The `tensor_values_lossy_f64` selection/counting vein TALLY (all bit-exact, 2026-06-27): median, histc, bincount,
+histogram, nanmedian — 5 shipped. Remaining callers mostly parity/faster (mode/unique/quantile/searchsorted/isin/
+std). Vein largely mined; histogramdd (multi-dim) is the last obvious counting candidate. Finder =
+dedup_select_h2h.rs + nanmedian_f32_parity.rs. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): f32 histogram no-upcast parallel fast path (5.39x SLOWER -> 2.25x FASTER vs torch, bit-exact)
 
 Bead/thread `frankentorch-kgs4.178`, agent `BlackThrush`. count_membership_h2h flagged f32 `histogram` (8M, 256
