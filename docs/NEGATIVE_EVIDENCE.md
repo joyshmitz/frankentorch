@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - BUGFIX + WIN (landed): f32 unique was BROKEN (errored) — now works + 3.15x FASTER; + f32-error AUDIT
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Acting on the silent-error lesson (heaviside), ran an f32
+AUDIT (examples-style probe calling ops on small f32 inputs, OK/ERROR). FOUND 4 latent f32 CORRECTNESS BUGS
+(ops that ERROR on f32, torch supports them): `unique` (UnsupportedDType F32), `lerp_` (in-place, UnsupportedDType),
+`addcmul_` (in-place, UnsupportedDType), `smooth_l1_loss` (small f32 → "tensor comparison requires matching
+dtypes"; large f32 ran slow — size-dependent). kthvalue + pdist f32 = OK (not broken). FIXED `tensor_unique`
+(flat): it read operands via F64-only `tensor_values` (→ errored on f32). Changed to `tensor_values_lossy_f64`
+(accepts f32, reads as f64) and narrowed the unique-VALUE node back to the input dtype at BOTH return paths
+(fast sorted path + general path); inverse/counts stay index tensors. Bit-exact: dedup uses `==` / total_cmp /
+NaN-handling / bit-pattern keys, all EXACT for an f32 value read as f64 (its f64 bits are the exact rep). After
+fix the probe returns OK F32. 14/0 unique tests, ft-api lib 2388/0 + conformance 39/0. MEASURED
+(examples/unique_f32_h2h.rs, [4M] f32 ~5000 uniques, torch set_num_threads(8) vs FT-64t): **was BROKEN (errored)
+-> FT 47ms vs torch 148ms = 3.15x FASTER**. ⏳⏳ STILL-BROKEN f32 (UNFIXED, same recipe): `tensor_unique_dim`
+(L~8610, same tensor_values+narrow fix), `lerp_` / `addcmul_` in-place (UnsupportedDType — but carry the
+addcmul/lerp arithmetic-parity risk), `smooth_l1_loss` (comparison-dtype-mismatch on small f32). These are
+CORRECTNESS bugs — high priority. AGENT BlackThrush.
+
 ## 2026-06-27 - BUGFIX + WIN (landed): f32 heaviside was BROKEN (errored) — now works + 2.4x FASTER
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. The "heaviside 0.004ms" anomaly in survey_f32c (flagged
