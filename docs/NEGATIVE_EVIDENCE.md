@@ -4,6 +4,30 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - NEGATIVE (reverted): f32 softmax/logsumexp exp-precision-WALLED; reductions parity-locked; eq/gt already optimal
+
+Bead/thread `frankentorch-kgs4.173`, agent `BlackThrush`. Dug the f32 reduction/transcendental surface
+(survey_f32_redux_h2h, CLEAN window add_anchor 2.98-3.26x healthy — note: a CONTENDED first run inflated every
+ratio ~2-3x, the eternal trap). CLEAN findings: ALREADY-FINE (no action): sigmoid **2.43x FASTER**, var_dim1
+5.07x F, cumsum 3.37x F, std/var_all only 1.6-1.9x SLOWER (small). PARITY-LOCKED (don't chase): prod_all 6.2x,
+prod_dim1 3.4x — reductions are pairwise/sequential-order-sensitive (prod_dim already per-lane parallel kgs4.52;
+its residual is the within-lane sequential product chain vs torch's vectorized partials = tolerance-parity only).
+★WALLED — softmax **9.15x** (128ms) + logsumexp **15.9x** (267ms): f32 falls to the apply_function tape path
+(serial + 128MB clone; F64 had a parallel fast path). TRIED the F32 fast-path parallelization (read f32-as-f64 +
+parallel per-lane f64 compute + cast f32, BIT-IDENTICAL to the existing f32 tape path — verified ft_f32 vs torch
+UNCHANGED at 81/337 maxulp=1 before AND after). RESULT: 267ms -> 77ms (3.46x internal) but STILL **5.03x SLOWER**
+than torch, AND the path is a PRE-EXISTING ~1 ULP off torch (f64-internal vs torch f32-native). REVERTED: the wall
+is ft computes in f64 SCALAR exp (+ an f32->f64 conversion clone) vs torch's f32 VECTORIZED exp (SLEEF) — parallel
+can't close it, and the result still loses + stays 1-ULP off. To actually win softmax/logsumexp needs a
+bit-exact f32 SIMD exp matching torch (the SLEEF-vs-libm parity wall, see [[project_parallel_threshold_vein]]
+binding constraint #1) — multi-session, policy-gated. ★eq/gt CONFIRMED already optimal: the f32 comparison kernels
+ALREADY use simd_elementwise_f32 + cmp_eq().blend() SIMD compare+blend (route through simd_binary_f32_parallel);
+last turn's "6-8x SLOWER" was CONTENTION — the real floor is the 64MB f32-mask output (no bool storage). The
+documented "SIMD compare+blend follow-up" was a NON-ISSUE (already done). NET: the clean bit-exact beat-torch f32
+elementwise vein is MINED OUT (SIMD unary/binary, clamp, pow f32+f64, amax all shipped); remaining f32 gaps are
+exp-precision-walled (softmax/logsumexp/log_softmax) or pairwise-order-locked (sum/mean/prod/var/std). Finder =
+examples/survey_f32_redux_h2h.rs (+ lse_f32_probe.rs). AGENT BlackThrush.
+
 ## 2026-06-27 - BUGFIX+WIN (landed): f64 pow trivial-exponent elision (fixes 1-ULP parity; pow2 already faster, now 4.4x)
 
 Bead/thread `frankentorch-kgs4.172`, agent `BlackThrush`. f64 sibling of kgs4.171 (f32 pow elision). pow_f64_probe
