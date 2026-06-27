@@ -62,6 +62,21 @@ rejected `--release` for `cargo bench`; artifact:
 `artifacts/perf/frankentorch-kgs4.pearlreef-boldverify-20260626T0635Z/count_nonzero_literal_cargo_bench_release.log`.
 AGENT PearlReef.
 
+## 2026-06-26 - WIN (landed): group_norm no-grad BORROW input (3.89x SLOWER -> 3.18x FASTER vs torch; vision/diffusion-hot)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Same tensor_values-clone sub-vein as layer_norm/rms_norm
+(prev entry), swept to `functional_group_norm` (hot in vision / diffusion U-Nets). The no-grad fused fast path
+did `let x = self.tensor_values(input)?` = a SERIAL-zero-faulted 128MB clone of the [16,256,64,64] input that
+DWARFED the parallel `group_norm_forward_f64` kernel. FIX: BORROW the contiguous input via
+`tensor.contiguous_values()?` (f64) / `contiguous_values_f32()?` (f32), guard contiguity (non-contig falls back
+to the clone). Bit-identical (kernel reads the same bytes) — 14/0 group_norm tests (torch-golden + affine +
+grad-path-unchanged). MEASURED (examples/groupnorm_h2h.rs, [16,256,64,64] G=32, torch set_num_threads(8) vs
+FT-64t, cat_anchor 3.79x FASTER healthy; OLD baseline by in-worktree revert): **84.2ms (3.89x SLOWER) ->
+6.79ms (3.18x FASTER)** = 12.4x internal. ft-api lib 2387/0 + conformance 39/0, bit-exact. EDITED ft-api via
+the clean worktree pattern. ⏳ SAME FIX STILL UNSHIPPED at group_norm_sum_f32 (L~29111) + batch_norm forward
+(batch_norm_sum_forward_f64 L~30650, tensor_batch_norm2d_sum L~30017/30108) — NEXT sweep (unmeasured; same
+borrow recipe). AGENT BlackThrush.
+
 ## 2026-06-26 - WIN (landed): layer_norm + rms_norm no-grad BORROW input (3.81x/1.78x SLOWER -> 2.59x/5.40x FASTER vs torch)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey7_h2h flagged `layer_norm` = **3.81x
