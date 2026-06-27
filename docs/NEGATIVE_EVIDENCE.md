@@ -4,6 +4,26 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - SMALL WIN (landed): extremum-dim strided reduce cache-friendly row-streaming (amax dim0 ~1.25x, bit-exact)
+
+Bead/thread `frankentorch-kgs4.174`, agent `BlackThrush`. amax/amin over a NON-last dim (inner_size>1, e.g. dim0
+of [4000,4000]) ran a per-output scalar GATHER that strided each lane by inner_size = a cache miss on EVERY reduce
+step (~5-6.5x SLOWER than torch). FIX: cache-friendly ROW-STREAMING — init each output from row 0, fold rows IN
+ORDER (sequential contiguous reads); par over column-blocks when outer_size==1, else over outer. ★BIT-IDENTICAL
+to the scalar gather (same per-output r-order, same NaN-propagate + strict-compare ±0-keeps-first) — kernel test
+extremum_dim_values_contiguous_f32_matches_serial_bits PASS + torch parity amax/amin dim0+dim1 (NaN/inf/±0)
+**0 mismatches**. Removed the now-dead extremum_dim_value_scalar_f32. ft-kernel-cpu 557/0, conformance smoke 39/0.
+MEASURED: amax dim0 ~5ms -> ~4ms (~1.25x). ★STILL ~5x SLOWER than torch (0.8ms) — and this is a WALL, not a TODO:
+ft runs ~16 GB/s vs torch's ~80 because (a) the per-element `is_nan` check defeats vectorization, and (b) torch's
+fast path PARALLELIZES row-major with a PARTIAL-COMBINE that is NOT bit-exact-orderable (±0-tie / which-NaN-instance
+depend on fold order) — so a bit-exact amax CANNOT match torch's parallel-partial speed. amax is parity-walled from
+beating torch (like the sum/prod reductions). A SIMD NaN-mask combine `(v.cmp_gt(out)|v.cmp_ne(v)).blend(v,out)`
+(bit-exact, derived+verified) would close (a) but not (b); low priority given the wall. ★EXP-WALL CONFIRMED
+(decisive, exp_f32_parity): ft f32 exp (libm expf) is **1 ULP off torch's f32 exp (SLEEF) for 414/40013 vals** —
+so the ENTIRE f32 exp-based surface (softmax/log_softmax/logsumexp/cross_entropy/gelu/sigmoid) is PERMANENTLY
+parity-walled; don't chase. ★broadcast (bias-add [N,N]+[N,1]/[1,N]) already 1.25-1.37x FASTER than torch (generic
+unravel parallel, kgs4.93) — no gap. Finder = survey_f32_redux_h2h + exp_f32_parity + broadcast_h2h. AGENT BlackThrush.
+
 ## 2026-06-27 - NEGATIVE (reverted): f32 softmax/logsumexp exp-precision-WALLED; reductions parity-locked; eq/gt already optimal
 
 Bead/thread `frankentorch-kgs4.173`, agent `BlackThrush`. Dug the f32 reduction/transcendental surface

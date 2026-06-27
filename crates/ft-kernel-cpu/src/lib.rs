@@ -12713,26 +12713,6 @@ fn extremum_lastdim_value_simd_f32(row: &[f32], is_max: bool) -> f32 {
     best
 }
 
-fn extremum_dim_value_scalar_f32(
-    data: &[f32],
-    out_idx: usize,
-    reduce_size: usize,
-    inner_size: usize,
-    is_max: bool,
-) -> f32 {
-    let outer = out_idx / inner_size;
-    let inner = out_idx % inner_size;
-    let base = outer * reduce_size * inner_size + inner;
-    let mut best = data[base];
-    for r in 1..reduce_size {
-        let v = data[base + r * inner_size];
-        if v.is_nan() || (is_max && v > best) || (!is_max && v < best) {
-            best = v;
-        }
-    }
-    best
-}
-
 pub fn extremum_dim_values_contiguous_f32(
     input: &[f32],
     meta: &TensorMeta,
@@ -12781,19 +12761,56 @@ pub fn extremum_dim_values_contiguous_f32(
             }
         }
     } else {
-        let lane = |out_idx: usize, value: &mut f32| {
-            *value = extremum_dim_value_scalar_f32(data, out_idx, reduce_size, inner_size, is_max);
+        // Strided reduce (inner_size > 1): the prior per-output scalar gather strided
+        // each lane by inner_size, missing cache on EVERY reduce step
+        // (amax dim0 of [4000,4000] measured ~6.5x SLOWER than torch). Stream the rows
+        // instead — init each output from row 0, then fold rows IN ORDER — cache-friendly
+        // (sequential row reads) and BIT-IDENTICAL to the scalar gather (same per-output
+        // r-order, same NaN-propagate + strict-compare ±0-tie-keeps-first rule).
+        // frankentorch-kgs4.174.
+        let stream = |out_block: &mut [f32], outer: usize, col0: usize| {
+            let n = out_block.len();
+            let base = outer * reduce_size * inner_size + col0;
+            out_block.copy_from_slice(&data[base..base + n]);
+            for r in 1..reduce_size {
+                let row_off = base + r * inner_size;
+                let row = &data[row_off..row_off + n];
+                for i in 0..n {
+                    let v = row[i];
+                    let best = &mut out_block[i];
+                    if v.is_nan() || (is_max && v > *best) || (!is_max && v < *best) {
+                        *best = v;
+                    }
+                }
+            }
         };
-        if out_numel.saturating_mul(reduce_size) >= PARALLEL_THRESHOLD
-            && rayon::current_num_threads() > 1
-        {
-            values
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(out_idx, value)| lane(out_idx, value));
+        let parallel = out_numel.saturating_mul(reduce_size) >= PARALLEL_THRESHOLD
+            && rayon::current_num_threads() > 1;
+        if outer_size == 1 {
+            // Single output row: parallelise over column blocks (each streams all rows).
+            if parallel {
+                let col_block = inner_size
+                    .div_ceil(rayon::current_num_threads().saturating_mul(4))
+                    .max(1);
+                values
+                    .par_chunks_mut(col_block)
+                    .enumerate()
+                    .for_each(|(b, out_block)| stream(out_block, 0, b * col_block));
+            } else {
+                stream(&mut values, 0, 0);
+            }
         } else {
-            for (out_idx, value) in values.iter_mut().enumerate() {
-                lane(out_idx, value);
+            // One inner-row per outer: parallelise over outer (each chunk = one outer).
+            if parallel {
+                values
+                    .par_chunks_mut(inner_size)
+                    .enumerate()
+                    .for_each(|(o, out_block)| stream(out_block, o, 0));
+            } else {
+                for o in 0..outer_size {
+                    let s = o * inner_size;
+                    stream(&mut values[s..s + inner_size], o, 0);
+                }
             }
         }
     }
