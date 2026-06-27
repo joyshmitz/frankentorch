@@ -4,6 +4,25 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN+BUGFIX (landed): f32 median quickselect fast path (4.18x SLOWER -> parity) + NaN propagation fix (both dtypes)
+
+Bead/thread `frankentorch-kgs4.175`, agent `BlackThrush`. select_search_h2h flagged f32 `median` (16M) at **4.18x
+SLOWER** than torch (215ms vs 51ms). ROOT: F64 median had a lean `select_nth_unstable_by` (quickselect O(n))
+no-grad fast path, but F32 fell to `tensor_kthvalue` which `tensor_values_lossy_f64` UPCASTS f32->f64 (128MB) +
+a 2nd clone + a less-count + index_select for the gradient — all dead in no-grad. FIX: f32 sibling fast path —
+borrow f32, quickselect on the f32 scratch (no upcast). The median is the rank-((numel-1)/2) order statistic = a
+UNIQUE value, so f32 quickselect == the f64 path (f32->f64 exact + order-preserving) == torch. ★ALSO A PARITY
+BUGFIX: torch.median PROPAGATES NaN (any NaN -> NaN), but BOTH ft median paths used `total_cmp` which sorts NaN to
+the END and returned the k-th FINITE value (median_f32_parity: 2/8 cases wrong). Added an any-NaN -> NaN check to
+the new f32 fast path AND the existing f64 fast path. PARITY vs torch (median_f32_parity, odd/even/ties/±0/inf/
+1-NaN/2-NaN): **0/8**. ft-api median 11/0, conformance smoke 39/0. MEASURED: median 215ms -> 68ms (~3.2x), now
+**1.25x SLOWER** = ~parity (was 4.18x); residual is single-threaded select_nth vs torch's nth_element (beating it
+needs parallel quickselect — low priority). NOTE: the grad / non-contiguous f32 median path (kthvalue) still has
+the OLD NaN behavior (returns finite k-th) — pre-existing, separate; rare (grad-of-median). ★OTHER select/search
+verdicts (this survey, low-contention): quantile **2.77x FASTER**, searchsorted **2.10x FASTER**, histc **3.42x
+SLOWER** (serial binning — parallel local-histograms + merge would be bit-exact, NEXT target). Finder =
+examples/select_search_h2h.rs + median_f32_parity.rs. AGENT BlackThrush.
+
 ## 2026-06-27 - SMALL WIN (landed): extremum-dim strided reduce cache-friendly row-streaming (amax dim0 ~1.25x, bit-exact)
 
 Bead/thread `frankentorch-kgs4.174`, agent `BlackThrush`. amax/amin over a NON-last dim (inner_size>1, e.g. dim0
