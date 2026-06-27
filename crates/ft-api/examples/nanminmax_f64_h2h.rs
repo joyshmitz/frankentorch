@@ -31,8 +31,18 @@ print("MAX %.17g"%float(nmax(a)))
     let x2 = s.tensor_variable(specials.clone(), vec![specials.len()], false)?;
     let omax = s.tensor_nanmax(x2)?;
     let (fmin, fmax) = (s.tensor_values(omin)?[0], s.tensor_values(omax)?[0]);
-    println!("parity: nanmin FT={fmin} PT={pmin} match={} | nanmax FT={fmax} PT={pmax} match={}",
+    println!("parity f64: nanmin FT={fmin} PT={pmin} match={} | nanmax FT={fmax} PT={pmax} match={}",
         fmin.to_bits() == pmin.to_bits(), fmax.to_bits() == pmax.to_bits());
+    // f32 parity (f32 nanmin/nanmax were BROKEN before this fix)
+    let sf: Vec<f32> = specials.iter().map(|&v| v as f32).collect();
+    let xf = s.tensor_variable_f32(sf.clone(), vec![sf.len()], false)?;
+    let ofmin = s.tensor_nanmin(xf)?;
+    let xf2 = s.tensor_variable_f32(sf.clone(), vec![sf.len()], false)?;
+    let ofmax = s.tensor_nanmax(xf2)?;
+    let dtmin = s.tensor_dtype(ofmin)?;
+    let (ffmin, ffmax) = (s.tensor_values_lossy_f64(ofmin)?[0] as f32, s.tensor_values_lossy_f64(ofmax)?[0] as f32);
+    println!("parity f32: dtype={dtmin:?} nanmin FT={ffmin} PT={} match={} | nanmax FT={ffmax} PT={} match={}",
+        pmin as f32, ffmin.to_bits() == (pmin as f32).to_bits(), pmax as f32, ffmax.to_bits() == (pmax as f32).to_bits());
 
     // perf 16M f64, time only the op
     let n = 16_000_000usize;

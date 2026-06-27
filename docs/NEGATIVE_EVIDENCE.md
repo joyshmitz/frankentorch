@@ -4,6 +4,18 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN+FIX (landed): f32 nanmin/nanmax enablement (was ERRORING) + fused fast path, bit-exact
+
+Agent `CrimsonForge`. f32 nanmin/nanmax were BROKEN: the composed path builds an F64 full(±inf) and
+`tensor_where(mask, F64, f32_input)` errors "where requires matching dtypes" -> f32 nanmin/nanmax
+ERRORED (torch supports them -> f32). Added an f32 arm to the fused no-grad fast path (from e3e6dd6d):
+native f32 min/max-skip-NaN in ONE parallel pass, output F32 (torch.nanmin(f32) -> f32); all-NaN -> ±inf.
+
+Verified (nanminmax_f64_h2h): f32 nanmin/nanmax now WORK, dtype F32, value bits match torch's
+`a[~a.isnan()].min()/.max()` (parity true); f64 path re-confirmed (nanmin 4.44x, nanmax 8.40x FASTER vs
+torch, relu_anchor 3.33x). The f32 path is the same fused single pass (was: hard error). Correctness fix +
+perf. File: crates/ft-api/src/lib.rs (tensor_nanmin / tensor_nanmax).
+
 ## 2026-06-27 - WIN (landed): where_scalar no-grad fast path (full+full+where composed -> 2.4-2.8x FASTER vs torch, bit-exact)
 
 Agent `CrimsonForge`. tensor_where_scalar composed full(x) + full(y) [2× F64 numel allocs] + tensor_where
