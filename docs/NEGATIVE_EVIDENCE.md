@@ -4,6 +4,28 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): f32 constant pad parallel nonzero row-fill (2.17x SLOWER -> 2.81x FASTER vs torch)
+
+Bead/thread `frankentorch-kgs4.182`, agent `BlackThrush`. Land-or-dig scan found no clean unlanded measured
+bench-worktree win: the old addcmul-FMA worktree was superseded by the landed addcmul entry on `origin/main`, and
+the only other non-ancestor worktree was the explicit `gxpb2` rejection. Dug the current structural f32 surface
+called out by the masked-fill entry: `struct_fill_h2h` still had `pad` at **2.17x SLOWER** than torch
+(`31.933 ms` vs `14.693 ms`) while the add anchor was healthy. ROOT: the no-grad contiguous pad fast path already
+did row block-copy, but for nonzero pad values it initialized the whole output with serial `vec![fill; out_numel]`
+before the parallel row copies. For `[4000,4000]` padded by 8, that serial 64MB fill was the remaining wall.
+FIX: allocate the output as `+0.0` and, only when the requested fill bit pattern is not positive zero, fill each
+output row in the existing rayon row loop before copying the interior slice. Positive-zero padding keeps the old
+calloc-fast behavior; `-0.0` and NaN fill bits still get explicitly written because the gate uses `to_bits()`.
+
+Evidence: focused regression `session_pad_f32_preserves_dtype_and_fill_bits` passed and checks F32 dtype, nonzero
+fill, NaN input retention, and `-0.0` pad-bit preservation. Post-rebase H2H after the patch:
+`pad` FT `12.644 ms`, PyTorch `35.554 ms` = **2.81x FASTER**. Valid per-crate Criterion bench
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b rch exec -- cargo bench -p ft-api --bench ops_bench pad`
+measured `pad/f32_4000x4000_pad8_value2_nograd` at `[22.986 ms 24.198 ms 25.179 ms]`. The literal requested
+`cargo bench --release -p ft-api --bench ops_bench pad` form was run and Cargo rejected `--release`, same as prior
+entries. Mapped lever: row-structured segmented data-parallel fill/copy from the graveyard flattening/SIMD-tiled
+kernel playbook, with bit-level behavior proof rather than heuristic equivalence. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): parallel pairwise f32 full reductions (sum 10.26x -> 4.91x SLOWER vs torch)
 
 Land-or-dig from updated `origin/main` (`af519883`), agent `SilverLake`. The

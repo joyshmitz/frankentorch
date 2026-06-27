@@ -708,6 +708,34 @@ fn bench_lerp(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_pad(c: &mut Criterion) {
+    let mut group = c.benchmark_group("pad");
+    let rows = 4000usize;
+    let cols = 4000usize;
+    let n = rows * cols;
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(4));
+    group.throughput(Throughput::Elements(((rows + 16) * (cols + 16)) as u64));
+    let input_values = patterned_f32_values(n, 0.000_017, 0.13);
+
+    group.bench_function("f32_4000x4000_pad8_value2_nograd", |b| {
+        b.iter_batched(
+            || {
+                let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+                let input = session
+                    .tensor_variable_f32(input_values.clone(), vec![rows, cols], false)
+                    .unwrap();
+                (session, input)
+            },
+            |(mut session, input)| {
+                black_box(session.tensor_pad(input, &[8, 8, 8, 8], 2.0).unwrap())
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    group.finish();
+}
+
 fn bench_layer_norm(c: &mut Criterion) {
     // LayerNorm over the last dim, no-grad f64 — every transformer layer. The
     // op-graph path allocates ~14 full [rows, hidden] intermediates + tape nodes.
@@ -2372,6 +2400,7 @@ criterion_group!(
     bench_add,
     bench_addcmul,
     bench_lerp,
+    bench_pad,
     bench_backward_matmul,
     bench_linear_train,
     bench_recurrent_forward,
