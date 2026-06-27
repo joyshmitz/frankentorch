@@ -4,6 +4,40 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): parallel pairwise f32 full reductions (sum 10.26x -> 4.91x SLOWER vs torch)
+
+Land-or-dig from updated `origin/main` (`af519883`), agent `SilverLake`. The
+f32 pow2 gap was already landed upstream, so the next clean `survey_f32_wide_h2h`
+target was f32 full reductions: `sum_all` FT `6.194 ms`, PyTorch `0.604 ms` =
+**10.26x SLOWER**; `mean_all` FT `6.232 ms`, PyTorch `0.666 ms` =
+**9.35x SLOWER**.
+
+Root cause: f64 full reductions already use a rayon-backed pairwise tree above
+`SUM_PARALLEL_THRESHOLD`, but f32 full `sum`/`mean` still used the same midpoint
+pairwise tree serially. Fix: add `pairwise_sum_f32_par` and gate only large f32
+full reductions through it. The parallel helper uses the same recursive
+`mid = len / 2` split and combines `left + right` at every node, so it is
+bit-for-bit identical to the existing serial pairwise contract rather than a
+new reduction order.
+
+Evidence: focused invariant test
+`AGENT_NAME=SilverLake CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+rch exec -- cargo test -p ft-kernel-cpu sum_parallel_is_bit_identical_to_serial --lib`
+passed on remote `ovh-a` (`1 passed; 557 filtered`). Per-crate Criterion bench
+`AGENT_NAME=SilverLake CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+rch exec -- cargo bench -p ft-kernel-cpu --bench elementwise_bench f32_4000x4000`
+reported `sum_f32_4000x4000` `[1.6394 ms 1.6643 ms 1.6943 ms]` and
+`mean_f32_4000x4000` `[1.3638 ms 1.3709 ms 1.3787 ms]`.
+
+Fresh after-run H2H with the local PyTorch CPU venv through `rch` fail-open
+measured `sum_all` FT `1.962 ms`, PyTorch `0.400 ms` = **4.91x SLOWER** and
+`mean_all` FT `1.851 ms`, PyTorch `0.304 ms` = **6.09x SLOWER**. Internal FT
+speedups vs the same-worktree baseline: `sum_all` `6.194 / 1.962 = 3.16x`,
+`mean_all` `6.232 / 1.851 = 3.37x`. Residual gap remains PyTorch's lower-level
+SIMD/parallel reduction implementation; next deeper lever should target f32
+lane-local vectorized leaf sums without changing the pairwise tree. AGENT
+SilverLake.
+
 ## 2026-06-27 - WIN (landed): f32 masked_fill single-pass fast path (3.51x SLOWER -> 2.00x FASTER vs torch, bit-exact)
 
 Bead/thread `frankentorch-kgs4.181`, agent `BlackThrush`. struct_fill_h2h flagged f32 `masked_fill` (4000x4000)

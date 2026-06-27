@@ -2369,7 +2369,7 @@ where
     }
 }
 
-#[allow(clippy::chunks_exact_to_as_chunks)]
+#[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
 fn simd_unary_f64<F, S>(window: &[f64], scalar_op: F, simd_op: S) -> Vec<f64>
 where
     F: Fn(f64) -> f64 + Sync,
@@ -3517,7 +3517,7 @@ pub fn mean_dim_tensor_contiguous_f64(
 
 const SIMD_WIDTH: usize = 4;
 
-#[allow(clippy::chunks_exact_to_as_chunks)]
+#[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
 fn simd_binary_f64<F, S>(
     lhs_window: &[f64],
     rhs_window: &[f64],
@@ -28032,6 +28032,33 @@ fn pairwise_sum_f32(values: &[f32]) -> f32 {
     pairwise_sum_f32(&values[..mid]) + pairwise_sum_f32(&values[mid..])
 }
 
+/// Parallel `pairwise_sum_f32` for large FULL reductions. It uses the same
+/// midpoint split tree as `pairwise_sum_f32`, so the final `left + right`
+/// sequence is bit-for-bit identical while spreading large reductions across
+/// the rayon pool.
+fn pairwise_sum_f32_par(values: &[f32]) -> f32 {
+    const PAR_BLOCK: usize = 1 << 14;
+    if values.len() <= PAR_BLOCK {
+        return pairwise_sum_f32(values);
+    }
+    let mid = values.len() / 2;
+    let (left, right) = values.split_at(mid);
+    let (ls, rs) = rayon::join(
+        || pairwise_sum_f32_par(left),
+        || pairwise_sum_f32_par(right),
+    );
+    ls + rs
+}
+
+#[inline]
+fn pairwise_sum_f32_maybe_par(values: &[f32]) -> f32 {
+    if values.len() >= SUM_PARALLEL_THRESHOLD {
+        pairwise_sum_f32_par(values)
+    } else {
+        pairwise_sum_f32(values)
+    }
+}
+
 /// F32 companion to `pairwise_sum_map_f64` — see that function for
 /// the precision-correctness rationale.
 fn pairwise_sum_map_f32<F>(values: &[f32], f: F) -> f32
@@ -28053,7 +28080,7 @@ pub fn sum_tensor_contiguous_f32(input: &[f32], meta: &TensorMeta) -> Result<f32
         return Ok(0.0);
     }
     let offset = meta.storage_offset();
-    Ok(pairwise_sum_f32(&input[offset..offset + numel]))
+    Ok(pairwise_sum_f32_maybe_par(&input[offset..offset + numel]))
 }
 
 pub fn mean_tensor_contiguous_f32(input: &[f32], meta: &TensorMeta) -> Result<f32, KernelError> {
@@ -28063,7 +28090,7 @@ pub fn mean_tensor_contiguous_f32(input: &[f32], meta: &TensorMeta) -> Result<f3
     if numel == 0 {
         return Ok(f32::NAN);
     }
-    let sum = pairwise_sum_f32(&input[offset..offset + numel]);
+    let sum = pairwise_sum_f32_maybe_par(&input[offset..offset + numel]);
     #[allow(clippy::cast_precision_loss)]
     let n = numel as f32;
     Ok(sum / n)
@@ -33932,6 +33959,14 @@ mod tests {
                 super::pairwise_sum_map_f64_par(&data, sq).to_bits(),
                 "parallel pairwise sum_map diverged from serial at n={n}"
             );
+            let data32: Vec<f32> = (0..n)
+                .map(|i| ((i * 31 + 7) % 1009) as f32 * 0.013 - 6.5)
+                .collect();
+            assert_eq!(
+                super::pairwise_sum_f32(&data32).to_bits(),
+                super::pairwise_sum_f32_par(&data32).to_bits(),
+                "parallel f32 pairwise sum diverged from serial at n={n}"
+            );
         }
     }
 
@@ -37221,6 +37256,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
     fn exp_f64x4_matches_scalar_within_tolerance() {
         use wide::f64x4;
         // Proof obligation 1 — fast-range accuracy. Chunks fully inside
