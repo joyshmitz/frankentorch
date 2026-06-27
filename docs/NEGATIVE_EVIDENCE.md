@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): f32 copysign + softshrink no-grad fast paths (17x/43x SLOWER -> 1.4x/2.0x FASTER)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. survey_f32c_h2h (cat_anchor ~2.6x FASTER healthy; heaviside
+reads 0.004ms = silently-errored, ignore) found two big F64-only-gated f32 gaps among parity-CLEAN elementwise
+ops: `copysign` **17.02x SLOWER (208ms)**, `softshrink` **43.21x SLOWER (513ms)**. (smooth_l1 47x SLOWER left
+alone — beta-scaling parity risk like addcmul.) FIXES: (1) copysign f32 took the lossy path = 2× f64 CLONES of
+both operands + a f64→f32 conversion pass; added an f32 fast path (borrow contiguous_values_f32 + parallel
+`f32::copysign`) — GUARANTEED bit-exact (pure sign-bit, no rounding, IEEE sign-of-zero preserved). (2)
+softshrink f32 took the ~9-pass composed path (const_tensor_like×3 + gt/lt/sub/add/where×2); added an f32 fast
+path mirroring the f64 one (`x>λ?x-λ:(x<-λ?x+λ:0)` with `lambd as f32`) — bit-exact because the composed
+const_tensor_like already casts λ to f32 and runs f32 gt/sub/add (deterministic select+shift, no rounding
+ambiguity; x==±λ and NaN → 0). grad / non-f32 / non-contiguous fall through. 8/0 copysign+softshrink tests,
+ft-api lib 2388/0 + conformance 39/0. MEASURED ([4000,4000] f32, torch set_num_threads(8) vs FT-64t): copysign
+**208ms -> ~8-12ms (~20x internal)** now **1.3-1.8x FASTER**; softshrink **513ms -> ~6ms (~80x internal)** now
+**~2.0x FASTER**. LESSON CONFIRMED: parity-CLEAN f32 ops = sign-bit (copysign), deterministic select/threshold
+(softshrink/min/max/where), copy (cat), single sub-then-self-mul/abs (mse/l1 none); parity-RISKY = scalar-value
++ fused-multiply or /divide (addcmul/lerp/smooth_l1). AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): mse_loss + l1_loss reduction='none' no-grad fast path (f32 6.4x/3.0x SLOWER -> FASTER)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. A fresh f32 survey (survey_f32b_h2h: atan2/fmod already
