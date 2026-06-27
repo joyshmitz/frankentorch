@@ -10084,6 +10084,20 @@ impl TensorTape {
                 storage_offset: start,
                 numel: meta.numel(),
             })?;
+        // Pure 2-D transpose [1,0] of an f64 matrix → the AVX2 register-blocked transpose kernel
+        // (~3x the generic cache-blocked scalar transpose, which streams strided and caps at a
+        // fraction of memory bandwidth). Same values written ⇒ transparent to autograd (the tape
+        // Permute node owns the backward). frankentorch-kgs4.
+        if perm.len() == 2 && perm[0] == 1 && perm[1] == 0 {
+            if let TensorStorage::F64(values) = tensor.typed_storage() {
+                let rows = meta.shape()[0];
+                let cols = meta.shape()[1];
+                let slice = Self::checked_storage_slice(values, start, end)?;
+                return Ok(TensorStorage::F64(Arc::new(ft_kernel_cpu::transpose_2d_f64(
+                    slice, rows, cols,
+                ))));
+            }
+        }
         Ok(match tensor.typed_storage() {
             TensorStorage::F32(values) => TensorStorage::F32(Arc::new(Self::permute_slice(
                 Self::checked_storage_slice(values, start, end)?,

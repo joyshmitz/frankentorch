@@ -4,6 +4,27 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): AVX2 register-blocked 2-D transpose (2.5x SLOWER -> 2.8x FASTER vs torch; closes the top gap)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. CLOSES the biggest measured gap (named in the prev entry):
+2-D transpose/movedim [4000,4000] f64 was FT ~77ms vs torch ~22-32ms = **2.5-2.7x SLOWER**. The prev entry's
+negative finding was right — the gap is INSTRUCTION-throughput / vectorization bound: a scalar transpose
+streams strided (one direction is always a gather/scatter) and caps at a fraction of bandwidth (~3.8GB/s),
+while torch uses an AVX-512 register-blocked transpose (~10GB/s). LEVER (radically different primitive, not a
+micro-opt): `ft_kernel_cpu::transpose_2d_f64` — an **AVX2 4×4-block in-register transpose** (load 4 contiguous
+src rows → unpacklo/unpackhi/permute2f128 → store 4 contiguous dst rows), so BOTH loads AND stores are
+vectorized+contiguous; parallel over disjoint 4-output-row blocks; `is_x86_feature_detected!("avx2")` runtime
+gate + scalar fallback + scalar tail/partial-chunk cleanup for non-multiple-of-4 dims (lives in ft-kernel-cpu
+under the existing `#[allow(unsafe_code)]`+`#[target_feature]` SIMD pattern; ft-autograd stays
+forbid(unsafe)). Wired in ft-autograd `permute_typed_storage` for the pure 2-D perm==[1,0] f64 case (covers
+movedim/transpose/swapaxes/.mT/permute); same values ⇒ transparent to autograd (the tape Permute node owns
+backward). Bit-exact: transpose_2d_f64_matches_scalar_reference_all_sizes (edges + non-mult-of-4) + 52/0
+ft-autograd + 23/0 ft-api transpose/permute/movedim/swapaxes tests; ft-kernel-cpu 551/0 + ft-autograd 476/0 +
+ft-api 2388/0 + conformance 39/0. MEASURED: kernel-direct **20.5ms vs scalar-tiled 61.9ms = 3.01x**; end-to-end
+movedim (struct_survey2_h2h.rs, torch set_num_threads(8) vs FT-64t, cat_anchor ~4x FASTER healthy) **~77ms ->
+8.1ms (~9.4x internal)** now **2.6-2.9x FASTER** than torch (3-run). FOLLOW-UP: f32 8×8 AVX2 transpose (same
+recipe) + batched/elem>1 transpose still use the generic cache-blocked path. AGENT BlackThrush.
+
 ## 2026-06-27 - PARTIAL WIN + NEGATIVE: transpose scalar elem==1 fast path (~5.6%; gap is strided-DRAM, NOT clone_from_slice)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. BIGGEST CURRENT MEASURED GAP (re-surveyed, anchor-clean):
