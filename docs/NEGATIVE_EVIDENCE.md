@@ -4,6 +4,26 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): f32 comparison no-grad BORROW fast path — eq/gt 40x SLOWER -> ~6-8x (clone elimination)
+
+Bead/thread `frankentorch-kgs4.169`, agent `BlackThrush`. survey_f32_wide_h2h flagged f32 `eq`/`gt` at **~40x
+SLOWER** than torch (93ms vs 2.3ms on [4000,4000]). ROOT: `tensor_comparison` had a no-grad BORROW fast path
+only for F64 (added earlier to fix the same "40-50x SLOWER" note); the F32 match arm CLONED both operands via
+`as_f32().to_vec()` (2*numel) before the already-parallel f32 comparison kernel. FIX: added the F32 sibling
+borrow fast path (equal-shape contiguous, grad off -> borrow `contiguous_values_f32()` both + dispatch +
+`leaf_f32`, no clone). BIT-EXACT vs torch (cmp_f32_parity, eq/ne/lt/gt/le/ge over 100003 incl NaN/±inf/±0/ties):
+**0 mismatches each**; the borrow path calls the IDENTICAL kernel as the clone path. conformance smoke 39/0.
+MEASURED (clean window, add_anchor 2.2x healthy): eq 93ms -> ~15ms, gt 93ms -> ~12ms (~6-8x internal). Now
+**~6-8x SLOWER than torch** (was 40x). ★TWO residual walls documented: (1) ARCHITECTURAL — FrankenTorch has NO
+bool/int TensorStorage, so a comparison writes a 64MB f32 0/1 mask vs torch's 16MB bool (4x the output bytes);
+(2) KERNEL — the f32 comparison kernel is `elementwise_contiguous_f32` = parallel SCALAR with a branchy
+`if l==r {1.0} else {0.0}` per element; MEASURED ~13 GB/s vs torch's ~74 GB/s -> NOT bandwidth-saturating, the
+branch defeats vectorization. ★FOLLOW-UP LEVER (the real fix, reuses kgs4.167 infra): route eq/ne/lt/gt/le/ge
+through `simd_elementwise_f32` (-> `simd_binary_f32_parallel`) with a SIMD compare+blend simd_op
+(`a.cmp_eq(b).blend(ONE, ZERO)`) — bit-exact (cmp_eq==scalar ==, NaN!=NaN), bandwidth-saturating -> should hit
+~1.5-2x slower (capped only by the f32-mask output size). Finder = examples/survey_f32_wide_h2h.rs +
+cmp_f32_parity.rs. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): native f32 amax/amin-over-dim kernel — ~122x SLOWER -> ~19x internal speedup, bit-exact
 
 Bead/thread `frankentorch-kgs4.168`, agent `BlackThrush`. survey_f32_wide_h2h (4000x4000 f32, add_anchor
