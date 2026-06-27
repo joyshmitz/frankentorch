@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - BUGFIX + WIN (landed): f32 heaviside was BROKEN (errored) — now works + 2.4x FASTER
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. The "heaviside 0.004ms" anomaly in survey_f32c (flagged
+last entry) was a SILENTLY-ERRORED call: f32 `tensor_heaviside` returned `Err(UnsupportedDType(F32))` — the
+no-grad fast path was F64-only and the fallback read operands via `tensor_values` (F64-only, errors on f32), so
+its dtype-preserve narrow tail was unreachable for f32 → **f32 heaviside was entirely BROKEN** (torch supports
+it). Confirmed via a probe (input [-1,0,2] → Err). FIX (correctness + perf): (1) added an f32 fast path
+mirroring the f64 one — borrow both contiguous f32 buffers, step in parallel (`x>0→1, x==0→v, else 0`; NaN→0),
+return f32; (2) changed the fallback's two `tensor_values` reads to `tensor_values_lossy_f64` so f32
+broadcast/non-contiguous inputs are read (as f64) + narrowed back to f32 (the step is deterministic ⇒ exact),
+fixing those f32 cases too. Bit-exact deterministic step (no rounding). After fix the probe returns
+`[0.0, 7.0, 1.0]` (correct: x<0→0, x==0→v=7, x>0→1) = torch.heaviside. 6/0 heaviside tests, ft-api lib 2388/0 +
+conformance 39/0. MEASURED ([4000,4000] f32, torch set_num_threads(8) vs FT-64t, cat_anchor ~3.6x FASTER
+healthy): heaviside now **5-10ms = 1.3-2.4x FASTER** (was a broken/erroring op). LESSON: a `let _ = op(...)`
+that discards an Err reads as "instant/0ms" in survey harnesses — an absurd "1000x FASTER" or sub-ms reading is
+the tell that the op SILENTLY ERRORED (dtype unsupported), not that it's fast. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): f32 copysign + softshrink no-grad fast paths (17x/43x SLOWER -> 1.4x/2.0x FASTER)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. survey_f32c_h2h (cat_anchor ~2.6x FASTER healthy; heaviside
