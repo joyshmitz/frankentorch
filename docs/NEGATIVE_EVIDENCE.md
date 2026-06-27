@@ -4,6 +4,48 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN: f32 scalar lerp PyTorch FMA path (keeps 1.50x FASTER vs torch; fixes bit parity)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Land-or-dig scan found no clean unlanded
+measured win: the only uncontained ahead worktree commit was an explicit rejection, and the bounded
+median win was already on `origin/main`. Dug the largest current documented non-walled f32 gap:
+scalar f32 `lerp` was still recorded as a major PyTorch-relative loss. While this pass was being
+benchmarked, `origin/main` landed the broader no-grad f32 `tensor_lerp` fast path recorded below
+(`11.20x SLOWER -> 1.48x FASTER`). This follow-up keeps that speed class and closes the remaining
+scalar-f32 PyTorch rounding gap.
+
+Root cause: the just-landed f32 fast path used the direct formula `start + weight * (end - start)`,
+which is not PyTorch's scalar-f32 bit contract. PyTorch black-box probes found a zero-mismatch branch
+rule: for `abs(weight) < 0.5`, use fused `weight.mul_add(end - start, start)`; otherwise use fused
+`(weight - 1).mul_add(end - start, end)`. Fix: make the shared f32 lerp kernel use that rule, then
+route the ft-api no-grad equal-shape contiguous f32 fast path through the shared kernel. Grad f32
+forward now shares the same kernel formula; non-contiguous/mixed-dtype paths still fall through.
+
+Evidence: bit tests
+`rch exec -- cargo test -p ft-kernel-cpu lerp_tensor_contiguous_f32_matches_pytorch_scalar_branch_bits --lib -- --nocapture`
+and
+`rch exec -- cargo test -p ft-api f32_lerp_matches_pytorch_scalar_branch_bits --lib -- --nocapture`
+passed. Literal requested per-crate bench form
+`rch exec -- cargo bench --release -p ft-api --bench ops_bench lerp` and
+`rch exec -- cargo bench --release -p ft-kernel-cpu --bench elementwise_bench lerp`
+failed because this Cargo rejects `--release` for `cargo bench`; valid per-crate commands with
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a` passed after rebase on `hz2`:
+`cargo bench -p ft-api --bench ops_bench lerp` measured
+`lerp/f32_4000x4000_nograd` at `[28.714 ms 29.678 ms 31.193 ms]`, and
+`cargo bench -p ft-kernel-cpu --bench elementwise_bench lerp` measured
+`lerp_f32_1m_weight0.5` at `[526.63 us 550.79 us 573.66 us]`.
+
+Candidate local H2H sidecar after the patch:
+`cat_anchor` FT `9.760 ms`, PyTorch `24.344 ms` = **2.49x FASTER**; `lerp` FT `8.003 ms`,
+PyTorch `12.013 ms` = **1.50x FASTER**; `mul_scalar` **1.89x FASTER**; `addcmul` remains
+**18.88x SLOWER** and is the next f32 loss. A remote H2H attempt on `vmi1227854` produced no ratio
+because that worker lacks the `torch` module, so the decisive ratio is the local `rch exec` fallback
+with the PyTorch virtualenv. Conformance green:
+`rch exec -- cargo test -p ft-conformance` passed (`199 + bin/tests/smoke/doc suites`, all green).
+After rebase this is not claimed as an additional speedup over the just-landed broad f32 fast path;
+it is a PyTorch-bit parity keep at maintained torch-parity throughput. Score vs PyTorch for this
+lever: `1W / 0L / 0N`. Keep. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): parallel-SIMD f32 unary kernel — relu/neg/abs/sqrt/reciprocal 2.3-3.0x FASTER than torch
 
 Bead/thread `frankentorch-kgs4.166`, agent `BlackThrush`. act_f32_h2h flagged `relu` (the survey ANCHOR!) at

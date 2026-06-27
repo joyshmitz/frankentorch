@@ -2369,6 +2369,7 @@ where
     }
 }
 
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn simd_unary_f64<F, S>(window: &[f64], scalar_op: F, simd_op: S) -> Vec<f64>
 where
     F: Fn(f64) -> f64 + Sync,
@@ -3502,6 +3503,7 @@ pub fn mean_dim_tensor_contiguous_f64(
 
 const SIMD_WIDTH: usize = 4;
 
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn simd_binary_f64<F, S>(
     lhs_window: &[f64],
     rhs_window: &[f64],
@@ -31128,20 +31130,30 @@ pub fn lerp_tensor_contiguous_f32(
     }
     let s = &start[offset..offset + numel];
     let e = &end[offset..offset + numel];
-    // Pure per-element map → parallel above PARALLEL_THRESHOLD (bit-identical to the serial
-    // zip-map; indexed parallel collect preserves order). The no-grad ft-api lerp is already
-    // fast-pathed; this parallelizes the kernel for the grad path / direct callers.
+    // PyTorch's scalar f32 lerp uses a branchy fused formula: start-side FMA for
+    // |weight| < 0.5, otherwise end-side FMA. This preserves exact endpoints and
+    // avoids the double-rounding drift from `sv + weight * (ev - sv)`.
     if numel >= PARALLEL_THRESHOLD {
         use rayon::prelude::*;
         Ok(s.par_iter()
             .zip(e.par_iter())
-            .map(|(&sv, &ev)| sv + weight * (ev - sv))
+            .map(|(&sv, &ev)| lerp_scalar_f32(sv, ev, weight))
             .collect())
     } else {
         Ok(s.iter()
             .zip(e.iter())
-            .map(|(&sv, &ev)| sv + weight * (ev - sv))
+            .map(|(&sv, &ev)| lerp_scalar_f32(sv, ev, weight))
             .collect())
+    }
+}
+
+#[inline]
+fn lerp_scalar_f32(start: f32, end: f32, weight: f32) -> f32 {
+    let delta = end - start;
+    if weight.abs() < 0.5 {
+        weight.mul_add(delta, start)
+    } else {
+        (weight - 1.0).mul_add(delta, end)
     }
 }
 
@@ -32139,6 +32151,37 @@ mod tests {
                 }
             }
             assert_eq!(got, want, "f32 transpose mismatch at {r}x{c}");
+        }
+    }
+
+    #[test]
+    fn lerp_tensor_contiguous_f32_matches_pytorch_scalar_branch_bits() {
+        let start = [1.0_f32, -2.0, 1000.25, -1000.25];
+        let end = [5.0_f32, 6.0, -999.75, 999.75];
+        let meta =
+            ft_core::TensorMeta::from_shape(vec![4], ft_core::DType::F32, ft_core::Device::Cpu);
+        for &(weight, want_bits) in &[
+            (
+                0.25_f32,
+                &[0x4000_0000, 0x0000_0000, 0x43fa_2000, 0xc3fa_2000][..],
+            ),
+            (
+                0.5_f32,
+                &[0x4040_0000, 0x4000_0000, 0x3e80_0000, 0xbe80_0000][..],
+            ),
+            (
+                -0.75_f32,
+                &[0xc000_0000, 0xc100_0000, 0x451c_4400, 0xc51c_4400][..],
+            ),
+            (
+                1.25_f32,
+                &[0x40c0_0000, 0x4100_0000, 0xc4bb_7800, 0x44bb_7800][..],
+            ),
+        ] {
+            let got = super::lerp_tensor_contiguous_f32(&start, &end, weight, &meta)
+                .expect("valid lerp inputs");
+            let got_bits: Vec<u32> = got.iter().map(|v| v.to_bits()).collect();
+            assert_eq!(got_bits, want_bits, "weight={weight}");
         }
     }
 
