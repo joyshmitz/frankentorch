@@ -54,6 +54,48 @@ tape op even in no-grad); ft-autograd lane. selu 10.2x / celu 17.1x / tanhshrink
 they involve exp/tanh (transcendental f32-rounding parity risk — deferred, needs numpy-enabled torch to pin).
 AGENT BlackThrush.
 
+## 2026-06-27 - WIN (landed): f32 tensor_lerp no-grad fast path (11.20x SLOWER -> 1.48x FASTER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Land-or-dig scan found no
+committed bench-worktree win ahead of `origin/main`; the old bounded-median dirty
+worktree was already represented on `main`, and the stale row-vector FMA worktree
+was an old rejected/stale-base lane. The largest current clean f32 sidecar gap
+left after the addcmul dtype fix was scalar `tensor_lerp`: `addcmul` remained
+larger but parity-blocked by PyTorch rounding uncertainty, while `lerp` was a
+separate F32-only slow path.
+
+Lever: mirror the existing no-grad equal-shape contiguous F64 `tensor_lerp`
+borrow+parallel path for F32. The F32 branch borrows both contiguous input
+slices, casts the scalar weight to `f32`, and computes the same kernel formula
+`start + weight * (end - start)` in one parallel pass. Grad, mixed dtype,
+non-contiguous, broadcast, and non-float cases still fall back to the existing
+tape path. Behavior proof: output dtype remains F32, per-element order is
+unchanged, RNG is absent, and the added regression checks exact F32 bits against
+the kernel formula.
+
+Fresh local H2H sidecar against PyTorch CPU (`survey_f32_h2h`, `[4000,4000]`
+F32, PyTorch `set_num_threads(8)`) on a clean `origin/main` baseline:
+`cat_anchor` FT `8.443 ms` vs PyTorch `28.200 ms` = `3.34x FASTER`; `lerp` FT
+`139.399 ms` vs PyTorch `12.441 ms` = `11.20x SLOWER`. Candidate clean-target
+rerun: `cat_anchor` FT `8.162 ms` vs PyTorch `24.413 ms` = `2.99x FASTER`;
+`lerp` FT `8.750 ms` vs PyTorch `12.940 ms` = `1.48x FASTER`. Internal FT
+speedup: `139.399 / 8.750 = 15.93x`.
+
+Required per-crate bench path: literal
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo bench --release -p ft-api --bench ops_bench lerp` was probed
+and Cargo rejected `--release` for `cargo bench`. Valid per-crate Criterion
+bench with the requested target dir,
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo bench -p ft-api --bench ops_bench lerp`, measured
+`lerp/f32_4000x4000_nograd` at `[26.754 ms 27.561 ms 28.632 ms]` after
+rebasing onto the current `origin/main`.
+Validation: `rch exec -- cargo test -p ft-api
+f32_lerp_nograd_preserves_f32_dtype_and_kernel_formula --lib -- --nocapture`
+passed 1/0. `ft-conformance` was run after the code change and passed. Agent
+Mail reservation was unavailable because the corruption circuit breaker refused
+writes; source changes were made in a clean scratch worktree. AGENT BlackThrush.
+
 ## 2026-06-27 - PARTIAL KEEP: f32 addcmul/addcdiv weak-scalar dtype fix (21.7x -> 18.89x SLOWER vs torch)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Land-or-dig scan found the bounded-median bench worktree
