@@ -4,6 +4,39 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): bounded-integer no-grad global median (3.28x SLOWER -> 1.27x FASTER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `PearlReef`. BOLD-VERIFY first checked bench worktrees for a
+measured win not already on `main`: none found. The only ahead worktree was the committed `gxpb2`
+large-n row-SIMD reject, and the dirty row-vector FMA worktrees were measured losses: baseline FT
+`3.4903 ms` vs PyTorch `2.049542 ms` = **1.70x SLOWER**, candidate FT `10.834 ms` = **5.29x SLOWER**.
+Current `struct_survey6_h2h` on `origin/main` showed global `median` FT `291.700 ms` vs PyTorch
+`88.998 ms` = **3.28x SLOWER**. `where` was the largest same-scan gap (FT `128.209 ms` vs PyTorch
+`25.062 ms` = **5.12x SLOWER**), but the ledger already rejects scalar/direct/branchless `where`
+families pending a representation change, so this pass routed to the next current gap with an untried
+selection lever.
+
+Graveyard route: vectorized execution/cache-local data representation/selection algorithms. Lever:
+for no-grad f64 global `tensor_median`, avoid the old `reshape -> kthvalue -> index_select/tape`
+composition. Borrow contiguous storage when possible, return a scalar leaf, and select by a bounded
+integer histogram for finite integral f64 values with range `<= 65536`; fall back to in-place
+quickselect for fractional, nonfinite, or wide-range data. The histogram path preserves PyTorch's
+lower-median value ordering, including `-0.0` before `+0.0`; the grad path is unchanged.
+
+MEASURED against PyTorch: direct borrowed quickselect interim improved to FT `118.666 ms` vs PyTorch
+`85.241 ms` = **1.39x SLOWER**. Final bounded-histogram path measured FT `71.780 ms` vs PyTorch
+`91.020 ms` = **1.27x FASTER**, about **4.06x FT-internal** vs the `291.700 ms` current baseline.
+Validation: `rch exec -- cargo test -p ft-api median --lib -- --nocapture` passed 11/0;
+`rch exec -- cargo check -p ft-api --lib` passed on `hz2`; `rch exec -- cargo clippy -p ft-api --lib -- -D warnings`
+passed on `hz2`; `rch exec -- cargo test -p ft-conformance` passed the full crate test set
+(199/0 library tests plus bins/integration/doc tests). Literal probe
+`rch exec -- cargo bench --release -p ft-api -- median` was run and Cargo rejected `--release` for
+`cargo bench`; head-to-head evidence is in
+`artifacts/perf/frankentorch-kgs4.pearlreef-dig-20260626T0720Z/struct_survey6_current_local.log`,
+`artifacts/perf/frankentorch-kgs4.pearlreef-dig-20260626T0720Z/struct_survey6_median_fastpath_local.log`,
+and `artifacts/perf/frankentorch-kgs4.pearlreef-dig-20260626T0720Z/struct_survey6_bounded_median_local.log`.
+AGENT PearlReef.
+
 ## 2026-06-26 - PARTIAL KEEP / residual loss: count_nonzero IEEE bit classifier (5.90x SLOWER -> 1.13x SLOWER vs torch)
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. BOLD-VERIFY first checked the bench worktrees for a
