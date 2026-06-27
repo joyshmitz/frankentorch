@@ -26830,6 +26830,71 @@ where
     output
 }
 
+/// Parallel companion to `simd_binary_f32` (the add/sub/mul/div f32 path): fan
+/// SIMD-width-aligned chunks across rayon, each running the same `f32x8` op. The
+/// serial single-core SIMD path is DRAM-bandwidth-capped (~3x below torch's
+/// threaded add/sub/mul/div); spreading chunks across cores approaches the
+/// aggregate-bandwidth wall.
+///
+/// Bit-identical to `simd_binary_f32`: per-element and order-independent, and the
+/// chunk size is a multiple of `SIMD_WIDTH_F32` so every chunk but the last is
+/// fully SIMD (the last chunk's scalar tail covers exactly the same trailing
+/// `numel % SIMD_WIDTH_F32` lanes the serial path handles scalar). For add/sub/
+/// mul/div the scalar and SIMD forms are the same correctly-rounded IEEE op, so
+/// a boundary lane that flips SIMD<->scalar is bit-for-bit unchanged too.
+fn simd_binary_f32_parallel<F, S>(
+    lhs_window: &[f32],
+    rhs_window: &[f32],
+    scalar_op: F,
+    simd_op: S,
+) -> Vec<f32>
+where
+    F: Fn(f32, f32) -> f32 + Sync,
+    S: Fn(f32x8, f32x8) -> f32x8 + Sync,
+{
+    const CHUNK: usize = 1 << 14;
+    let numel = lhs_window.len();
+    let mut output = vec![0.0f32; numel];
+    output
+        .par_chunks_mut(CHUNK)
+        .zip(lhs_window.par_chunks(CHUNK))
+        .zip(rhs_window.par_chunks(CHUNK))
+        .for_each(|((out_chunk, lhs_chunk), rhs_chunk)| {
+            let n = out_chunk.len();
+            let simd_len = n / SIMD_WIDTH_F32 * SIMD_WIDTH_F32;
+            let mut i = 0;
+            while i < simd_len {
+                let a = f32x8::new([
+                    lhs_chunk[i],
+                    lhs_chunk[i + 1],
+                    lhs_chunk[i + 2],
+                    lhs_chunk[i + 3],
+                    lhs_chunk[i + 4],
+                    lhs_chunk[i + 5],
+                    lhs_chunk[i + 6],
+                    lhs_chunk[i + 7],
+                ]);
+                let b = f32x8::new([
+                    rhs_chunk[i],
+                    rhs_chunk[i + 1],
+                    rhs_chunk[i + 2],
+                    rhs_chunk[i + 3],
+                    rhs_chunk[i + 4],
+                    rhs_chunk[i + 5],
+                    rhs_chunk[i + 6],
+                    rhs_chunk[i + 7],
+                ]);
+                let result = simd_op(a, b);
+                out_chunk[i..i + SIMD_WIDTH_F32].copy_from_slice(result.as_array_ref());
+                i += SIMD_WIDTH_F32;
+            }
+            for j in simd_len..n {
+                out_chunk[j] = scalar_op(lhs_chunk[j], rhs_chunk[j]);
+            }
+        });
+    output
+}
+
 fn unary_contiguous_f32<F>(
     input: &[f32],
     meta: &TensorMeta,
@@ -26936,8 +27001,8 @@ fn simd_elementwise_f32<F, S>(
     simd_op: S,
 ) -> Result<Vec<f32>, KernelError>
 where
-    F: Fn(f32, f32) -> f32,
-    S: Fn(f32x8, f32x8) -> f32x8,
+    F: Fn(f32, f32) -> f32 + Sync,
+    S: Fn(f32x8, f32x8) -> f32x8 + Sync,
 {
     ensure_meta_shape_and_dtype(lhs_meta, rhs_meta)?;
     ensure_storage_len_f32(lhs, lhs_meta, "lhs")?;
@@ -26950,7 +27015,16 @@ where
     let rhs_start = rhs_meta.storage_offset();
     let lhs_window = &lhs[lhs_start..lhs_start + numel];
     let rhs_window = &rhs[rhs_start..rhs_start + numel];
-    Ok(simd_binary_f32(lhs_window, rhs_window, scalar_op, simd_op))
+    // add/sub/mul/div f32 ran serial single-core SIMD — one core's DRAM bandwidth
+    // caps these (the hottest elementwise ops) ~3x below torch's threaded kernels
+    // (binops_simd_f32_h2h: add/sub/mul/div 37ms vs torch ~12ms). Above the cheap-op
+    // gate, fan SIMD-width-aligned chunks across rayon; bit-identical to the serial
+    // SIMD path (per-element, order-independent). frankentorch-kgs4.167.
+    if numel >= SCALAR_UNARY_PARALLEL_THRESHOLD {
+        Ok(simd_binary_f32_parallel(lhs_window, rhs_window, scalar_op, simd_op))
+    } else {
+        Ok(simd_binary_f32(lhs_window, rhs_window, scalar_op, simd_op))
+    }
 }
 
 /// Least-squares solve `min ||A·X - B||` for an overdetermined, full-rank
@@ -32111,6 +32185,71 @@ mod tests {
                     &super::simd_unary_f32_parallel(&pos, |v| 1.0f32 / v, move |a| one / a),
                 ),
                 "reciprocal numel={numel}"
+            );
+        }
+    }
+
+    // The parallel-SIMD f32 BINARY kernel (add/sub/mul/div) must be BIT-IDENTICAL to
+    // the serial-SIMD path above the threshold — same CHUNK%SIMD_WIDTH_F32==0 partition
+    // argument as the unary test. Specials (±inf/NaN/±0) seeded into both operand tails.
+    #[test]
+    fn simd_binary_f32_parallel_matches_serial_bit_for_bit() {
+        let sizes = [0usize, 1, 7, 8, 9, 15, 16, 17, 16_383, 16_384, 16_385, 32_768, 1_000_003];
+        for &numel in &sizes {
+            let mut l: Vec<f32> = (0..numel)
+                .map(|i| ((i % 4099) as f32 - 2049.5) * 0.013)
+                .collect();
+            let mut r: Vec<f32> = (0..numel)
+                .map(|i| ((i % 3001) as f32 - 1500.5) * 0.017 + 1.0)
+                .collect();
+            if numel >= 5 {
+                let t = numel - 5;
+                l[t] = f32::INFINITY;
+                l[t + 1] = f32::NEG_INFINITY;
+                l[t + 2] = f32::NAN;
+                l[t + 3] = -0.0;
+                l[t + 4] = 0.0;
+                r[t] = 2.0;
+                r[t + 1] = -3.0;
+                r[t + 2] = 0.0; // div-by-zero / NaN-op paths
+                r[t + 3] = f32::INFINITY;
+                r[t + 4] = f32::NAN;
+            }
+            let bits_eq = |a: &[f32], b: &[f32]| {
+                a.len() == b.len()
+                    && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+            };
+            // add
+            assert!(
+                bits_eq(
+                    &super::simd_binary_f32(&l, &r, |x, y| x + y, |a, b| a + b),
+                    &super::simd_binary_f32_parallel(&l, &r, |x, y| x + y, |a, b| a + b),
+                ),
+                "add numel={numel}"
+            );
+            // sub
+            assert!(
+                bits_eq(
+                    &super::simd_binary_f32(&l, &r, |x, y| x - y, |a, b| a - b),
+                    &super::simd_binary_f32_parallel(&l, &r, |x, y| x - y, |a, b| a - b),
+                ),
+                "sub numel={numel}"
+            );
+            // mul
+            assert!(
+                bits_eq(
+                    &super::simd_binary_f32(&l, &r, |x, y| x * y, |a, b| a * b),
+                    &super::simd_binary_f32_parallel(&l, &r, |x, y| x * y, |a, b| a * b),
+                ),
+                "mul numel={numel}"
+            );
+            // div
+            assert!(
+                bits_eq(
+                    &super::simd_binary_f32(&l, &r, |x, y| x / y, |a, b| a / b),
+                    &super::simd_binary_f32_parallel(&l, &r, |x, y| x / y, |a, b| a / b),
+                ),
+                "div numel={numel}"
             );
         }
     }

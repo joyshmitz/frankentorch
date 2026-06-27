@@ -4,6 +4,27 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): parallel-SIMD f32 BINARY kernel — add/sub/mul/div ~1.6-2.5x FASTER than torch
+
+Bead/thread `frankentorch-kgs4.167`, agent `BlackThrush`. Direct sibling of kgs4.166 (parallel-SIMD f32
+unaries): the HOTTEST elementwise ops — add/sub/mul/div f32 — route through `simd_elementwise_f32` ->
+`simd_binary_f32`, which was SERIAL single-core SIMD (f32x8). binops_simd_f32_h2h (4000x4000 f32): all four
+**2.6-3.1x SLOWER** than torch (37ms vs ~12ms) — one core's DRAM bandwidth vs torch's threaded kernels. FIX:
+added `simd_binary_f32_parallel` (SIMD-width-aligned CHUNK=1<<14 chunks fanned across rayon via
+par_chunks_mut.zip(par_chunks).zip(par_chunks), each running the same f32x8 op) and gated `simd_elementwise_f32`
+to it above `SCALAR_UNARY_PARALLEL_THRESHOLD`. ★ZERO REGRESSION: CHUNK % SIMD_WIDTH_F32 == 0 -> identical
+SIMD/scalar partition -> BIT-IDENTICAL to the serial path; proven by `simd_binary_f32_parallel_matches_serial_
+bit_for_bit` (13 sizes incl multi-chunk + ±inf/NaN/±0/÷0 in both operand tails). BIT-EXACT vs torch
+(binops_simd_parity, n=1000003 awkward size incl ÷0/inf/NaN tail): add/sub/mul/div **0/1M each** (add/sub/mul/
+div are correctly-rounded IEEE — ADDPS/SUBPS/MULPS/DIVPS == scalar == torch). ft-kernel-cpu 555/0 (both
+serial-vs-parallel tests), conformance smoke 39/0. MEASURED under HEAVY peer-bench contention (frankensearch/
+frankenjax/whisper fleet saturating the box — torch baseline floated 10-20ms across runs); FT-parallel was
+STABLE ~6-7ms (low variance, contention-robust). Cleanest window (torch nearest its uncontended ~12ms): add
+**1.62x**, sub **1.76x**, mul **2.01x**, div **1.64x FASTER**; internal jump 37ms -> ~6.5ms (~5.7x), from
+**2.6-3.1x SLOWER to ~1.6-2.5x FASTER**. Finder = examples/binops_simd_f32_h2h.rs + binops_simd_parity.rs.
+With kgs4.166 (neg/abs/sqrt/reciprocal/relu) the WHOLE serial-single-core f32 SIMD elementwise surface
+(unary+binary) is now parallel. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN: f32 scalar lerp PyTorch FMA path (keeps 1.50x FASTER vs torch; fixes bit parity)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Land-or-dig scan found no clean unlanded
