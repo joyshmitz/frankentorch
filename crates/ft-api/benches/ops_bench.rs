@@ -3,6 +3,7 @@ use criterion::{
 };
 use ft_api::FrankenTorchSession;
 use ft_core::ExecutionMode;
+use std::time::Duration;
 
 fn deterministic_values(n: usize, shift: f64) -> Vec<f64> {
     (0..n)
@@ -428,6 +429,26 @@ fn bench_sum(c: &mut Criterion) {
             b.iter(|| black_box(session.tensor_sum(x).unwrap()));
         });
     }
+    group.finish();
+}
+
+fn bench_median(c: &mut Criterion) {
+    let mut group = c.benchmark_group("median");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(2));
+
+    let (rows, cols) = (4000usize, 4000usize);
+    let data: Vec<f64> = (0..rows * cols)
+        .map(|i| ((i.wrapping_mul(2_654_435_761) % 9973) as f64) - 4986.0)
+        .collect();
+    group.throughput(Throughput::Elements((rows * cols) as u64));
+    group.bench_function("bounded_i9973_f64_4000x4000_nograd", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(data.clone(), vec![rows, cols], false)
+            .unwrap();
+        b.iter(|| black_box(session.tensor_median(black_box(x)).unwrap()));
+    });
     group.finish();
 }
 
@@ -2266,6 +2287,7 @@ criterion_group!(
     bench_max_pool3d,
     bench_pool1d_ct1d,
     bench_sum,
+    bench_median,
     bench_amax_amin,
     bench_cumsum,
     bench_cumprod,

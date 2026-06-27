@@ -244,7 +244,7 @@ transpose (a larger correctness-critical rewrite), NOT a per-element micro-opt. 
 exact, universal primitive) + recorded the negative so the next session doesn't re-chase clone_from_slice.
 EDITED ft-autograd via the clean worktree pattern. AGENT BlackThrush.
 
-## 2026-06-27 - WIN (landed): bounded-integer no-grad global median (3.28x SLOWER -> 1.27x FASTER vs torch)
+## 2026-06-27 - WIN (landed): bounded-integer no-grad global median (3.28x SLOWER -> 1.28x FASTER vs torch)
 
 Bead/thread `frankentorch-kgs4`, agent `PearlReef`. BOLD-VERIFY first checked bench worktrees for a
 measured win not already on `main`: none found. The only ahead worktree was the committed `gxpb2`
@@ -266,15 +266,26 @@ lower-median value ordering, including `-0.0` before `+0.0`; the grad path is un
 MEASURED against PyTorch: direct borrowed quickselect interim improved to FT `118.666 ms` vs PyTorch
 `85.241 ms` = **1.39x SLOWER**. Final bounded-histogram path measured FT `71.780 ms` vs PyTorch
 `91.020 ms` = **1.27x FASTER**, about **4.06x FT-internal** vs the `291.700 ms` current baseline.
+Fresh current-main remeasure from the bench worktree after porting only this lever: `median` FT
+`71.052 ms` vs PyTorch `91.285 ms` = **1.28x FASTER**; `cat_anchor` stayed healthy at FT
+`11.841 ms` vs PyTorch `45.575 ms` = **3.85x FASTER**.
+
 Validation: `rch exec -- cargo test -p ft-api median --lib -- --nocapture` passed 11/0;
 `rch exec -- cargo check -p ft-api --lib` passed on `hz2`; `rch exec -- cargo clippy -p ft-api --lib -- -D warnings`
 passed on `hz2`; `rch exec -- cargo test -p ft-conformance` passed the full crate test set
 (199/0 library tests plus bins/integration/doc tests). Literal probe
 `rch exec -- cargo bench --release -p ft-api -- median` was run and Cargo rejected `--release` for
-`cargo bench`; head-to-head evidence is in
+`cargo bench`; a real per-crate Criterion row was added under `ops_bench` and remeasured
+`median/bounded_i9973_f64_4000x4000_nograd` with
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b rch exec -- cargo bench -p ft-api --bench ops_bench --profile release median -- --noplot`.
+RCH had no admissible worker and fell back locally; the release-profile interval was
+`[100.45 ms 104.11 ms 108.08 ms]`, still in the expected fast-path band and preserving
+the PyTorch win recorded by the head-to-head sidecar.
+Head-to-head evidence is in
 `artifacts/perf/frankentorch-kgs4.pearlreef-dig-20260626T0720Z/struct_survey6_current_local.log`,
 `artifacts/perf/frankentorch-kgs4.pearlreef-dig-20260626T0720Z/struct_survey6_median_fastpath_local.log`,
-and `artifacts/perf/frankentorch-kgs4.pearlreef-dig-20260626T0720Z/struct_survey6_bounded_median_local.log`.
+`artifacts/perf/frankentorch-kgs4.pearlreef-dig-20260626T0720Z/struct_survey6_bounded_median_local.log`,
+and `artifacts/perf/frankentorch-kgs4.codex-median-bench-ledger-20260627/`.
 AGENT PearlReef.
 
 ## 2026-06-26 - PARTIAL KEEP / residual loss: count_nonzero IEEE bit classifier (5.90x SLOWER -> 1.13x SLOWER vs torch)
