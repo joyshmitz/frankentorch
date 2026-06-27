@@ -8,7 +8,7 @@ use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{
     eq_tensor_contiguous_f32, gt_tensor_contiguous_f32, lerp_tensor_contiguous_f32,
     mean_tensor_contiguous_f32, pow_tensor_contiguous_f32, pow_tensor_contiguous_f64,
-    sum_tensor_contiguous_f32,
+    prod_dim_tensor_contiguous_f32, sum_tensor_contiguous_f32,
 };
 use std::time::Duration;
 
@@ -109,6 +109,7 @@ fn bench_f32_full_reduction(c: &mut Criterion) {
         .map(|i| ((i % 2000) as f32 - 1000.0) * 0.01)
         .collect();
     let meta = TensorMeta::from_shape(vec![rows, cols], DType::F32, Device::Cpu);
+    let flat_meta = TensorMeta::from_shape(vec![numel], DType::F32, Device::Cpu);
 
     c.bench_function("sum_f32_4000x4000", |b| {
         b.iter(|| {
@@ -123,6 +124,14 @@ fn bench_f32_full_reduction(c: &mut Criterion) {
             black_box(
                 mean_tensor_contiguous_f32(black_box(&data), black_box(&meta))
                     .expect("valid f32 mean benchmark input"),
+            )
+        })
+    });
+    c.bench_function("prod_f32_4000x4000", |b| {
+        b.iter(|| {
+            black_box(
+                prod_dim_tensor_contiguous_f32(black_box(&data), black_box(&flat_meta), 0)
+                    .expect("valid f32 prod benchmark input"),
             )
         })
     });

@@ -155,6 +155,40 @@ Measured (local host, torch 8 threads, min-of-9), `crates/ft-api/examples/diag_e
 masked_fill (kgs4.181): apply_function f64-roundtrip on a PURE positional op ->
 f32-native rewrite. File: `crates/ft-api/src/lib.rs` `tensor_diag_embed`.
 
+## 2026-06-27 - WIN (landed): f32 global prod SIMD chunk leaves (27.69x -> 5.14x SLOWER vs torch)
+
+Agent `BlackThrush`. Land-or-dig scan found no unlanded measured bench-worktree
+win: the addcmul-FMA worktree was already represented on `main`, and the other
+non-ancestor worktree was an explicit gxpb2 rejection. Dug the current biggest
+f32 reduction gap vs PyTorch/ORIG: global `prod` in
+`reduction_f32_h2h`.
+
+Root cause: the f32 global product fast path parallelized the row with
+`par_iter().copied().product::<f32>()`, but each leaf remained scalar iterator
+multiplication. Fix: keep the same tolerance-parallel tree shape at the row
+level, but make each leaf chunk a `wide::f32x8` product and combine chunk
+products through Rayon. This is not the rejected finite-zero scan from
+2026-06-26; it adds no extra full pass and no zero/NaN shortcut.
+
+Measured fresh-base H2H, local PyTorch CPU venv, `[4000,4000]` f32 no-grad:
+- ORIG/main: FT `6.426 ms`, PyTorch `0.232 ms` = **27.69x SLOWER**.
+- After: FT `2.116 ms`, PyTorch `0.341 ms` = **6.20x SLOWER**.
+- Warm after: FT `1.659 ms`, PyTorch `0.323 ms` = **5.14x SLOWER**.
+
+Internal FT speedup vs same-base ORIG: `6.426 / 1.659 = 3.87x`.
+Residual gap remains PyTorch's lower-level vectorized f32 reduction kernel.
+Per-crate bench:
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo bench -p ft-kernel-cpu --bench elementwise_bench prod_f32_4000x4000 --
+--warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot`, remote
+`vmi1264463`, `prod_f32_4000x4000` `[8.7966 ms 11.234 ms 13.781 ms]`.
+The literal requested `cargo bench --release -p ft-kernel-cpu ...` form was run
+and Cargo rejected `--release` for `cargo bench`. Focused kernel test
+`product_f32_simd_contiguous_matches_existing_parallel_product_for_finite_rows`
+passed. Mapped lever: alien-graveyard SIMD-tiled/vector leaf reduction plus
+extreme-software-optimization measured hot-gap discipline; behavior guarded by
+finite-row tolerance against the prior Rayon product. AGENT_NAME=BlackThrush.
+
 ## 2026-06-27 - WIN (landed): kthvalue f32 native quickselect, no f64 upcast (1.37x -> 3.52x FASTER vs torch, 2.57x over prior path)
 
 Agent `CrimsonForge`. Land-or-dig: the obvious biggest f32 gap (full-reduce

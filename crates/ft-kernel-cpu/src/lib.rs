@@ -29298,6 +29298,37 @@ pub fn trace_tensor_contiguous_f32(input: &[f32], meta: &TensorMeta) -> Result<f
     Ok(acc)
 }
 
+const PROD_F32_SIMD_CHUNK: usize = 1 << 14;
+
+fn product_f32_simd_contiguous(values: &[f32]) -> f32 {
+    let simd_len = values.len() / SIMD_WIDTH_F32 * SIMD_WIDTH_F32;
+    let mut acc = f32x8::splat(1.0f32);
+    let mut i = 0usize;
+    while i < simd_len {
+        let lanes = f32x8::new([
+            values[i],
+            values[i + 1],
+            values[i + 2],
+            values[i + 3],
+            values[i + 4],
+            values[i + 5],
+            values[i + 6],
+            values[i + 7],
+        ]);
+        acc = acc * lanes;
+        i += SIMD_WIDTH_F32;
+    }
+
+    let mut prod = 1.0f32;
+    for &lane in acc.as_array_ref() {
+        prod *= lane;
+    }
+    for &value in &values[simd_len..] {
+        prod *= value;
+    }
+    prod
+}
+
 pub fn prod_dim_tensor_contiguous_f32(
     input: &[f32],
     meta: &TensorMeta,
@@ -29331,8 +29362,8 @@ pub fn prod_dim_tensor_contiguous_f32(
         let output: Vec<f32> = (0..out_numel)
             .map(|out_idx| {
                 data[out_idx * reduce_size..out_idx * reduce_size + reduce_size]
-                    .par_iter()
-                    .copied()
+                    .par_chunks(PROD_F32_SIMD_CHUNK)
+                    .map(product_f32_simd_contiguous)
                     .product::<f32>()
             })
             .collect();
@@ -32579,7 +32610,28 @@ unsafe fn transpose_block_8x8_avx2_f32(
 
 #[cfg(test)]
 mod tests {
+    use rayon::prelude::*;
     use std::fmt::Write as _;
+
+    #[test]
+    fn product_f32_simd_contiguous_matches_existing_parallel_product_for_finite_rows() {
+        let sizes = [0usize, 1, 7, 8, 9, 16_383, 16_384, 16_385, 65_536];
+        for &numel in &sizes {
+            let row: Vec<f32> = (0..numel)
+                .map(|i| 1.0f32 + ((i % 17) as f32 - 8.0) * 0.000_001)
+                .collect();
+            let expected = row.par_iter().copied().product::<f32>();
+            let got = row
+                .par_chunks(super::PROD_F32_SIMD_CHUNK)
+                .map(super::product_f32_simd_contiguous)
+                .product::<f32>();
+            let tolerance = expected.abs().max(1.0) * 0.000_2;
+            assert!(
+                (got - expected).abs() <= tolerance,
+                "numel={numel} got={got:?} expected={expected:?} tolerance={tolerance:?}",
+            );
+        }
+    }
 
     // The parallel-SIMD f32 unary kernel must be BIT-IDENTICAL to the serial-SIMD
     // path it replaces above the threshold (CHUNK is a multiple of SIMD_WIDTH_F32,
