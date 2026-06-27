@@ -27836,19 +27836,35 @@ pub fn pow_tensor_contiguous_f32(
     }
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
-    // See `pow_tensor_contiguous_f64`: compute-bound, pure per-element map, so
-    // par_iter is bit-identical to the serial map.
-    if numel >= PARALLEL_THRESHOLD {
-        Ok(window
-            .par_iter()
-            .map(|value| powf_torch_signed_zero_f32(*value, exponent))
-            .collect())
-    } else {
-        Ok(window
-            .iter()
-            .map(|value| powf_torch_signed_zero_f32(*value, exponent))
-            .collect())
+    // Compute-bound, pure per-element map, so par_iter is bit-identical to serial.
+    #[inline]
+    fn run<F: Fn(f32) -> f32 + Sync>(window: &[f32], numel: usize, f: F) -> Vec<f32> {
+        if numel >= PARALLEL_THRESHOLD {
+            window.par_iter().map(|&v| f(v)).collect()
+        } else {
+            window.iter().map(|&v| f(v)).collect()
+        }
     }
+    // Trivial-exponent elision: `powf_torch_signed_zero_f32` is an expensive
+    // transcendental per element (pow2 measured 114ms = ~11x SLOWER than torch),
+    // AND it is 1 ULP off torch for ~0.1% of x at exp=2 (torch special-cases
+    // integer exponents to repeated multiplication). x^1=x, x^2=x*x, x^3=x*x*x,
+    // x^-1=1/x are BIT-EXACT vs torch f32 pow (verified pow2_parity_probe +
+    // pow_trivial_probe over 20k values incl ±0/±inf/NaN/subnormal) and avoid the
+    // powf cost. 0.5 is NOT elided — torch pow(.,0.5) != sqrt bit-for-bit (1535/20k
+    // ULP diffs). frankentorch-kgs4.171.
+    let out = if exponent == 1.0 {
+        run(window, numel, |v| v)
+    } else if exponent == 2.0 {
+        run(window, numel, |v| v * v)
+    } else if exponent == 3.0 {
+        run(window, numel, |v| v * v * v)
+    } else if exponent == -1.0 {
+        run(window, numel, |v| 1.0 / v)
+    } else {
+        run(window, numel, |v| powf_torch_signed_zero_f32(v, exponent))
+    };
+    Ok(out)
 }
 
 pub fn clamp_tensor_contiguous_f32(

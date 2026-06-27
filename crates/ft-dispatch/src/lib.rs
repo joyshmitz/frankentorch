@@ -3391,6 +3391,15 @@ pub struct TensorPowDispatchOutcome {
     pub decision: PowDispatchDecision,
 }
 
+/// Native-f32 pow outcome: keeps the f32 kernel result as `Vec<f32>` instead of the
+/// f64 round-trip the f64-typed outcome forces (the typed wrapper downcasts it back).
+/// frankentorch-kgs4.171.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorPowDispatchOutcomeF32 {
+    pub values: Vec<f32>,
+    pub decision: PowDispatchDecision,
+}
+
 pub fn dispatch_scalar_pow(
     mode: ExecutionMode,
     input: &ScalarTensor,
@@ -4678,6 +4687,52 @@ pub fn dispatch_tensor_pow_contiguous_f32(
     })
 }
 
+/// Native-f32 pow: returns the f32 kernel result directly (no `.map(f64::from)`
+/// upcast that the typed wrapper then downcasts) — the f32->f64->f32 round-trip is
+/// 2 extra full passes over numel. Bit-identical (f32 round-trips exactly).
+/// frankentorch-kgs4.171.
+pub fn dispatch_tensor_pow_contiguous_f32_native(
+    mode: ExecutionMode,
+    input: &[f32],
+    meta: &TensorMeta,
+    exponent: f64,
+    requires_grad: bool,
+) -> Result<TensorPowDispatchOutcomeF32, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor_meta(meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match effective_key {
+        DispatchKey::AutogradCPU => (
+            pow_tensor_contiguous_f32(input, meta, exponent as f32)?,
+            "autograd_cpu::pow_tensor_contiguous_f32",
+        ),
+        DispatchKey::CPU => (
+            pow_tensor_contiguous_f32(input, meta, exponent as f32)?,
+            "cpu::pow_tensor_contiguous_f32",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for contiguous tensor pow f32 op",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorPowDispatchOutcomeF32 {
+        values,
+        decision: PowDispatchDecision {
+            mode,
+            kernel,
+            exponent,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
 pub fn dispatch_tensor_clamp_contiguous_f32(
     mode: ExecutionMode,
     input: &[f32],
@@ -5531,20 +5586,23 @@ pub fn dispatch_tensor_pow_contiguous_typed(
             })
         }
         TensorStorage::F32(data) => {
-            let outcome =
-                dispatch_tensor_pow_contiguous_f32(mode, data, meta, exponent, requires_grad)?;
+            // Native f32: no f32->f64->f32 round-trip. frankentorch-kgs4.171.
+            let outcome = dispatch_tensor_pow_contiguous_f32_native(
+                mode,
+                data,
+                meta,
+                exponent,
+                requires_grad,
+            )?;
             Ok(TypedPowOutcome {
-                storage: narrow_f32_to_storage_dtype(
-                    storage,
-                    outcome.values.iter().map(|&v| v as f32).collect(),
-                ),
+                storage: narrow_f32_to_storage_dtype(storage, outcome.values),
                 decision: outcome.decision,
             })
         }
         TensorStorage::F16(_) | TensorStorage::BF16(_) => {
             let promoted: Vec<f32> = storage.to_f32_vec();
             let promoted_meta = meta.clone().with_dtype(DType::F32);
-            let outcome = dispatch_tensor_pow_contiguous_f32(
+            let outcome = dispatch_tensor_pow_contiguous_f32_native(
                 mode,
                 &promoted,
                 &promoted_meta,
@@ -5552,10 +5610,7 @@ pub fn dispatch_tensor_pow_contiguous_typed(
                 requires_grad,
             )?;
             Ok(TypedPowOutcome {
-                storage: narrow_f32_to_storage_dtype(
-                    storage,
-                    outcome.values.iter().map(|&v| v as f32).collect(),
-                ),
+                storage: narrow_f32_to_storage_dtype(storage, outcome.values),
                 decision: outcome.decision,
             })
         }

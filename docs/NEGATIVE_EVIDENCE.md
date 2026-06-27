@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN+BUGFIX (landed): f32 pow trivial-exponent elision + native dispatch (11x SLOWER -> ~2x FASTER, fixes 1-ULP parity)
+
+Bead/thread `frankentorch-kgs4.171`, agent `BlackThrush`. roundtrip_f32_h2h flagged f32 `pow(x,2.0)` at **11.1x
+SLOWER** than torch (114ms vs 10.3ms on [4000,4000]). TWO root causes: (1) `pow_tensor_contiguous_f32` called
+`powf_torch_signed_zero_f32` (an expensive transcendental) per element even for trivial integer exponents; torch
+special-cases them to repeated multiplication. (2) `dispatch_tensor_pow_contiguous_f32` `.map(f64::from)` upcast
+the result to Vec<f64> which the typed wrapper downcast back (the kgs4.170 round-trip anti-pattern). ★ALSO A
+PARITY BUG: pow2_parity_probe found ft's powf(x,2) was **1 ULP off torch for 24/20019 values** (torch's x*x is
+exact). FIX: (a) trivial-exponent elision in the kernel — x^1=x, x^2=x*x, x^3=x*x*x, x^-1=1/x (BIT-EXACT vs torch,
+verified pow2_parity_probe + pow_trivial_probe over 20k vals incl ±0/±inf/NaN/subnormal; 0.5 NOT elided — torch
+pow(.,0.5) != sqrt, 1535 ULP diffs); (b) native-f32 pow dispatch (TensorPowDispatchOutcomeF32 +
+dispatch_tensor_pow_contiguous_f32_native, no round-trip). PARITY: ft_pow now **0/20019** vs torch (was 24).
+ft-kernel-cpu 556/0 (pow 11/0), ft-dispatch pow 4/0, conformance smoke 39/0. MEASURED (add_anchor 2.6x healthy):
+pow2 114ms -> ~5ms = **~2x FASTER** than torch (was 11.1x SLOWER), ~20x internal. Non-trivial exponents keep the
+powf path + still benefit from the dropped round-trip. NOTE: f64 pow likely has the SAME powf-for-trivial-exp
+slowness (+ maybe 1-ULP) — separate measure (default dtype). Finder = examples/roundtrip_f32_h2h.rs +
+pow2_parity_probe.rs + pow_trivial_probe.rs. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): native-f32 clamp dispatch — kill the f32->f64->f32 round-trip (11x SLOWER -> ~2x FASTER)
 
 Bead/thread `frankentorch-kgs4.170`, agent `BlackThrush`. survey_f32_wide_h2h flagged f32 `clamp` at **11x
