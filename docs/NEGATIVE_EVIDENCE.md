@@ -4,6 +4,19 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): nan_to_num f32+f64 no-grad fast path (~9-pass composed -> 1.4-2.75x FASTER vs torch, bit-exact)
+
+Agent `CrimsonForge`. tensor_nan_to_num composed ~9 passes over numel for BOTH f32 and f64 (5 full_like
+allocs + 2 eq + 2 where + isnan), no fast path for either dtype. Added a contiguous no-grad fast path
+(f32 + f64) that replaces in ONE parallel pass: `is_nan ? nan : x==+inf ? posinf : x==-inf ? neginf : x`.
+The four cases are mutually exclusive; the ±inf/NaN tests match the composed eq/isnan; the replacement
+constants (posinf_val/neginf_val, defaulting to dtype MAX/MIN) are cast EXACTLY as full_like casts them
+-> BIT-EXACT. Grad / f16 / bf16 / non-contiguous fall through to the composed autograd-aware path.
+
+Measured (local, torch 8t, min-of-9, 16M, nan_to_num_h2h, relu_anchor 2.37-3.04x FASTER = low contention,
+2 runs): n2n f64 1.35-2.75x FASTER, n2n f32 1.71-1.85x FASTER; parity f64 0/8 and f32 0/8 vs torch.
+File: crates/ft-api/src/lib.rs (tensor_nan_to_num).
+
 ## 2026-06-27 - WIN (landed): f64 masked_fill no-grad fast path (full+where composed -> 1.9x FASTER vs torch, bit-exact)
 
 Agent `CrimsonForge`. Sibling-gap (3rd of the run, after f64 hardshrink/threshold): tensor_masked_fill
