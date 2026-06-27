@@ -28,6 +28,60 @@ Finder = examples/survey_f32_wide_h2h.rs. OTHER big f32 gaps it surfaced (next t
 (comparison, trivially bit-exact), clamp **11x** (pure clamp like relu6), pow2 11.6x (parity-risk), sum/mean 13x
 (pairwise-locked). AGENT BlackThrush.
 
+## 2026-06-27 - WIN: f32 addcmul PyTorch FMA path (7.64x SLOWER -> 2.00x SLOWER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Land-or-dig scan found no
+clean unlanded measured bench-worktree win: stale row-vector FMA trees still had
+no current PyTorch-ratio evidence, the gxpb2 branch was an explicit rejection,
+and the private eigvalsh staging lane did not improve the public dispatch path.
+Dug the largest current documented f32 gap after the scalar-lerp keep:
+`tensor_addcmul` f32 no-grad was still recorded at FT `219.941 ms`, PyTorch
+`11.645 ms` = **18.89x SLOWER** (and the top H2H entry rounded that to
+**18.88x SLOWER**). While this was being validated, `origin/main` advanced with
+the parallel-SIMD f32 binary kernel keep; a clean current-main H2H baseline at
+that head still left `addcmul` at FT `124.457 ms`, PyTorch `16.294 ms` =
+**7.64x SLOWER**.
+
+Root cause: f32 `tensor_addcmul` still fell through the composed `mul + scalar
+scale + add` path, allocating and scanning three times. The previous fused f32
+attempt was correctly reverted because it used the wrong rounding order. Fresh
+PyTorch 2.12 CPU black-box bit probes found the zero-mismatch rule for scalar
+f32 addcmul: first round `value * tensor1` to f32, then use fused
+multiply-add with `tensor2` and `input`. Fix: add a narrowly gated no-grad,
+equal-shape, contiguous F32 fast path that computes
+`(value_f32 * tensor1).mul_add(tensor2, input)` in one rayon pass. Grad,
+non-contiguous, broadcast, mixed-dtype, and non-F32 cases still fall through.
+
+Evidence: focused bit oracle
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo test -p ft-api f32_addcmul_matches_pytorch_cpu_bits --lib -- --nocapture`
+passed. Literal requested per-crate bench form
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo bench --release -p ft-api --bench ops_bench addcmul`
+failed because this Cargo rejects `--release` for `cargo bench`; valid per-crate
+Criterion bench with the same crate/bench/filter/target dir,
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo bench -p ft-api --bench ops_bench addcmul`, measured
+`addcmul/f32_4000x4000_nograd` at `[71.394 ms 112.27 ms 195.92 ms]` under heavy
+local contention. That is still a `219.941 / 112.27 = 1.96x` FT internal
+speedup against the older pre-binary-kernel ledger.
+
+Fresh local H2H sidecar against PyTorch CPU (`survey_f32_h2h`, `[4000,4000]`
+F32, PyTorch `set_num_threads(8)`) on clean current main before this patch:
+`cat_anchor` FT `8.566 ms`, PyTorch `25.109 ms` = **2.93x FASTER**; `addcmul`
+FT `124.457 ms`, PyTorch `16.294 ms` = **7.64x SLOWER**. Same sidecar after
+the patch: `cat_anchor` FT `9.557 ms`, PyTorch `29.132 ms` = **3.05x FASTER**;
+`addcmul` FT `25.661 ms`, PyTorch `12.861 ms` = **2.00x SLOWER**. Current-main
+FT internal H2H speedup: `124.457 / 25.661 = 4.85x`. This leaves a PyTorch
+kernel gap but closes most of the composed-path loss without changing autograd
+behavior. Conformance green:
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo test -p ft-conformance` passed (`199 + bin/tests/e2e/smoke/doc
+suites`, all green) on remote `ovh-a`. Score vs PyTorch for this lever:
+`0W / 1L / 0N` by absolute ratio, but the measured loss shrank from
+`7.64x SLOWER` to `2.00x SLOWER`, so source disposition is KEEP. AGENT
+BlackThrush.
+
 ## 2026-06-27 - WIN (landed): parallel-SIMD f32 BINARY kernel — add/sub/mul/div ~1.6-2.5x FASTER than torch
 
 Bead/thread `frankentorch-kgs4.167`, agent `BlackThrush`. Direct sibling of kgs4.166 (parallel-SIMD f32
