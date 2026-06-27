@@ -3113,13 +3113,28 @@ pub fn min_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| {
-        if l.is_nan() || r.is_nan() {
-            f64::NAN
-        } else {
-            l.min(r)
-        }
-    })
+    // SIMD-accelerated (f64x4) like add/sub/mul/div_f64; the f64 sibling of the f32 max/min
+    // SIMD win. Scalar op is the unchanged NaN-propagating fmin; the SIMD op computes the same
+    // value lanewise (f64x4::min is fmin-faithful incl. IEEE ±0 sign) then forces NaN where
+    // either operand is NaN. Strided falls back to scalar inside simd_elementwise_f64. Bit-exact
+    // is guarded by min_max_f64_simd_matches_scalar_bit_for_bit.
+    simd_elementwise_f64(
+        lhs,
+        rhs,
+        lhs_meta,
+        rhs_meta,
+        |l, r| {
+            if l.is_nan() || r.is_nan() {
+                f64::NAN
+            } else {
+                l.min(r)
+            }
+        },
+        |a: f64x4, b: f64x4| {
+            let nan = f64x4::splat(f64::NAN);
+            (!b.cmp_eq(b)).blend(nan, (!a.cmp_eq(a)).blend(nan, a.min(b)))
+        },
+    )
 }
 
 pub fn max_tensor_contiguous_f64(
@@ -3128,13 +3143,24 @@ pub fn max_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| {
-        if l.is_nan() || r.is_nan() {
-            f64::NAN
-        } else {
-            l.max(r)
-        }
-    })
+    // SIMD-accelerated (f64x4) — see min_tensor_contiguous_f64 for the rationale.
+    simd_elementwise_f64(
+        lhs,
+        rhs,
+        lhs_meta,
+        rhs_meta,
+        |l, r| {
+            if l.is_nan() || r.is_nan() {
+                f64::NAN
+            } else {
+                l.max(r)
+            }
+        },
+        |a: f64x4, b: f64x4| {
+            let nan = f64x4::splat(f64::NAN);
+            (!b.cmp_eq(b)).blend(nan, (!a.cmp_eq(a)).blend(nan, a.max(b)))
+        },
+    )
 }
 
 pub fn atan2_tensor_contiguous_f64(
@@ -32598,6 +32624,68 @@ mod tests {
                 ),
                 "reciprocal numel={numel}"
             );
+        }
+    }
+
+    // f64 sibling of min_max_f32: the SIMD f64x4 max/min must be BIT-IDENTICAL to the
+    // NaN-propagating scalar fmax/fmin across every ordered pair of IEEE f64 edge values.
+    #[test]
+    fn min_max_f64_simd_matches_scalar_bit_for_bit() {
+        use wide::{CmpEq, f64x4};
+        let edge = [
+            0.0f64,
+            -0.0,
+            1.0,
+            -1.0,
+            2.5,
+            -2.5,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            f64::from_bits(0x8000_0000_0000_0001),
+            1.0e300,
+            -1.0e300,
+            3.0,
+        ];
+        let mut l: Vec<f64> = Vec::new();
+        let mut r: Vec<f64> = Vec::new();
+        for &a in &edge {
+            for &b in &edge {
+                l.push(a);
+                r.push(b);
+            }
+        }
+        for k in 0..3 {
+            l.push(edge[k]);
+            r.push(edge[(k + 5) % edge.len()]);
+        }
+        let max_scalar = |x: f64, y: f64| if x.is_nan() || y.is_nan() { f64::NAN } else { x.max(y) };
+        let min_scalar = |x: f64, y: f64| if x.is_nan() || y.is_nan() { f64::NAN } else { x.min(y) };
+        let max_simd = |a: f64x4, b: f64x4| {
+            let nan = f64x4::splat(f64::NAN);
+            (!b.cmp_eq(b)).blend(nan, (!a.cmp_eq(a)).blend(nan, a.max(b)))
+        };
+        let min_simd = |a: f64x4, b: f64x4| {
+            let nan = f64x4::splat(f64::NAN);
+            (!b.cmp_eq(b)).blend(nan, (!a.cmp_eq(a)).blend(nan, a.min(b)))
+        };
+        for (name, got, scalar) in [
+            ("max", super::simd_binary_f64(&l, &r, max_scalar, max_simd), max_scalar as fn(f64, f64) -> f64),
+            ("min", super::simd_binary_f64(&l, &r, min_scalar, min_simd), min_scalar as fn(f64, f64) -> f64),
+        ] {
+            for (k, g) in got.iter().enumerate() {
+                let want = scalar(l[k], r[k]);
+                assert_eq!(
+                    g.to_bits(),
+                    want.to_bits(),
+                    "{name} f64 simd diverged from scalar at ({}, {}): got {g} want {want}",
+                    l[k],
+                    r[k]
+                );
+            }
         }
     }
 

@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): f64 maximum/minimum SIMD (scalar -> 1.5-2.25x FASTER vs torch, bit-exact)
+
+Agent `CrimsonForge`. The f64 sibling of the f32 max/min SIMD win (c5570161). add/sub/mul/div_f64
+already used simd_elementwise_f64 (f64x4) but max_tensor_contiguous_f64 / min_tensor_contiguous_f64
+were the ONLY f64 binary ops still on the scalar elementwise_f64 path (their is_nan branches are
+compute-bound, so scalar lost to torch's SIMD f64 max/min). Routed both through simd_elementwise_f64
+with a bit-exact NaN-propagating f64x4 op: (!b.cmp_eq(b)).blend(NAN, (!a.cmp_eq(a)).blend(NAN, a.max(b)))
+(strided still falls back to scalar inside simd_elementwise_f64).
+
+Bit-exact: EXHAUSTIVE cartesian test over every ordered pair of IEEE f64 edge values (±0, ±inf, NaN,
+±subnormal, normals) — min_max_f64_simd_matches_scalar_bit_for_bit — confirms wide f64x4::max/min are
+fmax/fmin-faithful (incl. ±0 sign) and the SIMD lanes equal the scalar reference.
+
+Measured (local, torch 8t, min-of-9, 16M f64, minmax_f64_h2h, add_anchor ~2.0x FASTER = low contention):
+maximum 1.5-2.25x FASTER, minimum 1.5-1.86x FASTER (3 runs). File: crates/ft-kernel-cpu/src/lib.rs
+(max_tensor_contiguous_f64 / min_tensor_contiguous_f64).
+
 ## 2026-06-27 - WIN (landed): f32 hardswish/hardsigmoid/hardtanh SIMD (scalar -> 1.7-2.1x FASTER vs torch, bit-exact)
 
 Agent `CrimsonForge`. hardswish/hardsigmoid/hardtanh f32 used the SCALAR define_unary_f32 macro
