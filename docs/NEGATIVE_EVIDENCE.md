@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): f32 histogram no-upcast parallel fast path (5.39x SLOWER -> 2.25x FASTER vs torch, bit-exact)
+
+Bead/thread `frankentorch-kgs4.178`, agent `BlackThrush`. count_membership_h2h flagged f32 `histogram` (8M, 256
+bins) at **5.39x SLOWER** than torch (60ms vs 11ms). ROOT (the histc anti-pattern, WORSE — even the binning was
+serial here): `tensor_values_lossy_f64` UPCASTS f32->f64 + a SERIAL finite-check + a SERIAL binning loop. FIX:
+f32 UNWEIGHTED no-grad fast path — borrow `contiguous_values_f32()` (no upcast), parallel finite-check +
+auto-range (par min/max) + parallel local-bins histogram (contribution=1.0), each bin `v as f64` (exact) in the
+SAME f64 bin math; then density-normalise + build edges. ★BIT-IDENTICAL: same f64 bin assignment + integer counts
+order-invariant; torch parity (histogram_f32_parity, 500003 vals incl boundaries/out-of-range): counts **0
+mismatches** AND bin edges **bit-exact**. Weighted (float-weight sums are order-SENSITIVE -> not bit-exact-
+parallelizable) / non-contiguous fall through unchanged. ft-api histogram 6/0, conformance smoke 39/0. MEASURED:
+60ms -> 5.2ms (~11x internal) now **2.25x FASTER** than torch (was 5.39x SLOWER). The `tensor_values_lossy_f64`
+counting/selection vein has now shipped median (4.18x->parity+NaN fix), histc (3.42x SLOWER->2.89x FASTER),
+bincount (8.34x->1.60x), histogram (5.39x SLOWER->2.25x FASTER) — all bit-exact. NEXT in this vein: histogramdd
+(multi-dim, same pattern); mode/quantile already probed (quantile FASTER). Finder = count_membership_h2h.rs +
+histogram_f32_parity.rs. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): f32 bincount no-upcast parallel fast path (8.34x SLOWER -> 1.60x, bit-exact)
 
 Bead/thread `frankentorch-kgs4.177`, agent `BlackThrush`. count_membership_h2h flagged f32 `bincount` (8M, ints
