@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): mse_loss + l1_loss reduction='none' no-grad fast path (f32 6.4x/3.0x SLOWER -> FASTER)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. A fresh f32 survey (survey_f32b_h2h: atan2/fmod already
+1.8-2.2x FASTER — DON'T touch) flagged the loss `reduction='none'` paths: f32 `mse_loss('none')` **6.37x SLOWER
+(74ms)**, `l1_loss('none')` **3.05x SLOWER (73ms)**. ROOT: the fused no-grad fast path only handled mean/sum;
+'none' fell to the composed `sub` + `mul(diff,diff)` / `sub` + `abs` = 2 tape nodes + operand clones (and f32
+fell through ENTIRELY since the fast path was f64-only). FIX: added a no-grad reduction='none' fast path for
+BOTH f64+f32 — borrow input/target contiguous storage and compute `(a-b)^2` (mse) / `|a-b|` (l1) in ONE
+parallel pass, return a leaf. CLEAN PARITY (unlike addcmul): single sub then self-multiply / abs in the input
+dtype — bit-exact with the composed path AND torch (no scalar-value, no reduction-order, no grouping
+ambiguity). grad / non-contiguous / mismatched-shape / non-f32f64 fall through. 21/0 mse+l1 tests, ft-api lib
+2388/0 + conformance 39/0. MEASURED ([4000,4000] f32, torch set_num_threads(8) vs FT-64t, cat_anchor ~3x FASTER
+healthy): mse_none **74ms -> ~8ms** now **1.2-1.6x FASTER** (was 6.37x SLOWER); l1_none **73ms -> ~7-13ms** now
+**1.8-3.6x FASTER** (was 3.05x SLOWER). NOTE: mse_none shows run-to-run variance (box load) ~1.2-1.6x but
+always FASTER. LESSON: loss `reduction='none'` is pure elementwise (no reduction-order issue) → a clean f32
+target; the mean/sum cases stay reduction-kernel-bound. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): F32 maximum/minimum wired to existing kernel (11.7x SLOWER -> 2.4x FASTER)
 
 Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Continuing the F64-only-gate sweep: `tensor_maximum`/
