@@ -2369,6 +2369,7 @@ where
     }
 }
 
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn simd_unary_f64<F, S>(window: &[f64], scalar_op: F, simd_op: S) -> Vec<f64>
 where
     F: Fn(f64) -> f64 + Sync,
@@ -3502,6 +3503,7 @@ pub fn mean_dim_tensor_contiguous_f64(
 
 const SIMD_WIDTH: usize = 4;
 
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn simd_binary_f64<F, S>(
     lhs_window: &[f64],
     rhs_window: &[f64],
@@ -31128,20 +31130,30 @@ pub fn lerp_tensor_contiguous_f32(
     }
     let s = &start[offset..offset + numel];
     let e = &end[offset..offset + numel];
-    // Pure per-element map → parallel above PARALLEL_THRESHOLD (bit-identical to the serial
-    // zip-map; indexed parallel collect preserves order). The no-grad ft-api lerp is already
-    // fast-pathed; this parallelizes the kernel for the grad path / direct callers.
+    // PyTorch's scalar f32 lerp uses a branchy fused formula: start-side FMA for
+    // |weight| < 0.5, otherwise end-side FMA. This preserves exact endpoints and
+    // avoids the double-rounding drift from `sv + weight * (ev - sv)`.
     if numel >= PARALLEL_THRESHOLD {
         use rayon::prelude::*;
         Ok(s.par_iter()
             .zip(e.par_iter())
-            .map(|(&sv, &ev)| sv + weight * (ev - sv))
+            .map(|(&sv, &ev)| lerp_scalar_f32(sv, ev, weight))
             .collect())
     } else {
         Ok(s.iter()
             .zip(e.iter())
-            .map(|(&sv, &ev)| sv + weight * (ev - sv))
+            .map(|(&sv, &ev)| lerp_scalar_f32(sv, ev, weight))
             .collect())
+    }
+}
+
+#[inline]
+fn lerp_scalar_f32(start: f32, end: f32, weight: f32) -> f32 {
+    let delta = end - start;
+    if weight.abs() < 0.5 {
+        weight.mul_add(delta, start)
+    } else {
+        (weight - 1.0).mul_add(delta, end)
     }
 }
 
@@ -31789,6 +31801,244 @@ pub fn sparse_coo_add(
     sparse_coo_coalesce(&combined)
 }
 
+/// Transpose a row-major `[rows, cols]` f64 matrix into a fresh row-major `[cols, rows]` matrix.
+///
+/// A scalar transpose streams strided (one direction is always a gather/scatter), capping it at a
+/// fraction of memory bandwidth. The AVX2 path transposes 4×4 blocks IN REGISTERS so BOTH the loads
+/// (4 contiguous src elements per row) AND the stores (4 contiguous dst elements per row) are
+/// vectorized — the classic register-blocked transpose. Pure data movement (each dst element written
+/// once) ⇒ bit-identical to the scalar transpose; parallel over disjoint 4-output-row blocks.
+#[must_use]
+pub fn transpose_2d_f64(src: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let mut dst = vec![0.0f64; rows * cols];
+    transpose_2d_into_f64(src, &mut dst, rows, cols);
+    dst
+}
+
+/// In-place variant of [`transpose_2d_f64`]: writes the `[cols, rows]` transpose into `dst`.
+#[allow(unsafe_code)]
+pub fn transpose_2d_into_f64(src: &[f64], dst: &mut [f64], rows: usize, cols: usize) {
+    debug_assert_eq!(src.len(), rows * cols);
+    debug_assert_eq!(dst.len(), rows * cols);
+    if rows == 0 || cols == 0 {
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    let simd = std::arch::is_x86_feature_detected!("avx2");
+    #[cfg(not(target_arch = "x86_64"))]
+    let simd = false;
+
+    // Each chunk owns 4 consecutive OUTPUT rows (= 4 consecutive src columns `jb..jb+4`), a disjoint
+    // contiguous dst region. `process(jb, chunk)` fills it.
+    let process = |jb: usize, chunk: &mut [f64]| {
+        let n_out = chunk.len() / rows;
+        if simd && n_out == 4 && jb + 4 <= cols {
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mut ib = 0;
+                while ib + 4 <= rows {
+                    // SAFETY: `simd` ⇒ AVX2 present at runtime; `ib+4<=rows` and `jb+4<=cols` keep
+                    // every src load in `[0, rows*cols)`, and `chunk.len()==4*rows` keeps every dst
+                    // store in bounds (max index 3*rows+ib+3 < 4*rows since ib+3 < rows).
+                    unsafe { transpose_block_4x4_avx2_f64(src, chunk, ib, jb, cols, rows) };
+                    ib += 4;
+                }
+                // Tail rows (rows not a multiple of 4): scalar.
+                for i in ib..rows {
+                    for k in 0..4 {
+                        chunk[k * rows + i] = src[i * cols + jb + k];
+                    }
+                }
+            }
+        } else {
+            // Scalar: chunk covers output rows `jb..jb+n_out`.
+            for k in 0..n_out {
+                let oj = jb + k;
+                for i in 0..rows {
+                    chunk[k * rows + i] = src[i * cols + oj];
+                }
+            }
+        }
+    };
+
+    const PAR_MIN: usize = 1 << 16;
+    if rows * cols >= PAR_MIN {
+        use rayon::prelude::*;
+        dst.par_chunks_mut(4 * rows)
+            .enumerate()
+            .for_each(|(ci, ch)| process(ci * 4, ch));
+    } else {
+        for (ci, ch) in dst.chunks_mut(4 * rows).enumerate() {
+            process(ci * 4, ch);
+        }
+    }
+}
+
+/// AVX2 in-register transpose of one 4×4 f64 block: `src[ib..ib+4][jb..jb+4]` → the 4 output rows of
+/// `chunk` (output rows `jb..jb+4`) at column offset `ib`. Caller guarantees AVX2, `ib+4<=rows`,
+/// `jb+4<=cols`, and `chunk.len()==4*rows`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn transpose_block_4x4_avx2_f64(
+    src: &[f64],
+    chunk: &mut [f64],
+    ib: usize,
+    jb: usize,
+    cols: usize,
+    rows: usize,
+) {
+    use std::arch::x86_64::{
+        _mm256_loadu_pd, _mm256_permute2f128_pd, _mm256_storeu_pd, _mm256_unpackhi_pd,
+        _mm256_unpacklo_pd,
+    };
+    let sp = src.as_ptr();
+    let dp = chunk.as_mut_ptr();
+    let r0 = _mm256_loadu_pd(sp.add(ib * cols + jb));
+    let r1 = _mm256_loadu_pd(sp.add((ib + 1) * cols + jb));
+    let r2 = _mm256_loadu_pd(sp.add((ib + 2) * cols + jb));
+    let r3 = _mm256_loadu_pd(sp.add((ib + 3) * cols + jb));
+    let t0 = _mm256_unpacklo_pd(r0, r1);
+    let t1 = _mm256_unpackhi_pd(r0, r1);
+    let t2 = _mm256_unpacklo_pd(r2, r3);
+    let t3 = _mm256_unpackhi_pd(r2, r3);
+    let c0 = _mm256_permute2f128_pd::<0x20>(t0, t2);
+    let c1 = _mm256_permute2f128_pd::<0x20>(t1, t3);
+    let c2 = _mm256_permute2f128_pd::<0x31>(t0, t2);
+    let c3 = _mm256_permute2f128_pd::<0x31>(t1, t3);
+    _mm256_storeu_pd(dp.add(ib), c0);
+    _mm256_storeu_pd(dp.add(rows + ib), c1);
+    _mm256_storeu_pd(dp.add(2 * rows + ib), c2);
+    _mm256_storeu_pd(dp.add(3 * rows + ib), c3);
+}
+
+/// f32 mirror of [`transpose_2d_f64`] — AVX2 8×8 register-blocked transpose (8 f32 per __m256).
+#[must_use]
+pub fn transpose_2d_f32(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut dst = vec![0.0f32; rows * cols];
+    transpose_2d_into_f32(src, &mut dst, rows, cols);
+    dst
+}
+
+/// In-place variant of [`transpose_2d_f32`].
+#[allow(unsafe_code)]
+pub fn transpose_2d_into_f32(src: &[f32], dst: &mut [f32], rows: usize, cols: usize) {
+    debug_assert_eq!(src.len(), rows * cols);
+    debug_assert_eq!(dst.len(), rows * cols);
+    if rows == 0 || cols == 0 {
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    let simd = std::arch::is_x86_feature_detected!("avx2");
+    #[cfg(not(target_arch = "x86_64"))]
+    let simd = false;
+
+    // Each chunk owns 8 consecutive OUTPUT rows (= 8 consecutive src columns `jb..jb+8`).
+    let process = |jb: usize, chunk: &mut [f32]| {
+        let n_out = chunk.len() / rows;
+        if simd && n_out == 8 && jb + 8 <= cols {
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mut ib = 0;
+                while ib + 8 <= rows {
+                    // SAFETY: `simd` ⇒ AVX2 present; `ib+8<=rows` & `jb+8<=cols` keep every src load in
+                    // `[0, rows*cols)`; `chunk.len()==8*rows` keeps every dst store in bounds (max
+                    // index 7*rows+ib+7 < 8*rows since ib+7 < rows).
+                    unsafe { transpose_block_8x8_avx2_f32(src, chunk, ib, jb, cols, rows) };
+                    ib += 8;
+                }
+                for i in ib..rows {
+                    for k in 0..8 {
+                        chunk[k * rows + i] = src[i * cols + jb + k];
+                    }
+                }
+            }
+        } else {
+            for k in 0..n_out {
+                let oj = jb + k;
+                for i in 0..rows {
+                    chunk[k * rows + i] = src[i * cols + oj];
+                }
+            }
+        }
+    };
+
+    const PAR_MIN: usize = 1 << 16;
+    if rows * cols >= PAR_MIN {
+        use rayon::prelude::*;
+        dst.par_chunks_mut(8 * rows)
+            .enumerate()
+            .for_each(|(ci, ch)| process(ci * 8, ch));
+    } else {
+        for (ci, ch) in dst.chunks_mut(8 * rows).enumerate() {
+            process(ci * 8, ch);
+        }
+    }
+}
+
+/// AVX2 in-register transpose of one 8×8 f32 block (`_MM_TRANSPOSE8_PS`): `src[ib..ib+8][jb..jb+8]`
+/// → the 8 output rows of `chunk` at column offset `ib`. Caller guarantees AVX2, `ib+8<=rows`,
+/// `jb+8<=cols`, `chunk.len()==8*rows`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+unsafe fn transpose_block_8x8_avx2_f32(
+    src: &[f32],
+    chunk: &mut [f32],
+    ib: usize,
+    jb: usize,
+    cols: usize,
+    rows: usize,
+) {
+    use std::arch::x86_64::{
+        _mm256_loadu_ps, _mm256_permute2f128_ps, _mm256_shuffle_ps, _mm256_storeu_ps,
+        _mm256_unpackhi_ps, _mm256_unpacklo_ps,
+    };
+    let sp = src.as_ptr();
+    let dp = chunk.as_mut_ptr();
+    let r0 = _mm256_loadu_ps(sp.add(ib * cols + jb));
+    let r1 = _mm256_loadu_ps(sp.add((ib + 1) * cols + jb));
+    let r2 = _mm256_loadu_ps(sp.add((ib + 2) * cols + jb));
+    let r3 = _mm256_loadu_ps(sp.add((ib + 3) * cols + jb));
+    let r4 = _mm256_loadu_ps(sp.add((ib + 4) * cols + jb));
+    let r5 = _mm256_loadu_ps(sp.add((ib + 5) * cols + jb));
+    let r6 = _mm256_loadu_ps(sp.add((ib + 6) * cols + jb));
+    let r7 = _mm256_loadu_ps(sp.add((ib + 7) * cols + jb));
+    let t0 = _mm256_unpacklo_ps(r0, r1);
+    let t1 = _mm256_unpackhi_ps(r0, r1);
+    let t2 = _mm256_unpacklo_ps(r2, r3);
+    let t3 = _mm256_unpackhi_ps(r2, r3);
+    let t4 = _mm256_unpacklo_ps(r4, r5);
+    let t5 = _mm256_unpackhi_ps(r4, r5);
+    let t6 = _mm256_unpacklo_ps(r6, r7);
+    let t7 = _mm256_unpackhi_ps(r6, r7);
+    // 0x44 = _MM_SHUFFLE(1,0,1,0), 0xEE = _MM_SHUFFLE(3,2,3,2)
+    let s0 = _mm256_shuffle_ps::<0x44>(t0, t2);
+    let s1 = _mm256_shuffle_ps::<0xEE>(t0, t2);
+    let s2 = _mm256_shuffle_ps::<0x44>(t1, t3);
+    let s3 = _mm256_shuffle_ps::<0xEE>(t1, t3);
+    let s4 = _mm256_shuffle_ps::<0x44>(t4, t6);
+    let s5 = _mm256_shuffle_ps::<0xEE>(t4, t6);
+    let s6 = _mm256_shuffle_ps::<0x44>(t5, t7);
+    let s7 = _mm256_shuffle_ps::<0xEE>(t5, t7);
+    let c0 = _mm256_permute2f128_ps::<0x20>(s0, s4);
+    let c1 = _mm256_permute2f128_ps::<0x20>(s1, s5);
+    let c2 = _mm256_permute2f128_ps::<0x20>(s2, s6);
+    let c3 = _mm256_permute2f128_ps::<0x20>(s3, s7);
+    let c4 = _mm256_permute2f128_ps::<0x31>(s0, s4);
+    let c5 = _mm256_permute2f128_ps::<0x31>(s1, s5);
+    let c6 = _mm256_permute2f128_ps::<0x31>(s2, s6);
+    let c7 = _mm256_permute2f128_ps::<0x31>(s3, s7);
+    _mm256_storeu_ps(dp.add(ib), c0);
+    _mm256_storeu_ps(dp.add(rows + ib), c1);
+    _mm256_storeu_ps(dp.add(2 * rows + ib), c2);
+    _mm256_storeu_ps(dp.add(3 * rows + ib), c3);
+    _mm256_storeu_ps(dp.add(4 * rows + ib), c4);
+    _mm256_storeu_ps(dp.add(5 * rows + ib), c5);
+    _mm256_storeu_ps(dp.add(6 * rows + ib), c6);
+    _mm256_storeu_ps(dp.add(7 * rows + ib), c7);
+}
+
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
@@ -31862,6 +32112,76 @@ mod tests {
                 ),
                 "reciprocal numel={numel}"
             );
+        }
+    }
+
+    #[test]
+    fn transpose_2d_f64_matches_scalar_reference_all_sizes() {
+        // Bit-exact vs a naive scalar transpose across edges + non-multiple-of-4 dims (which
+        // exercise both the AVX2 4×4 block path and the scalar tail/partial-chunk cleanup).
+        for &(r, c) in &[
+            (0usize, 0usize), (1, 1), (4, 4), (7, 5), (5, 7), (16, 16), (17, 19),
+            (1, 33), (33, 1), (64, 65), (130, 127),
+        ] {
+            let src: Vec<f64> = (0..r * c).map(|i| (i as f64) * 0.5 - 3.0).collect();
+            let got = super::transpose_2d_f64(&src, r, c);
+            let mut want = vec![0.0f64; r * c];
+            for i in 0..r {
+                for j in 0..c {
+                    want[j * r + i] = src[i * c + j];
+                }
+            }
+            assert_eq!(got, want, "transpose mismatch at {r}x{c}");
+        }
+    }
+
+    #[test]
+    fn transpose_2d_f32_matches_scalar_reference_all_sizes() {
+        // Non-multiple-of-8 dims exercise the AVX2 8×8 block path + scalar tail/partial cleanup.
+        for &(r, c) in &[
+            (0usize, 0usize), (1, 1), (8, 8), (7, 5), (5, 7), (9, 17), (17, 9),
+            (1, 65), (65, 1), (64, 64), (130, 127), (129, 131),
+        ] {
+            let src: Vec<f32> = (0..r * c).map(|i| (i as f32) * 0.5 - 3.0).collect();
+            let got = super::transpose_2d_f32(&src, r, c);
+            let mut want = vec![0.0f32; r * c];
+            for i in 0..r {
+                for j in 0..c {
+                    want[j * r + i] = src[i * c + j];
+                }
+            }
+            assert_eq!(got, want, "f32 transpose mismatch at {r}x{c}");
+        }
+    }
+
+    #[test]
+    fn lerp_tensor_contiguous_f32_matches_pytorch_scalar_branch_bits() {
+        let start = [1.0_f32, -2.0, 1000.25, -1000.25];
+        let end = [5.0_f32, 6.0, -999.75, 999.75];
+        let meta =
+            ft_core::TensorMeta::from_shape(vec![4], ft_core::DType::F32, ft_core::Device::Cpu);
+        for &(weight, want_bits) in &[
+            (
+                0.25_f32,
+                &[0x4000_0000, 0x0000_0000, 0x43fa_2000, 0xc3fa_2000][..],
+            ),
+            (
+                0.5_f32,
+                &[0x4040_0000, 0x4000_0000, 0x3e80_0000, 0xbe80_0000][..],
+            ),
+            (
+                -0.75_f32,
+                &[0xc000_0000, 0xc100_0000, 0x451c_4400, 0xc51c_4400][..],
+            ),
+            (
+                1.25_f32,
+                &[0x40c0_0000, 0x4100_0000, 0xc4bb_7800, 0x44bb_7800][..],
+            ),
+        ] {
+            let got = super::lerp_tensor_contiguous_f32(&start, &end, weight, &meta)
+                .expect("valid lerp inputs");
+            let got_bits: Vec<u32> = got.iter().map(|v| v.to_bits()).collect();
+            assert_eq!(got_bits, want_bits, "weight={weight}");
         }
     }
 

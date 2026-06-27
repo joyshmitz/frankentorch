@@ -4,6 +4,48 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN: f32 scalar lerp PyTorch FMA path (keeps 1.50x FASTER vs torch; fixes bit parity)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Land-or-dig scan found no clean unlanded
+measured win: the only uncontained ahead worktree commit was an explicit rejection, and the bounded
+median win was already on `origin/main`. Dug the largest current documented non-walled f32 gap:
+scalar f32 `lerp` was still recorded as a major PyTorch-relative loss. While this pass was being
+benchmarked, `origin/main` landed the broader no-grad f32 `tensor_lerp` fast path recorded below
+(`11.20x SLOWER -> 1.48x FASTER`). This follow-up keeps that speed class and closes the remaining
+scalar-f32 PyTorch rounding gap.
+
+Root cause: the just-landed f32 fast path used the direct formula `start + weight * (end - start)`,
+which is not PyTorch's scalar-f32 bit contract. PyTorch black-box probes found a zero-mismatch branch
+rule: for `abs(weight) < 0.5`, use fused `weight.mul_add(end - start, start)`; otherwise use fused
+`(weight - 1).mul_add(end - start, end)`. Fix: make the shared f32 lerp kernel use that rule, then
+route the ft-api no-grad equal-shape contiguous f32 fast path through the shared kernel. Grad f32
+forward now shares the same kernel formula; non-contiguous/mixed-dtype paths still fall through.
+
+Evidence: bit tests
+`rch exec -- cargo test -p ft-kernel-cpu lerp_tensor_contiguous_f32_matches_pytorch_scalar_branch_bits --lib -- --nocapture`
+and
+`rch exec -- cargo test -p ft-api f32_lerp_matches_pytorch_scalar_branch_bits --lib -- --nocapture`
+passed. Literal requested per-crate bench form
+`rch exec -- cargo bench --release -p ft-api --bench ops_bench lerp` and
+`rch exec -- cargo bench --release -p ft-kernel-cpu --bench elementwise_bench lerp`
+failed because this Cargo rejects `--release` for `cargo bench`; valid per-crate commands with
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a` passed after rebase on `hz2`:
+`cargo bench -p ft-api --bench ops_bench lerp` measured
+`lerp/f32_4000x4000_nograd` at `[28.714 ms 29.678 ms 31.193 ms]`, and
+`cargo bench -p ft-kernel-cpu --bench elementwise_bench lerp` measured
+`lerp_f32_1m_weight0.5` at `[526.63 us 550.79 us 573.66 us]`.
+
+Candidate local H2H sidecar after the patch:
+`cat_anchor` FT `9.760 ms`, PyTorch `24.344 ms` = **2.49x FASTER**; `lerp` FT `8.003 ms`,
+PyTorch `12.013 ms` = **1.50x FASTER**; `mul_scalar` **1.89x FASTER**; `addcmul` remains
+**18.88x SLOWER** and is the next f32 loss. A remote H2H attempt on `vmi1227854` produced no ratio
+because that worker lacks the `torch` module, so the decisive ratio is the local `rch exec` fallback
+with the PyTorch virtualenv. Conformance green:
+`rch exec -- cargo test -p ft-conformance` passed (`199 + bin/tests/smoke/doc suites`, all green).
+After rebase this is not claimed as an additional speedup over the just-landed broad f32 fast path;
+it is a PyTorch-bit parity keep at maintained torch-parity throughput. Score vs PyTorch for this
+lever: `1W / 0L / 0N`. Keep. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): parallel-SIMD f32 unary kernel — relu/neg/abs/sqrt/reciprocal 2.3-3.0x FASTER than torch
 
 Bead/thread `frankentorch-kgs4.166`, agent `BlackThrush`. act_f32_h2h flagged `relu` (the survey ANCHOR!) at
@@ -53,6 +95,520 @@ routes through the typed tape but is ~3x off torch (likely an unconditional save
 tape op even in no-grad); ft-autograd lane. selu 10.2x / celu 17.1x / tanhshrink 1.8x SLOWER on f32 too but
 they involve exp/tanh (transcendental f32-rounding parity risk — deferred, needs numpy-enabled torch to pin).
 AGENT BlackThrush.
+
+## 2026-06-27 - WIN (landed): f32 tensor_lerp no-grad fast path (11.20x SLOWER -> 1.48x FASTER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Land-or-dig scan found no
+committed bench-worktree win ahead of `origin/main`; the old bounded-median dirty
+worktree was already represented on `main`, and the stale row-vector FMA worktree
+was an old rejected/stale-base lane. The largest current clean f32 sidecar gap
+left after the addcmul dtype fix was scalar `tensor_lerp`: `addcmul` remained
+larger but parity-blocked by PyTorch rounding uncertainty, while `lerp` was a
+separate F32-only slow path.
+
+Lever: mirror the existing no-grad equal-shape contiguous F64 `tensor_lerp`
+borrow+parallel path for F32. The F32 branch borrows both contiguous input
+slices, casts the scalar weight to `f32`, and computes the same kernel formula
+`start + weight * (end - start)` in one parallel pass. Grad, mixed dtype,
+non-contiguous, broadcast, and non-float cases still fall back to the existing
+tape path. Behavior proof: output dtype remains F32, per-element order is
+unchanged, RNG is absent, and the added regression checks exact F32 bits against
+the kernel formula.
+
+Fresh local H2H sidecar against PyTorch CPU (`survey_f32_h2h`, `[4000,4000]`
+F32, PyTorch `set_num_threads(8)`) on a clean `origin/main` baseline:
+`cat_anchor` FT `8.443 ms` vs PyTorch `28.200 ms` = `3.34x FASTER`; `lerp` FT
+`139.399 ms` vs PyTorch `12.441 ms` = `11.20x SLOWER`. Candidate clean-target
+rerun: `cat_anchor` FT `8.162 ms` vs PyTorch `24.413 ms` = `2.99x FASTER`;
+`lerp` FT `8.750 ms` vs PyTorch `12.940 ms` = `1.48x FASTER`. Internal FT
+speedup: `139.399 / 8.750 = 15.93x`.
+
+Required per-crate bench path: literal
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo bench --release -p ft-api --bench ops_bench lerp` was probed
+and Cargo rejected `--release` for `cargo bench`. Valid per-crate Criterion
+bench with the requested target dir,
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo bench -p ft-api --bench ops_bench lerp`, measured
+`lerp/f32_4000x4000_nograd` at `[26.754 ms 27.561 ms 28.632 ms]` after
+rebasing onto the current `origin/main`.
+Validation: `rch exec -- cargo test -p ft-api
+f32_lerp_nograd_preserves_f32_dtype_and_kernel_formula --lib -- --nocapture`
+passed 1/0. `ft-conformance` was run after the code change and passed. Agent
+Mail reservation was unavailable because the corruption circuit breaker refused
+writes; source changes were made in a clean scratch worktree. AGENT BlackThrush.
+
+## 2026-06-27 - PARTIAL KEEP: f32 addcmul/addcdiv weak-scalar dtype fix (21.7x -> 18.89x SLOWER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Land-or-dig scan found the bounded-median bench worktree
+win already landed on `origin/main` (`7a7e0444`), so this pass dug the largest current measured non-walled f32
+gap. The ledger named f32 `addcmul` at **21.7x SLOWER** and documented that prior fused f32 fast-path attempts
+had to be reverted because neither pure-f32 nor f64-internal arithmetic matched PyTorch rounding. The safe lever
+was the recorded dtype bug: `scale_by_constant` built an F64 `full(shape, value)` constant, so f32
+`addcmul`/`addcdiv` composed through f64 scaling and returned F64. Fix: build the scalar via
+`const_tensor_like(node, shape, value)`, preserving weak-scalar dtype while keeping the existing arithmetic order.
+
+Evidence: focused regression `AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a
+RUSTFLAGS='-Cmetadata=cod_a_ce9954c0c' rch exec -- cargo test -p ft-api f32_addcmul_addcdiv_preserve_f32_dtype --lib
+-- --nocapture` passed. Literal requested bench
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo bench
+--release -p ft-api --bench ops_bench addcmul` failed because this Cargo rejects `--release` for `cargo bench`;
+the valid per-crate Criterion command with the same target dir,
+`RUSTFLAGS='-Cmetadata=cod_a_ce9954c0c' rch exec -- cargo bench -p ft-api --bench ops_bench addcmul`, measured
+`addcmul/f32_4000x4000_nograd` at `[252.20 ms 258.93 ms 268.81 ms]`. H2H sidecar after the patch: f32
+`addcmul` FT `219.941 ms`, PyTorch `11.645 ms` = **18.89x SLOWER**; controls were healthy (`cat_anchor`
+**3.52x FASTER**, `where` **2.08x FASTER**, `maximum` **1.65x FASTER**, `mul_scalar` **1.61x FASTER**).
+Score vs PyTorch: `0W / 1L / 0N`, but not zero-gain: the dtype bug is closed and the recorded ratio improves from
+**21.7x** to **18.89x SLOWER**. Do not retry a fused f32 `addcmul` path until PyTorch's exact rounding sequence is
+pinned; current sidecar also shows f32 `lerp` at **8.96x SLOWER**, a separate open gap.
+
+## 2026-06-27 - BUGFIX + WIN (landed): f32 floor_divide was naive+slow — now correct (div_floor_floating) + 3.89x FASTER
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. f32 survey-d (cat_anchor 3.8x FASTER healthy): floor_div
+1.86x SLOWER, sinc 15.9x / normalize 13.9x SLOWER (sinc/normalize PARITY-RISK: f32 sin via simd_unary_f32 may
+not match Rust f32::sin; normalize = sum-reduction — both deferred). FIXED floor_divide: aten `div_floor_floating`
+(the correct algorithm: `b==0→a/b`; `m=a%b; div=(a-m)/b; if m!=0 && sign(b)!=sign(m) div-=1; round-half-up
+correction; sign-of-zero preserved) only ran when an operand was F64 — so BOTH-f32 floor_divide fell to the
+composed `tensor_div`+`tensor_floor` = NAIVE floor(a/b), which is BOTH ~1.9x SLOWER and INCORRECT for non-finite
+/ sign-of-zero / just-below-integer edges. Added an f32 fast path (equal-shape contiguous, no-grad — grad
+already errors) borrowing both + running `div_floor_floating_f32` in one parallel pass. ★ BIT-EXACT vs torch:
+parity probe (incl 0-divisors) = **0/4096 mismatches, maxulp=0** (deterministic f32 arithmetic, `%`=fmod).
+3/0 floor_divide tests, ft-api lib 2388/0 + conformance 39/0. MEASURED ([4000,4000] f32, torch set_num_threads(8)
+vs FT-64t): **48ms (1.86x SLOWER) -> 6.5ms = 3.89x FASTER** + CORRECTNESS fixed. NOTE: broadcast / non-contiguous
+f32 floor_divide still uses the naive composed path (rare; pre-existing edge-incorrectness). f32-AUDIT update:
+cross_entropy/nll_loss f32 are NOT broken (work with standard int/f64 target — the earlier ERROR was passing an
+f32 target, non-standard); amplitude_to_db returns F64 for f32 input (minor dtype quirk); bitwise_* erroring on
+f32 is CORRECT (torch rejects float bitwise). AGENT BlackThrush.
+
+## 2026-06-27 - BUGFIX + WIN (landed): f32 unique_dim was BROKEN (errored) — now works + 10.06x FASTER
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Second f32-error-audit fix (after unique). `tensor_unique_dim`
+read operands via F64-only `tensor_values` → `UnsupportedDType(F32)`, so dim-wise unique was entirely BROKEN on
+f32 (torch supports it). Same recipe as the 1-D `unique` fix: read via `tensor_values_lossy_f64` (accepts f32,
+reads as f64) and narrow the single unique-SLICES output node back to the input dtype (inverse/counts stay index
+tensors). Bit-exact: slice dedup keys on the f64 BIT PATTERN (`v.to_bits()`), exact for an f32 value read as f64;
+sort uses partial_cmp + NaN rule, also exact. Probe: f32 [3,2] with a duplicate row → OK dtype=F32 shape=[2,2]
+correct unique rows (= torch.unique(dim=0)). ft-api lib 2388/0 + conformance 39/0. MEASURED
+(examples/udim_check.rs, [200000,16] f32 ~3000 unique rows, torch set_num_threads(8) vs FT-64t): **was BROKEN
+(errored) -> FT 30.3ms vs torch 304.8ms = 10.06x FASTER**. ⏳⏳ REMAINING f32-broken (UNFIXED): lerp_ / addcmul_
+in-place (UnsupportedDType — but carry addcmul/lerp arithmetic-parity risk), smooth_l1_loss (composed-path
+comparison-dtype-mismatch on small f32). AGENT BlackThrush.
+
+## 2026-06-27 - BUGFIX + WIN (landed): f32 unique was BROKEN (errored) — now works + 3.15x FASTER; + f32-error AUDIT
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Acting on the silent-error lesson (heaviside), ran an f32
+AUDIT (examples-style probe calling ops on small f32 inputs, OK/ERROR). FOUND 4 latent f32 CORRECTNESS BUGS
+(ops that ERROR on f32, torch supports them): `unique` (UnsupportedDType F32), `lerp_` (in-place, UnsupportedDType),
+`addcmul_` (in-place, UnsupportedDType), `smooth_l1_loss` (small f32 → "tensor comparison requires matching
+dtypes"; large f32 ran slow — size-dependent). kthvalue + pdist f32 = OK (not broken). FIXED `tensor_unique`
+(flat): it read operands via F64-only `tensor_values` (→ errored on f32). Changed to `tensor_values_lossy_f64`
+(accepts f32, reads as f64) and narrowed the unique-VALUE node back to the input dtype at BOTH return paths
+(fast sorted path + general path); inverse/counts stay index tensors. Bit-exact: dedup uses `==` / total_cmp /
+NaN-handling / bit-pattern keys, all EXACT for an f32 value read as f64 (its f64 bits are the exact rep). After
+fix the probe returns OK F32. 14/0 unique tests, ft-api lib 2388/0 + conformance 39/0. MEASURED
+(examples/unique_f32_h2h.rs, [4M] f32 ~5000 uniques, torch set_num_threads(8) vs FT-64t): **was BROKEN (errored)
+-> FT 47ms vs torch 148ms = 3.15x FASTER**. ⏳⏳ STILL-BROKEN f32 (UNFIXED, same recipe): `tensor_unique_dim`
+(L~8610, same tensor_values+narrow fix), `lerp_` / `addcmul_` in-place (UnsupportedDType — but carry the
+addcmul/lerp arithmetic-parity risk), `smooth_l1_loss` (comparison-dtype-mismatch on small f32). These are
+CORRECTNESS bugs — high priority. AGENT BlackThrush.
+
+## 2026-06-27 - BUGFIX + WIN (landed): f32 heaviside was BROKEN (errored) — now works + 2.4x FASTER
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. The "heaviside 0.004ms" anomaly in survey_f32c (flagged
+last entry) was a SILENTLY-ERRORED call: f32 `tensor_heaviside` returned `Err(UnsupportedDType(F32))` — the
+no-grad fast path was F64-only and the fallback read operands via `tensor_values` (F64-only, errors on f32), so
+its dtype-preserve narrow tail was unreachable for f32 → **f32 heaviside was entirely BROKEN** (torch supports
+it). Confirmed via a probe (input [-1,0,2] → Err). FIX (correctness + perf): (1) added an f32 fast path
+mirroring the f64 one — borrow both contiguous f32 buffers, step in parallel (`x>0→1, x==0→v, else 0`; NaN→0),
+return f32; (2) changed the fallback's two `tensor_values` reads to `tensor_values_lossy_f64` so f32
+broadcast/non-contiguous inputs are read (as f64) + narrowed back to f32 (the step is deterministic ⇒ exact),
+fixing those f32 cases too. Bit-exact deterministic step (no rounding). After fix the probe returns
+`[0.0, 7.0, 1.0]` (correct: x<0→0, x==0→v=7, x>0→1) = torch.heaviside. 6/0 heaviside tests, ft-api lib 2388/0 +
+conformance 39/0. MEASURED ([4000,4000] f32, torch set_num_threads(8) vs FT-64t, cat_anchor ~3.6x FASTER
+healthy): heaviside now **5-10ms = 1.3-2.4x FASTER** (was a broken/erroring op). LESSON: a `let _ = op(...)`
+that discards an Err reads as "instant/0ms" in survey harnesses — an absurd "1000x FASTER" or sub-ms reading is
+the tell that the op SILENTLY ERRORED (dtype unsupported), not that it's fast. AGENT BlackThrush.
+
+## 2026-06-27 - WIN (landed): f32 copysign + softshrink no-grad fast paths (17x/43x SLOWER -> 1.4x/2.0x FASTER)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. survey_f32c_h2h (cat_anchor ~2.6x FASTER healthy; heaviside
+reads 0.004ms = silently-errored, ignore) found two big F64-only-gated f32 gaps among parity-CLEAN elementwise
+ops: `copysign` **17.02x SLOWER (208ms)**, `softshrink` **43.21x SLOWER (513ms)**. (smooth_l1 47x SLOWER left
+alone — beta-scaling parity risk like addcmul.) FIXES: (1) copysign f32 took the lossy path = 2× f64 CLONES of
+both operands + a f64→f32 conversion pass; added an f32 fast path (borrow contiguous_values_f32 + parallel
+`f32::copysign`) — GUARANTEED bit-exact (pure sign-bit, no rounding, IEEE sign-of-zero preserved). (2)
+softshrink f32 took the ~9-pass composed path (const_tensor_like×3 + gt/lt/sub/add/where×2); added an f32 fast
+path mirroring the f64 one (`x>λ?x-λ:(x<-λ?x+λ:0)` with `lambd as f32`) — bit-exact because the composed
+const_tensor_like already casts λ to f32 and runs f32 gt/sub/add (deterministic select+shift, no rounding
+ambiguity; x==±λ and NaN → 0). grad / non-f32 / non-contiguous fall through. 8/0 copysign+softshrink tests,
+ft-api lib 2388/0 + conformance 39/0. MEASURED ([4000,4000] f32, torch set_num_threads(8) vs FT-64t): copysign
+**208ms -> ~8-12ms (~20x internal)** now **1.3-1.8x FASTER**; softshrink **513ms -> ~6ms (~80x internal)** now
+**~2.0x FASTER**. LESSON CONFIRMED: parity-CLEAN f32 ops = sign-bit (copysign), deterministic select/threshold
+(softshrink/min/max/where), copy (cat), single sub-then-self-mul/abs (mse/l1 none); parity-RISKY = scalar-value
++ fused-multiply or /divide (addcmul/lerp/smooth_l1). AGENT BlackThrush.
+
+## 2026-06-27 - WIN (landed): mse_loss + l1_loss reduction='none' no-grad fast path (f32 6.4x/3.0x SLOWER -> FASTER)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. A fresh f32 survey (survey_f32b_h2h: atan2/fmod already
+1.8-2.2x FASTER — DON'T touch) flagged the loss `reduction='none'` paths: f32 `mse_loss('none')` **6.37x SLOWER
+(74ms)**, `l1_loss('none')` **3.05x SLOWER (73ms)**. ROOT: the fused no-grad fast path only handled mean/sum;
+'none' fell to the composed `sub` + `mul(diff,diff)` / `sub` + `abs` = 2 tape nodes + operand clones (and f32
+fell through ENTIRELY since the fast path was f64-only). FIX: added a no-grad reduction='none' fast path for
+BOTH f64+f32 — borrow input/target contiguous storage and compute `(a-b)^2` (mse) / `|a-b|` (l1) in ONE
+parallel pass, return a leaf. CLEAN PARITY (unlike addcmul): single sub then self-multiply / abs in the input
+dtype — bit-exact with the composed path AND torch (no scalar-value, no reduction-order, no grouping
+ambiguity). grad / non-contiguous / mismatched-shape / non-f32f64 fall through. 21/0 mse+l1 tests, ft-api lib
+2388/0 + conformance 39/0. MEASURED ([4000,4000] f32, torch set_num_threads(8) vs FT-64t, cat_anchor ~3x FASTER
+healthy): mse_none **74ms -> ~8ms** now **1.2-1.6x FASTER** (was 6.37x SLOWER); l1_none **73ms -> ~7-13ms** now
+**1.8-3.6x FASTER** (was 3.05x SLOWER). NOTE: mse_none shows run-to-run variance (box load) ~1.2-1.6x but
+always FASTER. LESSON: loss `reduction='none'` is pure elementwise (no reduction-order issue) → a clean f32
+target; the mean/sum cases stay reduction-kernel-bound. AGENT BlackThrush.
+
+## 2026-06-27 - WIN (landed): F32 maximum/minimum wired to existing kernel (11.7x SLOWER -> 2.4x FASTER)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Continuing the F64-only-gate sweep: `tensor_maximum`/
+`tensor_minimum` no-grad fast paths were F64-only → f32 fell to the tape max/min (clone both + save) = ~12x
+SLOWER vs torch. ★ The memory note "NO f32 min/max kernel" was STALE — `min_tensor_contiguous_f32` /
+`max_tensor_contiguous_f32` ALREADY EXIST (generated by the `define_binary_f32!` macro, so a literal `pub fn`
+grep misses them). FIX is pure wiring: added the F32 branch to both ops (borrow contiguous_values_f32 + call the
+existing kernel + tensor_variable_f32). Bit-exact — the kernel is the SAME NaN-propagating logic as f64
+(`if l.is_nan()||r.is_nan() {NAN} else {l.max/min(r)}`); deterministic select, NO rounding-sequence ambiguity
+(unlike addcmul). 11/0 maximum/minimum tests, ft-api lib 2388/0 + conformance 39/0. MEASURED
+(examples/survey_f32_h2h.rs, [4000,4000] f32, torch set_num_threads(8) vs FT-64t, cat_anchor 3.4-3.8x FASTER
+healthy): maximum **153ms -> 5.2ms** now **2.25-2.65x FASTER** (was 11.68x SLOWER); minimum same wiring. LESSON:
+grep `define_binary_f32!` / macro-generated kernels too — an f32 kernel may already exist; check before writing
+one. ⏳ F32 vein remaining: addcmul 21.7x (parity-blocked, see below) / lerp 8.9x (scale_by_constant dtype
+issue). AGENT BlackThrush.
+
+## 2026-06-27 - NEGATIVE (reverted): F32 addcmul fast path — parity-blocked + exposes a real DTYPE BUG
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Tried to close the f32 addcmul gap (survey: 21.7x SLOWER,
+268ms) by mirroring the f64 borrow+single-pass fast path. ★ FOUND A REAL BUG: f32 `tensor_addcmul` currently
+returns **F64** (confirmed via a dtype probe — torch returns f32). ROOT: the composed fallback's
+`scale_by_constant` builds an F64 `full` leaf, so `tensor_mul(prod_f32, const_f64)` UPCASTS the whole result to
+F64 (also writes a 2x-size f64 output). ⛔ PARITY BLOCKER: a pure-f32 fast path computing `input + (value·t1)·t2`
+measured **165 ULP** off torch f32 (exact-bit inputs, 1088/4096 mismatches); f64-internal-then-round-to-f32
+measured **116 ULP** off. Neither matches torch's exact f32 addcmul rounding sequence (values are large here,
+b·c ~6600, so intermediate f32 rounding dominates). Could not determine torch's exact algorithm within the
+window (the rch venv has torch but NO numpy, blocking element-level debug). Under "parity absolute", REVERTED
+rather than ship a ~1e-5-relative-off version. ⏳ FOLLOW-UP (2 separate tasks): (1) FIX THE DTYPE BUG —
+`scale_by_constant` should use a dtype-matching const (like `const_tensor_like`) so f32 addcmul/addcdiv/lerp
+return f32 not f64; (2) then a bit-exact f32 fast path needs torch's exact addcmul rounding (try FMA
+`(v*t1).mul_add(t2, input)` and pure-`((v*t1)*t2)+input` with a numpy-enabled torch to pin it). maximum/minimum
+(11.7x) + lerp (8.9x) f32 gaps remain (lerp shares the scale_by_constant dtype issue). AGENT BlackThrush.
+
+## 2026-06-27 - WIN (landed): F32 scalar ops (add/sub/mul/div_scalar) no-grad parallel map (5.7x SLOWER -> 2-3x FASTER)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Continuing the F64-only-gate sweep: `no_grad_scalar_map_f64`
+(the helper behind add_scalar/sub_scalar/mul_scalar/div_scalar) was F64-only → f32 scalar ops fell to the tape
+fallback (`scalar_leaf_matching_dtype` + tensor op = clone + broadcast-mul + tape nodes), ~5.7x SLOWER than
+torch (mul_scalar 69ms at [4000,4000] f32). Added `no_grad_scalar_map_f32` and an f32 fast-path call in all four
+ops. KEY parity check: the fallback's `scalar_leaf_matching_dtype` makes an f64 leaf then `to_dtype(F32)` = the
+scalar cast to f32, then an f32 tensor op; so `|x: f32| x {+,-,*,/} (scalar as f32)` (the `as` binds tighter
+than the operator) is BIT-EXACT with that fallback. grad / non-f32 / non-contiguous fall through. 93/0 scalar
+tests, ft-api lib 2388/0 + conformance 39/0. MEASURED (examples/survey_f32_h2h.rs, [4000,4000] f32, torch
+set_num_threads(8) vs FT-64t, cat_anchor 3.5-3.9x FASTER healthy): mul_scalar **69ms -> 4-5ms** now **2.08-3.00x
+FASTER** (was 5.69x SLOWER); add/sub/div_scalar share the helper (same flip, hot in every elementwise scale).
+⏳⏳ VEIN STILL OPEN: addcmul 21.7x / maximum 11.7x / lerp 8.9x SLOWER — addcmul/lerp have a value-scaling parity
+subtlety (composed fallback uses `scale_by_constant` = `full`(F64)+mul → verify the f32 intermediate dtype
+before mirroring); maximum needs an f32 min/max kernel (f64-only today). AGENT BlackThrush.
+
+## 2026-06-27 - WIN (landed): F32 where no-grad parallel select (23.8x SLOWER -> 2.4x FASTER) + opens F64-only-gate vein
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Following the f32-cat fix, swept the F64-only-gate vein
+(`grep "== DType::F64"` in ft-api): a survey_f32_h2h of hot ops (cat_anchor 3.65x FASTER, healthy) found ALL
+F64-only no-grad fast paths silently regress f32 to the slow tape/composed path: **where 23.80x SLOWER (288ms)**,
+addcmul 21.74x (268ms), maximum 11.68x (153ms), lerp 8.90x (119ms), mul_scalar 5.69x (69ms). FIXED THE BIGGEST:
+`tensor_where` no-grad fast path was gated `dtype==F64` for all of cond/x/y → f32 fell to the tape where (clone
+cond+x+y). Added the F32 mirror: borrow contiguous f32 buffers (`contiguous_values_f32()`) + parallel select
+(`(0..n).into_par_iter().map(|i| if cd[i]!=0.0 {xd[i]} else {yd[i]})`), return `tensor_variable_f32`. Bit-exact
+(truthy==nonzero; grad/non-contig/non-f32 fall through). 12/0 where tests, ft-api lib 2388/0 + conformance 39/0.
+MEASURED (examples/survey_f32_h2h.rs, [4000,4000] f32, torch set_num_threads(8) vs FT-64t): where **288ms ->
+5.3ms (~54x internal)** now **2.14-2.44x FASTER** (was 23.8x SLOWER). ⏳⏳ VEIN STILL OPEN (same F32-mirror fix,
+measured gaps, UNSHIPPED): addcmul 21.7x / maximum 11.7x / lerp 8.9x / mul_scalar 5.7x SLOWER — NEXT sweep
+(maximum needs an f32 min/max kernel or borrow+composed; lerp/addcmul/mul_scalar are borrow+single-parallel-pass).
+AGENT BlackThrush.
+
+## 2026-06-27 - WIN (landed): F32 cat no-grad parallel block-copy fast path (9.3x SLOWER -> 3.4x FASTER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Surfaced as a bad anchor in the f32 transpose work: f32
+`tensor_cat` of [4000,4000]×2 was **~250ms vs torch ~26ms = ~9.3x SLOWER** while f64 cat was already FASTER.
+ROOT: the no-grad cat fast path was **F64-ONLY** (`matches!(dtype, Ok(DType::F64))`); f32 inputs fell through
+to the tape cat = clone-each-input + per-element division-unravel. FIX: added the F32 mirror of the f64 fast
+path — borrow all inputs' contiguous f32 storage (`contiguous_values_f32()`) and parallel block-copy per outer
+slice (`par_chunks_mut`, `copy_from_slice`, no division), return via `tensor_variable_f32`. Cat along `dim` is a
+contiguous block copy per (outer, input) ⇒ bit-exact. Grad / non-contiguous / mixed-dtype still take the tape
+path. 84/0 cat tests, ft-api lib 2388/0 + conformance 39/0. MEASURED (examples/movedim_f32_h2h.rs cat_anchor,
+[4000,4000]×2 f32, torch set_num_threads(8) vs FT-64t): **~250ms -> 7.5ms (~33x internal)** now **3.14-3.67x
+FASTER** than torch (3-run). LESSON: when a no-grad fast path is gated to F64 only, the F32 path silently
+regresses to the slow tape (clone) path — mirror these fast paths to F32 (the dominant ML dtype). AGENT
+BlackThrush.
+
+## 2026-06-27 - WIN (landed): AVX2 8×8 register-blocked F32 transpose (2.7x SLOWER -> 1.6x FASTER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. f32 sibling of the f64 AVX2 transpose (prev entry) —
+f32 is the dominant ML dtype. `ft_kernel_cpu::transpose_2d_f32` = AVX2 **8×8** in-register transpose (8 f32 per
+`__m256`: load 8 contiguous src rows → `_mm256_unpacklo/unpackhi_ps` → `_mm256_shuffle_ps::<0x44/0xEE>` →
+`_mm256_permute2f128_ps::<0x20/0x31>` = the `_MM_TRANSPOSE8_PS` sequence → store 8 contiguous dst rows), so
+both loads+stores are vectorized+contiguous; parallel over disjoint 8-output-row blocks; avx2 runtime gate +
+scalar fallback + non-multiple-of-8 tail/partial-chunk cleanup. Wired into ft-autograd `permute_typed_storage`
+F32 arm for the pure 2-D perm==[1,0] case (covers movedim/transpose/swapaxes/.mT on f32). Bit-exact:
+transpose_2d_f32_matches_scalar_reference_all_sizes (edges + non-mult-of-8) + 52/0 ft-autograd + 23/0 ft-api
+transpose tests; ft-kernel-cpu 552/0 + ft-autograd 476/0 + ft-api 2388/0 + conformance 39/0. MEASURED
+(examples/movedim_f32_h2h.rs, [4000,4000] f32, torch set_num_threads(8) vs FT-64t; OLD baseline by in-worktree
+revert): movedim **33.1ms (2.66-2.78x SLOWER) -> 7.5ms (1.5-1.76x FASTER)** = ~4.4x internal (3-run). NOTE: the
+f32 cat_anchor in that harness reads slow (f32 `cat` itself is a separate unfixed gap — ~250ms — NOT
+contention; FT movedim 7.5ms matches the f64 SIMD transpose, confirming a healthy box). NEXT: f32 cat path
+(slow, likely operand clone). AGENT BlackThrush.
+
+## 2026-06-27 - WIN (landed): AVX2 register-blocked 2-D transpose (2.5x SLOWER -> 2.8x FASTER vs torch; closes the top gap)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. CLOSES the biggest measured gap (named in the prev entry):
+2-D transpose/movedim [4000,4000] f64 was FT ~77ms vs torch ~22-32ms = **2.5-2.7x SLOWER**. The prev entry's
+negative finding was right — the gap is INSTRUCTION-throughput / vectorization bound: a scalar transpose
+streams strided (one direction is always a gather/scatter) and caps at a fraction of bandwidth (~3.8GB/s),
+while torch uses an AVX-512 register-blocked transpose (~10GB/s). LEVER (radically different primitive, not a
+micro-opt): `ft_kernel_cpu::transpose_2d_f64` — an **AVX2 4×4-block in-register transpose** (load 4 contiguous
+src rows → unpacklo/unpackhi/permute2f128 → store 4 contiguous dst rows), so BOTH loads AND stores are
+vectorized+contiguous; parallel over disjoint 4-output-row blocks; `is_x86_feature_detected!("avx2")` runtime
+gate + scalar fallback + scalar tail/partial-chunk cleanup for non-multiple-of-4 dims (lives in ft-kernel-cpu
+under the existing `#[allow(unsafe_code)]`+`#[target_feature]` SIMD pattern; ft-autograd stays
+forbid(unsafe)). Wired in ft-autograd `permute_typed_storage` for the pure 2-D perm==[1,0] f64 case (covers
+movedim/transpose/swapaxes/.mT/permute); same values ⇒ transparent to autograd (the tape Permute node owns
+backward). Bit-exact: transpose_2d_f64_matches_scalar_reference_all_sizes (edges + non-mult-of-4) + 52/0
+ft-autograd + 23/0 ft-api transpose/permute/movedim/swapaxes tests; ft-kernel-cpu 551/0 + ft-autograd 476/0 +
+ft-api 2388/0 + conformance 39/0. MEASURED: kernel-direct **20.5ms vs scalar-tiled 61.9ms = 3.01x**; end-to-end
+movedim (struct_survey2_h2h.rs, torch set_num_threads(8) vs FT-64t, cat_anchor ~4x FASTER healthy) **~77ms ->
+8.1ms (~9.4x internal)** now **2.6-2.9x FASTER** than torch (3-run). FOLLOW-UP: f32 8×8 AVX2 transpose (same
+recipe) + batched/elem>1 transpose still use the generic cache-blocked path. AGENT BlackThrush.
+
+## 2026-06-27 - PARTIAL WIN + NEGATIVE: transpose scalar elem==1 fast path (~5.6%; gap is strided-DRAM, NOT clone_from_slice)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. BIGGEST CURRENT MEASURED GAP (re-surveyed, anchor-clean):
+**movedim / 2-D transpose** of [4000,4000] f64 = FT **~77ms vs PyTorch ~25-32ms = ~2.5-2.7x SLOWER** (the
+peer's earlier "where 5.12x" was a contended/comparison-mask misread — clean `tensor_where` is actually 1.37x
+FASTER, 24.3ms vs 33.3ms; movedim is the real top gap). HYPOTHESIS: `permute_slice`'s cache-blocked transpose
+(ft-autograd, backs ALL permute/transpose/movedim/swapaxes/.mT) does 16M per-element
+`clone_from_slice(&[1 elem])` in the `elem==1` (pure-transpose, no-suffix) case — a call + 4 range-bounds
+checks per element. FIX: scalar fast path `dgn[j*a_dim+i] = sgn[i*b_dim+j].clone()` for elem==1 in both the
+per-plane closure and the single-large-plane par branch. Bit-identical (same single value moved) — 52/0
+ft-autograd + 23/0 ft-api transpose/permute/movedim tests, ft-autograd 476/0 + ft-api 2388/0 + conformance
+39/0. MEASURED same-session A/B (struct_survey2_h2h.rs, build-outside-timer, min-of-3): OLD **77.0ms** -> NEW
+**72.9ms** = **~5.6%** (NEW lower every run). ⛔ NEGATIVE RESULT: clone_from_slice was NOT the wall (LLVM
+already lowers a 1-elem clone_from_slice to a scalar move) — the **2.5x gap is fundamentally strided-DRAM /
+cache-miss bound** at the 128MB working set (FT ~3.8GB/s effective vs torch ~10GB/s; torch uses an AVX-512 /
+cache-oblivious blocked transpose). The real lever = a SIMD register-blocked or recursive cache-oblivious
+transpose (a larger correctness-critical rewrite), NOT a per-element micro-opt. Landed the 5.6% (real, bit-
+exact, universal primitive) + recorded the negative so the next session doesn't re-chase clone_from_slice.
+EDITED ft-autograd via the clean worktree pattern. AGENT BlackThrush.
+
+## 2026-06-27 - WIN (landed): bounded-integer no-grad global median (3.28x SLOWER -> 1.28x FASTER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `PearlReef`. BOLD-VERIFY first checked bench worktrees for a
+measured win not already on `main`: none found. The only ahead worktree was the committed `gxpb2`
+large-n row-SIMD reject, and the dirty row-vector FMA worktrees were measured losses: baseline FT
+`3.4903 ms` vs PyTorch `2.049542 ms` = **1.70x SLOWER**, candidate FT `10.834 ms` = **5.29x SLOWER**.
+Current `struct_survey6_h2h` on `origin/main` showed global `median` FT `291.700 ms` vs PyTorch
+`88.998 ms` = **3.28x SLOWER**. `where` was the largest same-scan gap (FT `128.209 ms` vs PyTorch
+`25.062 ms` = **5.12x SLOWER**), but the ledger already rejects scalar/direct/branchless `where`
+families pending a representation change, so this pass routed to the next current gap with an untried
+selection lever.
+
+Graveyard route: vectorized execution/cache-local data representation/selection algorithms. Lever:
+for no-grad f64 global `tensor_median`, avoid the old `reshape -> kthvalue -> index_select/tape`
+composition. Borrow contiguous storage when possible, return a scalar leaf, and select by a bounded
+integer histogram for finite integral f64 values with range `<= 65536`; fall back to in-place
+quickselect for fractional, nonfinite, or wide-range data. The histogram path preserves PyTorch's
+lower-median value ordering, including `-0.0` before `+0.0`; the grad path is unchanged.
+
+MEASURED against PyTorch: direct borrowed quickselect interim improved to FT `118.666 ms` vs PyTorch
+`85.241 ms` = **1.39x SLOWER**. Final bounded-histogram path measured FT `71.780 ms` vs PyTorch
+`91.020 ms` = **1.27x FASTER**, about **4.06x FT-internal** vs the `291.700 ms` current baseline.
+Fresh current-main remeasure from the bench worktree after porting only this lever: `median` FT
+`71.052 ms` vs PyTorch `91.285 ms` = **1.28x FASTER**; `cat_anchor` stayed healthy at FT
+`11.841 ms` vs PyTorch `45.575 ms` = **3.85x FASTER**.
+
+Validation: `rch exec -- cargo test -p ft-api median --lib -- --nocapture` passed 11/0;
+`rch exec -- cargo check -p ft-api --lib` passed on `hz2`; `rch exec -- cargo clippy -p ft-api --lib -- -D warnings`
+passed on `hz2`; `rch exec -- cargo test -p ft-conformance` passed the full crate test set
+(199/0 library tests plus bins/integration/doc tests). Literal probe
+`rch exec -- cargo bench --release -p ft-api -- median` was run and Cargo rejected `--release` for
+`cargo bench`; a real per-crate Criterion row was added under `ops_bench` and remeasured
+`median/bounded_i9973_f64_4000x4000_nograd` with
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b rch exec -- cargo bench -p ft-api --bench ops_bench --profile release median -- --noplot`.
+RCH had no admissible worker and fell back locally; the release-profile interval was
+`[100.45 ms 104.11 ms 108.08 ms]`, still in the expected fast-path band and preserving
+the PyTorch win recorded by the head-to-head sidecar.
+Head-to-head evidence is in
+`artifacts/perf/frankentorch-kgs4.pearlreef-dig-20260626T0720Z/struct_survey6_current_local.log`,
+`artifacts/perf/frankentorch-kgs4.pearlreef-dig-20260626T0720Z/struct_survey6_median_fastpath_local.log`,
+`artifacts/perf/frankentorch-kgs4.pearlreef-dig-20260626T0720Z/struct_survey6_bounded_median_local.log`,
+and `artifacts/perf/frankentorch-kgs4.codex-median-bench-ledger-20260627/`.
+AGENT PearlReef.
+
+## 2026-06-26 - PARTIAL KEEP / residual loss: count_nonzero IEEE bit classifier (5.90x SLOWER -> 1.13x SLOWER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `PearlReef`. BOLD-VERIFY first checked the bench worktrees for a
+measured win not already on main: none found. The largest fresh reduction gap was global
+`count_nonzero`; baseline `count_nonzero_h2h` on current source was FT `18.789 ms` vs PyTorch `3.183 ms`
+= **5.90x SLOWER**, while `reduction_scan_h2h` all-nonzero showed FT `31.967 ms` vs PyTorch `3.545 ms`
+= **9.02x SLOWER**. Root cause after the earlier clone-elision fix: the hot path still did
+floating-point compares in a branchy predicate. Lever: classify IEEE bits directly and count
+`abs_bits != 0`, with large Rayon morsels (`262144` f64 lanes, `524288` f32 lanes), preserving
+PyTorch semantics: both `+0.0` and `-0.0` are zero; NaN/inf/nonzero values count as nonzero.
+Commit `1436d2bd` added the code and the signed-zero/NaN test.
+
+MEASURED against PyTorch: best confirmation run was FT `2.473 ms` vs PyTorch `2.181 ms` =
+**1.13x SLOWER** (about **7.6x FT-internal** vs the 18.789ms baseline); all-nonzero scan improved to
+FT `3.109 ms` vs PyTorch `2.251 ms` = **1.38x SLOWER**. This is not a PyTorch win, but it is not
+zero-gain, so the landed code is retained as a gap closure. Do not retry the scalar bit-classifier
+or chunk-size tuning family alone; the remaining PyTorch residual needs a different representation or
+kernel class (true SIMD/popcount over compact bool/mask storage, or a PyTorch-like vectorized reduction).
+Validation: `rch exec -- cargo test -p ft-api count_nonzero --lib -- --nocapture` passed 4/0 on
+`ovh-a`; `rch exec -- cargo test -p ft-conformance` passed 199/0 unit plus integration/doc tests on
+`ovh-a`. Literal `rch exec -- cargo bench --release -p ft-api -- count_nonzero` was probed and Cargo
+rejected `--release` for `cargo bench`; artifact:
+`artifacts/perf/frankentorch-kgs4.pearlreef-boldverify-20260626T0635Z/count_nonzero_literal_cargo_bench_release.log`.
+AGENT PearlReef.
+
+## 2026-06-26 - WIN (landed): group_norm no-grad BORROW input (3.89x SLOWER -> 3.18x FASTER vs torch; vision/diffusion-hot)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Same tensor_values-clone sub-vein as layer_norm/rms_norm
+(prev entry), swept to `functional_group_norm` (hot in vision / diffusion U-Nets). The no-grad fused fast path
+did `let x = self.tensor_values(input)?` = a SERIAL-zero-faulted 128MB clone of the [16,256,64,64] input that
+DWARFED the parallel `group_norm_forward_f64` kernel. FIX: BORROW the contiguous input via
+`tensor.contiguous_values()?` (f64) / `contiguous_values_f32()?` (f32), guard contiguity (non-contig falls back
+to the clone). Bit-identical (kernel reads the same bytes) — 14/0 group_norm tests (torch-golden + affine +
+grad-path-unchanged). MEASURED (examples/groupnorm_h2h.rs, [16,256,64,64] G=32, torch set_num_threads(8) vs
+FT-64t, cat_anchor 3.79x FASTER healthy; OLD baseline by in-worktree revert): **84.2ms (3.89x SLOWER) ->
+6.79ms (3.18x FASTER)** = 12.4x internal. ft-api lib 2387/0 + conformance 39/0, bit-exact. EDITED ft-api via
+the clean worktree pattern. ⏳ SAME FIX STILL UNSHIPPED at group_norm_sum_f32 (L~29111) + batch_norm forward
+(batch_norm_sum_forward_f64 L~30650, tensor_batch_norm2d_sum L~30017/30108) — NEXT sweep (unmeasured; same
+borrow recipe). AGENT BlackThrush.
+
+## 2026-06-26 - WIN (landed): layer_norm + rms_norm no-grad BORROW input (3.81x/1.78x SLOWER -> 2.59x/5.40x FASTER vs torch)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey7_h2h flagged `layer_norm` = **3.81x
+SLOWER** (91.7ms) + `rms_norm` = 1.78x SLOWER, despite both having a no-grad FUSED kernel fast path. ISOLATED
+the cost: the parallel kernel is only ~7-19ms, but the ft-api fast path `let x = self.tensor_values(input)?`
+CLONES the [4000,4000] input into a FRESH numel·8B (128MB) buffer whose pages are SERIALLY zero-faulted =
+**~64ms** (the kernel only READS x; `tensor_variable(out)` MOVES the kernel's already-parallel-faulted output,
+~free). So the wall was a single-threaded page-faulting CLONE at the session-accessor level — the same
+parallel-page-faulting tax, one layer up. FIX: BORROW the contiguous input via
+`self.tensor_tape.tensor(input)?.contiguous_values()?` (returns &[f64], no allocation → no faulting) and hand
+it straight to the kernel; non-contiguous inputs fall back to the materializing clone; applied to layer_norm
+f64+f32 and rms_norm f64+f32. Bit-identical (kernel reads the same bytes) — 17/0 layer_norm+rms_norm tests
+(incl torch-golden + affine + grad-path-unchanged). MEASURED (struct_survey7_h2h.rs, torch set_num_threads(8)
+vs FT-64t, cat_anchor 3.23x FASTER healthy): layer_norm **91.7ms -> 9.1ms (~10x internal)** now **2.59x
+FASTER** (was 3.81x SLOWER); rms_norm **-> 8.6ms** now **5.40x FASTER** (was 1.78x SLOWER). ft-api lib 2387/0 +
+conformance 39/0, bit-exact. EDITED ft-api via the clean worktree pattern. ★ LESSON: `tensor_values(id)` in a
+no-grad fast path is a SERIAL-FAULTED 8B·numel clone — always prefer `tensor.contiguous_values()?` (BORROW)
+when the kernel only reads. SAME PATTERN remains at group_norm f64/f32 + batch_norm forward fast paths (L~29479
+/29517/30613) — NEXT sweep. SURVEY7: softmax/log_softmax already 2-3x FASTER. AGENT BlackThrush.
+
+## 2026-06-26 - WIN (landed): logsumexp no-grad apply_function bypass (4.93x SLOWER -> 8.32x FASTER vs torch; ~40x internal)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey6_h2h flagged `tensor_logsumexp(dim)` =
+**4.93x SLOWER** (239ms for [4000,4000] reduce dim=1). ROOT: it had NO no-grad path — always went through
+`apply_function_with_create_graph`, which (a) `save_for_backward(vals.to_vec())` CLONES the whole 128MB input
+and (b) runs the per-lane (outer,inner) reduction SERIALLY. With grad off both are pure waste. FIX: no-grad f64
+contiguous fast path BORROWS the input (no clone) and fans the independent output lanes across rayon (each lane
+= a max-pass + exp-sum-pass logsumexp over `dim`; exp is compute-bound so it scales). Bit-identical to the
+serial reduction (same max-then-sum order per lane, same ±inf rule) — verified by sum_mean_logsumexp_over_
+multiple_dims_torch_golden + logsumexp_infinities_match_torch + large_stable + shift_property + propagates_
+gradient (grad path UNCHANGED) + 8/0 logsumexp tests. grad / f32 / f16 / non-contiguous fall through. MEASURED
+(struct_survey6_h2h.rs, torch set_num_threads(8) vs FT-64t, cat_anchor 3.29x FASTER healthy): **239ms ->
+5.98ms (~40x internal)** flipped **4.93x SLOWER -> 8.32x FASTER**. NOTE: the old "logsumexp fwd = 1.83x
+apply_function input-clone floor" memory note was the parallelize-WITHIN-apply_function ceiling; the no-grad
+BYPASS elides the clone floor entirely (don't trust "clone-floor" exclusions until a no-grad bypass is tried).
+ft-api lib 2387/0 + conformance 39/0, bit-exact. EDITED ft-api via the clean worktree pattern. SURVEY6:
+topk 1.2x FASTER, median 3.07x SLOWER (sort-based/algo-bound), prod/amax/var tiny-absolute. AGENT BlackThrush.
+
+## 2026-06-26 - WIN (landed): cummin (flattened) no-grad value-direct scan (4.33x SLOWER -> parity; 4.3x internal; asymmetry sibling of cummax)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. ASYMMETRY METHOD: cummax shipped (prev entry) → its
+sibling `tensor_cummin` (flattened) had the IDENTICAL pattern (compute cum_idx, then index_select-GATHER
+x[cum_idx[i]] + cum_idx.clone() + reshapes = ~5×numel allocs + cache-hostile gather). Same FIX mirrored with
+`<=` / `min_val=INFINITY`: no-grad f64 contiguous fast path borrows the input and builds cum_vals DIRECTLY in
+the argmin scan (`cum_vals.push(vals[min_idx])`) — no gather/clone/reshape. Bit-identical (same <=/NaN-prop;
+vals[min_idx] = gather result) — verified by prod_dim_cummin_golden_matches_torch + cummax_cummin_propagate_nan
++ tie_indices + cummin_propagates_gradient_via_argmin_routing (grad path UNCHANGED) + 7/0 cummin tests. grad /
+f32 / f16 / non-contiguous fall through. MEASURED (examples/cummin_h2h.rs, torch set_num_threads(8) vs FT-64t,
+cat_anchor 4.1x FASTER healthy; OLD baseline measured by reverting lib.rs in-worktree): **578.9ms (4.33x
+SLOWER) -> 134.4ms (1.01x, parity)** = 4.3x internal. Residual = inherent serial scan (torch also scan-bound
+~133ms). ft-api lib 2387/0 + conformance 39/0, bit-exact. EDITED ft-api via the clean worktree pattern. The
+cummax/cummin flattened-scan pair is now BOTH at parity (gap was the redundant gather-after-scan, not the scan).
+AGENT BlackThrush.
+
+## 2026-06-26 - WIN (landed): cummax (flattened) no-grad value-direct scan (4.38x SLOWER -> parity; 4.3x internal, kills gather+clones)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey5_h2h flagged flattened `tensor_cummax` =
+**4.38x SLOWER** (584ms for a [16M] scan). cummax is a SCAN (inherently serial) so the gap was OVERHEAD: the
+old body did a `values_lossy_f64` clone, the argmax scan, then `tensor_index_select`-GATHERED `x[cum_idx[i]]`
+(a 16M RANDOM gather + tape node) to make the values branch autograd-aware, plus `cum_idx.clone()` + reshape
+nodes (~5×numel allocations + cache-hostile gather = the wall). KEY: the running cummax VALUE is `vals[max_idx]`,
+ALREADY known during the scan — so the gather is redundant. FIX: no-grad f64 contiguous fast path BORROWS the
+input and builds cum_vals DIRECTLY in the scan (`cum_vals.push(vals[max_idx])`) alongside cum_idx, returning
+two leaves — no gather, no clone, no reshape. Bit-identical (same >=/NaN-propagation; vals[max_idx] IS what
+the gather returned) — verified by cumprod_cummax_golden_matches_torch + cummax_cummin_propagate_nan +
+tie_indices + propagates_gradient_via_argmax_routing (grad path UNCHANGED) + 7/0 cummax tests. grad / f32 /
+f16 / non-contiguous fall through. MEASURED (struct_survey5_h2h.rs, torch set_num_threads(8) vs FT-64t,
+cat_anchor 3.53x FASTER healthy): **584ms -> 134.6ms (4.3x internal)**, gap **4.38x SLOWER -> 1.03x (parity)**.
+The residual is the INHERENT serial scan + 2×128MB output writes (torch is also serial-scan-bound at 131ms);
+beating it would need a parallel-scan rewrite (max is associative) but the 256MB output write is bandwidth-
+walled anyway. ft-api lib 2387/0 + conformance 39/0, bit-exact. EDITED ft-api via the clean worktree pattern.
+SURVEY5: diff/cumsum/flip already 2-3x FASTER, sort 1.27x SLOWER (algorithmically bound). AGENT BlackThrush.
+
+## 2026-06-26 - WIN (landed): kron 2-D row-structured fast path (24.35x SLOWER -> 3.08x FASTER vs torch; ~73x internal)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. kron_h2h flagged `tensor_kron` = **24.35x SLOWER**
+(449ms for [200,200]⊗[20,20] -> [4000,4000]) — the BIGGEST measured gap this session. ROOT: the no-grad path
+ran a SERIAL doubly-nested `for a_linear { for b_linear { ... } }` loop that, PER OUTPUT ELEMENT, did `rank`
+checked integer divides + 2 checked muls + 2 checked adds to recompute out_linear (O(total·rank) checked
+arithmetic) — single-threaded. FIX: 2-D fast path (the dominant case; also covers 1-D⊗2-D / 2-D⊗1-D via rank-2
+alignment): output row i = a_row·b_rows+b_row, and each a-column writes the block `a[a_row,a_col]·B[b_row,:]`
+at cols [a_col·b_cols..] — a per-row scalar·vector fill with NO per-element div/mod, parallel over output rows
+(par_chunks_mut(out_cols)). Bit-identical to the general loop (out_linear=i·out_cols+j, same a_val·b_val order)
+— verified by kron_2d / kron_1d / kron_left_pads_lower_rank (1D⊗2D) / kron_2d_preserves_autograd / repeat_
+interleave_outer_kron_golden_matches_torch + 8/0 kron tests; rank>=3 + grad paths fall through UNCHANGED
+(kron_3d/kron_4d still pass). MEASURED (examples/kron_h2h.rs, torch set_num_threads(8) vs FT-64t, cat_anchor
+4.06x FASTER healthy): **449ms -> 6.13ms (~73x internal)** flipped **24.35x SLOWER -> 3.08x FASTER**. ft-api
+lib 2387/0 + conformance 39/0, bit-exact. EDITED ft-api via the clean worktree pattern. LESSON: per-element
+CHECKED-arithmetic index decode in a hot serial loop is a giant hidden cost — a structured row formula elides
+it entirely. AGENT BlackThrush.
+
+## 2026-06-26 - WIN (landed): embedding parallel row gather (3.40x SLOWER -> 1.19x FASTER vs torch; NLP-hot)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. Applied the parallel-page-faulting sub-vein (one_hot)
+to `tensor_embedding` — VERY hot in NLP. BOTH forward paths (no-grad gather + the grad apply_function forward)
+built the [num_indices, embedding_dim] output with a SERIAL `for idx { result.extend_from_slice(&weight[row]) }`
+— for a [250K,512] (1GB) output that serially zero-faults + random-gathers on ONE thread = the wall. FIX:
+pre-alloc + parallel per-row copy_from_slice (`result.par_chunks_mut(embedding_dim).enumerate().for_each(|(i,row)|
+row.copy_from_slice(&weight[idx[i]*dim..]))`); padding rows stay zero (pre-zeroed). Parallelizes the gather AND
+its faulting. Bit-identical to the serial extend (disjoint rows) — verified by one_hot_and_embedding_golden_
+matches_torch + embedding_backward_grad_accumulation_matches_torch + padding/negative/fractional/2d-index +
+18/0 embedding tests. dim==0/num_indices<=1 stay serial. Backward (scatter-add, write-conflicting) left serial.
+MEASURED (examples/embedding_h2h.rs, [250K]->[250K,512], torch set_num_threads(8) vs FT-64t; OLD serial
+measured by reverting lib.rs in-worktree): **586ms (3.40x SLOWER) -> 139ms (1.19x FASTER)** = 4.2x FT-internal,
+flipped LOSS->WIN (cat_anchor 3.4-3.6x FASTER healthy in both runs). ft-api lib 2387/0 + conformance 39/0,
+bit-exact. EDITED ft-api via the clean worktree pattern. AGENT BlackThrush.
+
+## 2026-06-26 - WIN (landed): one_hot parallel row scatter (2.71x SLOWER -> 2.22x FASTER vs torch; parallelizes page-faulting)
+
+Bead/thread `frankentorch-kgs4`, agent `BlackThrush`. struct_survey3_h2h flagged `one_hot` = **2.71x SLOWER**
+(211ms for [1M]->[1M,64]). ROOT: a SINGLE serial scatter loop wrote one 1.0 per row into the
+[numel,num_classes] (512MB) output — each touched output page is ZERO-FAULTED on the SAME thread, so the wall
+is single-threaded page-faulting, not the scatter arithmetic. FIX: validate + resolve class indices in a cheap
+serial pre-pass (reads only the small input, no big-output faults), then scatter the 1.0s in PARALLEL via
+`result.par_chunks_mut(num_classes).zip(class_idx).for_each(|(row,&ci)| row[ci]=1.0)` — fanning the per-row
+writes (and thus the page faults) across rayon. Bit-identical (disjoint one-hot positions; write order
+irrelevant) — verified by one_hot_and_embedding_golden_matches_torch + functional_one_hot_nd_matches_torch +
+reject-infinite/out-of-range/requires_grad + 7/0 one_hot tests. num_classes==0 / numel<=1 stay serial (avoid
+chunks_mut(0) panic + rayon overhead). MEASURED (struct_survey3_h2h.rs, torch set_num_threads(8) vs FT-64t,
+cat_anchor=3.76x FASTER healthy): one_hot [1M,64] **211ms -> 37.3ms** (~5.7x internal) now **2.22x FASTER**
+than torch (was 2.71x SLOWER). ft-api lib 2387/0 + conformance 39/0, bit-exact. EDITED ft-api via the clean
+worktree pattern. SURVEY3 also: pad already 3.57x FASTER (no-grad block-copy fast path), tile ~parity (1.2x,
+uses reshape+repeat). AGENT BlackThrush.
 
 ## 2026-06-26 - WIN (landed): repeat_interleave serial push -> parallel chunk-fill (3.1x SLOWER -> 2.85x FASTER vs torch)
 
@@ -9454,3 +10010,34 @@ mask-density strategy, not a scalar par-iter rewrite. `rch exec -- cargo bench -
 does not accept `--release` for `bench`; the per-crate `rch exec -- cargo run --release
 -p ft-api --example op_scan4_h2h` build succeeded on `vmi1227854` but that worker lacks
 `torch`, so the PyTorch ratio above is from the local oracle run. AGENT PearlReef.
+
+## 2026-06-26 - REJECT: row-vector FMA path for m=1 RHS-transposed matmul regressed recurrent LSTM
+
+Agent `PearlReef`. Inspected the dirty `/data/projects/frankentorch-sif85-rubylotus`
+row-vector FMA sketch for `matmul_rhs_transposed_contiguous_f64_into` and re-tested the
+idea on current `origin/main` (`23c69ac5`). Candidate gate: only `m == 1` and runtime FMA
+hosts bypassed `gemm::dgemm_bt`, using a direct `mul_add` dot for each output column.
+
+Correctness probe passed before rejection:
+
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo test -p ft-kernel-cpu row_vector_fma_rhs_transposed_matches_dgemm_bt_for_recurrent_shapes -- --nocapture`
+
+Per-crate Criterion bench, same current-base worktree, RCH local fallback due no admissible
+workers:
+
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo bench -p ft-api --bench ops_bench -- recurrent_forward/lstm_seq64_batch1_128x128 --warm-up-time 1 --measurement-time 3 --sample-size 10`
+
+- Baseline `recurrent_forward/lstm_seq64_batch1_128x128`: FT median `3.4903 ms`.
+- Candidate row-vector FMA path: FT median `10.834 ms`, a `3.10x` regression versus baseline.
+
+Local PyTorch oracle (`/data/projects/frankentorch/.venv-oracle/bin/python`, torch CPU,
+8 threads) for the same LSTM shape:
+
+- PyTorch best `2.049542 ms`.
+- Baseline FT/PyTorch: `3.4903 / 2.049542 = 1.70x SLOWER`.
+- Candidate FT/PyTorch: `10.834 / 2.049542 = 5.29x SLOWER`.
+
+Verdict: measured loss. Candidate code and candidate-only test were manually removed; no
+source diff remains. The lower-level direct dot defeats the existing GEMM microkernel for
+this recurrent shape, so do not land the `m == 1` FMA bypass without a different shape gate
+and same-worker h2h proof. AGENT PearlReef.

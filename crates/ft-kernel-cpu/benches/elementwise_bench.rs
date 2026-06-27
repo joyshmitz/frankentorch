@@ -5,7 +5,9 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use ft_core::{DType, Device, TensorMeta};
-use ft_kernel_cpu::{pow_tensor_contiguous_f32, pow_tensor_contiguous_f64};
+use ft_kernel_cpu::{
+    lerp_tensor_contiguous_f32, pow_tensor_contiguous_f32, pow_tensor_contiguous_f64,
+};
 
 fn bench_pow(c: &mut Criterion) {
     let numel = 1usize << 20; // 1M elements
@@ -36,5 +38,30 @@ fn bench_pow(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_pow);
+fn bench_lerp(c: &mut Criterion) {
+    let numel = 1usize << 20;
+    let start: Vec<f32> = (0..numel)
+        .map(|i| ((i as f32) * 0.000_017 + 0.13).sin() * 0.25)
+        .collect();
+    let end: Vec<f32> = (0..numel)
+        .map(|i| ((i as f32) * 0.000_023 + 0.47).sin() * 0.25)
+        .collect();
+    let meta = TensorMeta::from_shape(vec![numel], DType::F32, Device::Cpu);
+
+    c.bench_function("lerp_f32_1m_weight0.5", |b| {
+        b.iter(|| {
+            black_box(
+                lerp_tensor_contiguous_f32(
+                    black_box(&start),
+                    black_box(&end),
+                    black_box(0.5),
+                    black_box(&meta),
+                )
+                .expect("valid f32 lerp benchmark input"),
+            )
+        })
+    });
+}
+
+criterion_group!(benches, bench_pow, bench_lerp);
 criterion_main!(benches);

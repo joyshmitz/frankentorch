@@ -3,10 +3,17 @@ use criterion::{
 };
 use ft_api::FrankenTorchSession;
 use ft_core::ExecutionMode;
+use std::time::Duration;
 
 fn deterministic_values(n: usize, shift: f64) -> Vec<f64> {
     (0..n)
         .map(|i| (((i as f64) * 0.017 + shift).sin()) * 0.2)
+        .collect()
+}
+
+fn patterned_f32_values(n: usize, scale: f32, shift: f32) -> Vec<f32> {
+    (0..n)
+        .map(|i| (((i as f32) * scale + shift).sin()) * 0.25)
         .collect()
 }
 
@@ -431,6 +438,26 @@ fn bench_sum(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_median(c: &mut Criterion) {
+    let mut group = c.benchmark_group("median");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(2));
+
+    let (rows, cols) = (4000usize, 4000usize);
+    let data: Vec<f64> = (0..rows * cols)
+        .map(|i| ((i.wrapping_mul(2_654_435_761) % 9973) as f64) - 4986.0)
+        .collect();
+    group.throughput(Throughput::Elements((rows * cols) as u64));
+    group.bench_function("bounded_i9973_f64_4000x4000_nograd", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(data.clone(), vec![rows, cols], false)
+            .unwrap();
+        b.iter(|| black_box(session.tensor_median(black_box(x)).unwrap()));
+    });
+    group.finish();
+}
+
 fn bench_amax_amin(c: &mut Criterion) {
     let mut group = c.benchmark_group("amax_amin");
     {
@@ -612,6 +639,72 @@ fn bench_add(c: &mut Criterion) {
             b.iter(|| black_box(session.tensor_add(x, y).unwrap()));
         });
     }
+    group.finish();
+}
+
+fn bench_addcmul(c: &mut Criterion) {
+    let mut group = c.benchmark_group("addcmul");
+    let rows = 4000usize;
+    let cols = 4000usize;
+    let n = rows * cols;
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(12));
+    group.throughput(Throughput::Elements(n as u64));
+    let input_values = patterned_f32_values(n, 0.000_017, 0.13);
+    let t1_values = patterned_f32_values(n, 0.000_019, 0.29);
+    let t2_values = patterned_f32_values(n, 0.000_023, 0.47);
+
+    group.bench_function("f32_4000x4000_nograd", |b| {
+        b.iter_batched(
+            || {
+                let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+                let input = session
+                    .tensor_variable_f32(input_values.clone(), vec![rows, cols], false)
+                    .unwrap();
+                let t1 = session
+                    .tensor_variable_f32(t1_values.clone(), vec![rows, cols], false)
+                    .unwrap();
+                let t2 = session
+                    .tensor_variable_f32(t2_values.clone(), vec![rows, cols], false)
+                    .unwrap();
+                (session, input, t1, t2)
+            },
+            |(mut session, input, t1, t2)| {
+                black_box(session.tensor_addcmul(input, t1, t2, 0.5).unwrap())
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    group.finish();
+}
+
+fn bench_lerp(c: &mut Criterion) {
+    let mut group = c.benchmark_group("lerp");
+    let rows = 4000usize;
+    let cols = 4000usize;
+    let n = rows * cols;
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(4));
+    group.throughput(Throughput::Elements(n as u64));
+    let start_values = patterned_f32_values(n, 0.000_017, 0.13);
+    let end_values = patterned_f32_values(n, 0.000_023, 0.47);
+
+    group.bench_function("f32_4000x4000_nograd", |b| {
+        b.iter_batched(
+            || {
+                let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+                let start = session
+                    .tensor_variable_f32(start_values.clone(), vec![rows, cols], false)
+                    .unwrap();
+                let end = session
+                    .tensor_variable_f32(end_values.clone(), vec![rows, cols], false)
+                    .unwrap();
+                (session, start, end)
+            },
+            |(mut session, start, end)| black_box(session.tensor_lerp(start, end, 0.3).unwrap()),
+            BatchSize::LargeInput,
+        );
+    });
     group.finish();
 }
 
@@ -2266,6 +2359,7 @@ criterion_group!(
     bench_max_pool3d,
     bench_pool1d_ct1d,
     bench_sum,
+    bench_median,
     bench_amax_amin,
     bench_cumsum,
     bench_cumprod,
@@ -2276,6 +2370,8 @@ criterion_group!(
     bench_sigmoid,
     bench_pow,
     bench_add,
+    bench_addcmul,
+    bench_lerp,
     bench_backward_matmul,
     bench_linear_train,
     bench_recurrent_forward,
