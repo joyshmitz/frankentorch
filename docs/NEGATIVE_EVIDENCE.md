@@ -4,6 +4,18 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): f64 masked_fill no-grad fast path (full+where composed -> 1.9x FASTER vs torch, bit-exact)
+
+Agent `CrimsonForge`. Sibling-gap (3rd of the run, after f64 hardshrink/threshold): tensor_masked_fill
+had an f32 single-pass fast path (kgs4.181) but f64 FELL THROUGH to `full(shape,value)` [128MB alloc at
+4k×4k] + `tensor_where` (~2 passes + alloc). Added the f64 mirror: equal-shape contiguous f64 input + f64
+mask, one parallel pass `mask != 0 ? value : input` — the SAME predicate as where_tensor_contiguous_f64
+(`c != 0.0`). Pure select -> bit-exact (broadcast/non-f64-mask/grad/non-contiguous fall through).
+
+Measured (local, torch 8t, min-of-9, 16M f64, masked_fill_f64_h2h, add_anchor 1.23-1.45x FASTER = healthy):
+masked_fill 1.88-1.91x FASTER across 2 runs (torch f64 masked_fill ~45-50ms from bool-mask handling vs FT
+single-pass ~24-27ms); parity 0/8 vs torch (dtype F64, value bits). File: crates/ft-api/src/lib.rs.
+
 ## 2026-06-27 - WIN (landed): f64 threshold no-grad fast path (composed -> 1.8-2.1x FASTER vs torch, bit-exact)
 
 Agent `CrimsonForge`. Sibling-gap (same as f64 hardshrink): tensor_threshold had an f32 one-pass fast
