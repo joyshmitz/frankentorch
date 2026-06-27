@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN (landed): f32 tril/triu no-upcast per-row fast path (~11x SLOWER -> ~4x FASTER vs torch, bit-exact)
+
+Bead/thread `frankentorch-kgs4.180`, agent `BlackThrush`. NEW family (movement/structural, off the lossy_f64
+vein): movement_h2h flagged f32 `tril` **11.21x SLOWER** + `triu` **11.67x SLOWER** than torch (126-129ms vs
+~11ms at [4000,4000]). ROOT (the clamp/relu6 f64-roundtrip anti-pattern): both go through `tensor_apply_function`
+which reads f32 as f64 (upcast clone) + writes an f64 result buffer + narrows back to f32 = ~5x memory traffic
+(the per-row fill was ALREADY parallel — the round-trip was the wall). FIX: f32 no-grad fast path — borrow
+`contiguous_values_f32()`, parallel per-row positional fill into an f32 result (tril: keep src[j] for j<=i+diag;
+triu: j>=i+diag; else 0.0), return f32 directly. ★BIT-IDENTICAL: pure positional select, NO rounding (kept values
+are the exact f32 inputs incl NaN/inf/-0; the f64 round-trip was exact). torch parity (tril_triu_f32_parity, 14
+(diag,op) cases, diag -40..40, NaN/inf/-0 in zeroed positions) **0 mismatches**. grad / non-contiguous fall
+through. ft-api tril 13/0 + triu 10/0, conformance smoke 39/0. MEASURED: tril 126ms->2.96ms (**4.01x FASTER**,
+~43x internal), triu 129ms->2.93ms (**3.90x FASTER**). tril/triu are HOT (attention causal masks). movement_h2h
+verdicts: flip/roll already 2.7-2.9x FASTER; take_along_dim ERRORS on f32 indices (test passed f32 idx — likely
+correct: indices must be int; not chased). NEW VEIN: apply_function-based f32 ops upcast f32->f64+narrow = the
+clamp/relu6 anti-pattern on STRUCTURAL ops — grep `tensor_apply_function` callers that are pure select/copy (no
+arithmetic) for more f32 wins. Finder = movement_h2h.rs + tril_triu_f32_parity.rs. AGENT BlackThrush.
+
 ## 2026-06-27 - WIN (landed): f32 nanmedian no-upcast quickselect fast path (1.42x SLOWER -> 1.16x FASTER vs torch, bit-exact)
 
 Bead/thread `frankentorch-kgs4.179`, agent `BlackThrush`. dedup_select_h2h flagged f32 `nanmedian` (8M) at
