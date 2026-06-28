@@ -4,6 +4,40 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - WIN+FIX (landed): multilabel_soft_margin_loss no-grad row fast path (f32 ERROR -> 10.90x FASTER vs torch; f64 2.05x SLOWER -> 20.04x FASTER vs torch; 46.64x vs ORIG Criterion)
+
+Agent `SilverLake`. BOLD-VERIFY first checked non-main bench worktrees: the old addcmul FMA branch was
+already represented on main by later addcmul code/evidence, and gxpb2 was an explicit rejection, so there
+was no clean measured worktree win to land. New dig used the vectorized-execution / morselized-row-reduction
+lever family: `tensor_multilabel_soft_margin_loss` routed no-grad tensor-prefixed calls through serial f64
+`tensor_apply_function`, and f32 no-grad errored with `UnsupportedDType(F32)`.
+
+Lever: add a no-grad, no-weight, contiguous F32/F64 fast path that computes one row loss per sample in
+parallel with stable softplus and deterministic final scalar reduction. `none` returns `[N]`; `mean` and
+`sum` return scalars. Grad, weighted, mixed dtype, non-contiguous, and non-F32/F64 cases fall through to the
+existing path, preserving autograd behavior.
+
+ORIG H2H (`crates/ft-api/examples/multilabel_soft_h2h.rs`, torch CPU 8 threads, [65_536,128], min-of-7):
+PyTorch f32 78.0614 ms; FrankenTorch f32 ERROR. PyTorch f64 172.2742 ms; FrankenTorch f64 352.7643 ms =
+FT 2.05x SLOWER. Final H2H after the lever: PyTorch f32 71.1832 ms; FT f32 6.5294 ms = FT 10.90x
+FASTER and dtype F32. PyTorch f64 168.5791 ms; FT f64 8.4107 ms = FT 20.04x FASTER.
+
+Criterion per-crate bench (`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec --
+cargo bench -p ft-api --bench ops_bench multilabel_soft_margin/nograd_f64_65536x128_mean -- --warm-up-time
+1 --measurement-time 3 --sample-size 10 --noplot`): ORIG `[388.33 ms 400.34 ms 413.71 ms]`; final
+`[8.2425 ms 8.5826 ms 9.3754 ms]`; ratio 400.34/8.5826 = 46.64x faster vs ORIG. The literal
+`cargo bench --release -p ft-api ...` form was probed
+and Cargo rejected `--release` for `cargo bench`; the valid per-crate bench form above was used.
+
+Validation before commit: `git diff --check` GREEN; focused `ft-api` multilabel soft-margin tests GREEN
+(4 passed, including the new f32 no-grad stable-formula test and existing gradient tests); `cargo check -p
+ft-api --all-targets` GREEN; targeted clippy GREEN for `ft-api --lib --tests --benches`,
+`--example multilabel_soft_h2h`, and the touched `--example cossim_f32_h2h`. Broad `ft-api --all-targets`
+clippy is still blocked by unrelated pre-existing example probes (`pow2_parity_probe`, `rot90_h2h`,
+`flip_roll_h2h`, `op_scan3_h2h`, `masked_fill_f32_parity`). `cargo test -p ft-conformance`: PENDING in
+RCH queue at ledger-write time, then GREEN after local fallback (199 lib tests plus conformance bins,
+e2e training, PyTorch subprocess conformance, smoke tests, and doctests all passed).
+
 ## 2026-06-28 - WIN+FIX (landed): nanquantile f32 native quickselect (ERROR -> works + 8.3-9.5x FASTER vs torch)
 
 Agent `CrimsonForge`. tensor_nanquantile (and _interpolation) no-grad path read `tensor_values` (F64-only)

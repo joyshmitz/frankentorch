@@ -1351,6 +1351,34 @@ fn bench_soft_margin(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_multilabel_soft_margin(c: &mut Criterion) {
+    let mut group = c.benchmark_group("multilabel_soft_margin");
+    let (rows, cols) = (65_536usize, 128usize);
+    let n = rows * cols;
+    let xv: Vec<f64> = (0..n)
+        .map(|i| -2.0 + (i % 257) as f64 * (4.0 / 257.0))
+        .collect();
+    let tv: Vec<f64> = (0..n)
+        .map(|i| if (i + i / cols) % 3 == 0 { 1.0 } else { 0.0 })
+        .collect();
+    group.bench_function("nograd_f64_65536x128_mean", |b| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(xv.clone(), vec![rows, cols], false)
+            .unwrap();
+        let t = s
+            .tensor_variable(tv.clone(), vec![rows, cols], false)
+            .unwrap();
+        b.iter(|| {
+            black_box(
+                s.tensor_multilabel_soft_margin_loss(x, t, None, "mean")
+                    .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
 fn bench_gaussian_nll(c: &mut Criterion) {
     // Gaussian NLL (uncertainty regression), no-grad + grad f64. The op-graph
     // builds ~7 full [n] intermediates.
@@ -2491,6 +2519,7 @@ criterion_group!(
     bench_batch_norm,
     bench_smooth_l1,
     bench_soft_margin,
+    bench_multilabel_soft_margin,
     bench_gaussian_nll,
     bench_linear_forward,
     bench_interpolate_bicubic,

@@ -1,7 +1,7 @@
 //! cosine_similarity f32 native fast path vs torch. Was: upcast f32->F64 (wrong dtype + 2x mem).
 //! add = anchor. dim=last.
 use ft_api::FrankenTorchSession;
-use ft_core::{DType, ExecutionMode};
+use ft_core::ExecutionMode;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -33,7 +33,11 @@ print("VALS"," ".join("%.9g"%v for v in o.tolist()))
     let o = s.tensor_cosine_similarity(a, b, 1, 1e-8)?;
     let dt = s.tensor_dtype(o)?;
     let fv = s.tensor_values_lossy_f64(o)?;
-    let maxrel = fv.iter().zip(&pv).map(|(a, b)| ((a - b).abs() / b.abs().max(1e-30))).fold(0.0f64, f64::max);
+    let maxrel = fv
+        .iter()
+        .zip(&pv)
+        .map(|(a, b)| (a - b).abs() / b.abs().max(1e-30))
+        .fold(0.0f64, f64::max);
     println!("parity f32: dtype={dt:?} (was F64) max_rel_err={maxrel:.2e} (within tol: {})", maxrel < 1e-5 && fv.len() == pv.len());
 
     // perf [N=200k, D=128] dim=1
