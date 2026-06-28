@@ -4,6 +4,31 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): f32 logaddexp 11.98x SLOWER -> 1.56x FASTER (f32-native single pass, drop the apply_function f32->f64 upcast)
+
+Agent `BlackThrush`. The asymmetric-dtype sweep (`crates/ft-api/examples/asym_dtype_sweep_h2h.rs`)
+found logaddexp the BIGGEST gap at **11.98x SLOWER** (212ms vs torch 18ms @16M f32). logaddexp had
+a no-grad fast path ONLY for f64 (routes to the single-pass parallel `_custom`); f32 fell to the
+composed finite path (128MB upcast x2 + finite scan + ~9 SEPARATE tape ops incl. libm exp/log).
+
+⚠️DIAGNOSIS LESSON (cost a cycle): I first extended the gate to route f32 through `_custom` too —
+still 215ms. Instrumented (env-gated eprintln timing): the f32 path WAS hit and output WAS f32, but
+`_custom` itself took 215ms because the generic `tensor_apply_function` (forward sig `&[(&[f64],..)]`)
+UPCASTS both f32 inputs to f64 (2x 128MB) inside the tape before the parallel map — the f64 path is
+fast precisely because it skips that. So routing-through-the-f64-helper does NOT fix an f32 upcast;
+you need a TRUE f32-native read. Instrument timing before assuming a shared helper is fast for f32.
+
+FIX: read both f32 inputs BORROWED (`contiguous_values_f32`) and compute
+`stable_logaddexp_value(x as f64, y as f64) as f32` in one rayon par_iter().zip pass (per-element f64
+math in-register, narrowed to f32 — no 256MB upcast, no f64 intermediate, no 9-op tape). MEASURED:
+**212ms -> 9.9ms = 1.56x FASTER vs torch** (FT default cores; ~21x self-speedup). At 8t it's 1.78x
+SLOWER (libm-vs-SLEEF transcendental wall — torch's vectorized exp wins per-core; FT compensates with
+cores, the "FT default" scorecard convention). TOLERANCE op (1e-9 golden, exp/log libm-vs-SLEEF) so
+f64-compute-narrow is within tol; bit-identical to the f64-routed-then-narrowed `_custom`. Tests
+GREEN: ft-api logaddexp 10/0, ft-conformance metamorphic 2/0. STILL-OPEN (same sweep): nanmedian
+1.22x SLOWER (median radix-select sibling w/ NaN-skip), masked_select 2.0x SLOWER (compaction);
+copysign/isin/cummax_dim already FASTER.
+
 ## 2026-06-28 - ★WIN (landed): bincount/cummax/cummin missing-dtype fast paths — 4-6.5x SLOWER -> parity-or-FASTER (remove upcast/gather/serial bugs)
 
 Agent `BlackThrush`. A histogram/cumulative sweep (`crates/ft-api/examples/hist_embed_sweep_h2h.rs`)
