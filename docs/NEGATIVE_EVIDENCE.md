@@ -4,6 +4,28 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - NEGATIVE (reverted): cross-product f32 fused fast path — 1.15-1.33x SLOWER vs torch (torch f32 is SIMD-vectorized)
+
+Agent `CrimsonForge`. tensor_cross has a no-grad f64 per-row fused fast path (2.2-2.64x FASTER vs
+torch, re-confirmed this run); f32 fell to the composed broadcast+narrow/mul/sub/cat path. Added the
+analogous F32-gated per-row fused path (BIT-EXACT, 0/12 vs torch f32 AND f64). MEASURED [2M,3]
+(cross_f32_h2h): cross_f32 1.15-1.33x SLOWER (FT ~3.2ms vs torch ~2.4ms), while cross_f64 stayed
+2.2-2.64x FASTER (FT ~4.3ms vs torch ~10ms). REVERTED. ★ROOT: torch's f32 cross is SIMD-vectorized
+(2.4ms, ~4x its own f64 at 10ms); FT's scalar-parallel per-row f32 only matches f64-class speed, so
+it beats torch's slow f64 but loses to torch's fast f32. A SIMD f32 cross (f32x8 across rows, but
+the [N,3] stride-3 layout is SIMD-hostile) might flip it — not worth it for a niche op.
+
+★★META-INSIGHT (3 consecutive f32 sibling-sweep NEGATIVES this session — renorm, multilabel_margin,
+cross — ALL the same root): a scalar-parallel f32 fast path BEATS torch ONLY when torch's own f32
+path is SLOW (composed / serial / un-vectorized: cosine_similarity, pairwise_distance, triplet,
+cosine_embedding, multi_margin ALL won 4-16x because torch was composed/serial there). When torch
+has a FAST SIMD-vectorized f32 kernel (cross, the multilabel compute, the renorm copy), FT's
+scalar-parallel rewrite only reaches ~parity-or-slightly-slower. RULE before attempting an f32
+sibling-sweep: measure torch's f32 baseline FIRST — if torch f32 is already ~as-fast-as torch f64
+or faster (= it's vectorized), it is NOT winnable with scalar-parallel Rust (need SIMD, usually
+SIMD-hostile layout). The ft-api f32 loss/distance sibling-sweep vein is now EXHAUSTED for
+scalar-parallel wins. Finder: crates/ft-api/examples/cross_f32_h2h.rs.
+
 ## 2026-06-28 - NEGATIVE (reverted): multilabel_margin_loss f32 fused fast path — 1.15-1.29x SLOWER vs torch (compute-bound; torch tuned)
 
 Agent `CrimsonForge`. multilabel_margin_loss has the SAME apply_function serial structure as
