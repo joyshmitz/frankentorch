@@ -4,6 +4,35 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): 1-D movement ops flip/roll/repeat_interleave 5.9-9.0x SLOWER -> 3.0-3.2x FASTER
+
+Agent `BlackThrush`. A broad movement-op sweep (`crates/ft-api/examples/movement_sweep_h2h.rs`,
+~16M f32, torch 8t, min-of-7) found tril/triu/index_select already FASTER but THREE big 1-D gaps —
+each a sequential-write op left serial / round-tripped for the 1-D (outer==1) shape:
+- **flip** **8.97x SLOWER (98.6ms) -> 3.06x FASTER (3.8ms)**. Two bugs: (1) it precomputed a
+  `col_map` Vec of `in_last` usizes — for a 1-D flip that's a **128MB index Vec allocated every
+  call** (dominated); (2) `par_chunks_mut(in_last)` = ONE chunk when in_last==numel = serial. Fix:
+  compute the reversed/identity source column INLINE (no col_map), grain-based flat fill that walks
+  rows internally (contiguous copy_from_slice when last dim not flipped; reverse element-read when
+  it is).
+- **roll** **5.85x SLOWER (62.9ms) -> 3.15x FASTER (3.6ms)**. `par_chunks_mut(block)` over outer
+  slices = ONE chunk for a 1-D roll (outer==1) = TWO serial 16M copies. Fix: grain-based flat
+  rotation fill (out[k<split]=in[cut+k], out[k>=split]=in[k-split], both contiguous runs).
+- **repeat_interleave** **5.98x SLOWER (61ms) -> 3.22x FASTER (3.7ms)**. TWO compounding causes:
+  (1) it ran through `tensor_apply_function` which reads the input as f64 -> an f32 input was UPCAST
+  to f64, materialized into a 128MB f64 intermediate, narrowed back = round-trip; (2) the old
+  fill chunked `par_chunks_mut(repeats)` = one rayon task PER input lane (4M tiny tasks for
+  repeats=4). Fix: no-grad NATIVE fast path building the output directly in the input dtype with a
+  coarse-grain run-fill (out[g]=vals[g/repeats]). ⚠️CRITICAL micro-lesson: my first cut used
+  `tensor(input)?.$read()?.to_vec()` to release the borrow before `self.tensor_variable` — that
+  input clone left it at 12.4ms (1.17x SLOWER); switching to a SCOPED borrow (build into a
+  built_f32/built_f64 Option inside a block, return after) dropped it to 3.7ms (2.88x FASTER).
+  Never `.to_vec()` to dodge the borrow checker on a hot path — scope the borrow instead.
+
+All BIT-IDENTICAL (pure copies / reversed reads, same values same order). Tests GREEN: ft-api
+flip/roll/repeat_interleave 29/0. Sequential-write 1-D movement vein now harvested (cat/stack,
+repeat/tile, flip/roll/repeat_interleave all FASTER; tril/triu/index_select/pad/kron already were).
+
 ## 2026-06-28 - ★★WIN (landed): GENERAL repeat/tile (any pattern, f32+f64) up-to-1.34x SLOWER -> 2.9-3.6x FASTER
 
 Agent `BlackThrush`. Followed `212cee08` (f32 last-dim mirror) by GENERALIZING `tensor_repeat`'s
