@@ -43,6 +43,53 @@ metric). dtype now F32. ★PATTERN (same as cosine_similarity, normalize-fused):
 composed distance/similarity ops are slow -> FT fused single-pass per row flips 8-14x AND fixes
 dtype/eps. File: crates/ft-api/src/lib.rs (tensor_pairwise_distance). Conformance GREEN.
 
+## 2026-06-28 - WIN+FIX (landed): f32 soft_margin_loss fused fast path (ORIG F64 dtype leak + 16.60x slower; now 1.53x FASTER vs PyTorch)
+
+Agent `BlackThrush`. Land-or-dig scan found no unlanded measured bench-worktree
+win: the addcmul FMA worktree was already represented on `origin/main`, and the
+other non-ancestor bench worktree was an explicit gxpb2 rejection. Dug the
+remaining loss-family sibling gap from the recent hinge/smooth_l1/margin-rank
+sequence. `tensor_soft_margin_loss` had an f64 no-grad fused path, but f32 fell
+through the composed path: `mul -> neg -> exp -> full(1.0 F64) -> add -> log`.
+On ORIG `b28ce172`, this returned an F64 scalar for f32 inputs, unlike
+PyTorch's f32 output, and paid the full composed cost.
+
+Lever: add a contiguous f32 no-grad fused path computing
+`ln(1 + exp(-(target * input)))` in one f32 pass, then route `none`/`mean`/`sum`
+through existing tensor reductions. The composed fallback now uses `full_like`
+instead of `full`, so grad-enabled f32 stays dtype-compatible and continues to
+propagate through the op graph. Behavior proof: focused f32 tests compare the
+fast path against the explicit composed f32 `full_like` graph for all reductions
+and verify grad propagation/dtype for the grad path. The H2H probe prints f32
+parity values beside PyTorch; values agree within expected f32 libm display
+rounding.
+
+Measured ORIG in detached scratch worktree
+`/data/projects/.scratch/frankentorch-blackthrush-softmargin-orig-20260628T0328Z`
+at `b28ce172` with the same 16M f32 mean workload:
+`OK dtype=F64`; `ORIG soft_margin_f32_mean 228.5461 ms`. Candidate H2H via
+`AGENT_NAME=BlackThrush PYTORCH_PYTHON=/data/projects/.venvs/frankentorch-pytorch-cpu/bin/python
+CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo run --release -p ft-api --example soft_margin_f32_h2h`
+measured `FT soft_margin 13.7699 ms`, `PT soft_margin 21.0294 ms`, with
+`relu` anchor healthy (`FT 6.0707 ms`, `PT 11.6405 ms`). Ratio vs ORIG:
+`228.5461/13.7699 = 16.60x` FT speedup and PyTorch-relative
+`10.87x SLOWER -> 1.53x FASTER`; dtype is now F32.
+
+Per-crate Criterion bench:
+`AGENT_NAME=BlackThrush CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-b
+rch exec -- cargo bench -p ft-api --bench ops_bench soft_margin/nograd_f32_8m -- --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot`
+on remote `vmi1264463` measured `soft_margin/nograd_f32_8m`
+`[53.920 ms 66.530 ms 90.558 ms]`. Focused test:
+`rch exec -- cargo test -p ft-api soft_margin_loss_f32 --lib`, green. Build:
+`rch exec -- cargo check -p ft-api --all-targets`, green, with unrelated
+pre-existing warnings in `crates/ft-api/examples/cossim_f32_h2h.rs`. Conformance:
+`rch exec -- cargo test -p ft-conformance` on `ovh-a`, green. Formatting:
+direct Rust 2024 rustfmt check of the new example is green; broader cargo fmt
+check is blocked by unrelated pre-existing formatting drift in example files.
+The literal `cargo bench --release` form remains invalid for Cargo bench; the
+valid per-crate bench-profile command above is the measured proof. AGENT_NAME=BlackThrush.
+
 ## 2026-06-28 - WIN (landed): f32 histogramdd native bins (ORIG 10.90x -> 4.75x SLOWER vs torch; 2.30x FT-side)
 
 Agent `SilverLake`. BOLD-VERIFY found no qualifying unlanded measured scratch win: the old addcmul-FMA
