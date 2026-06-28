@@ -4,6 +4,47 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - WIN+FIX (landed): interpolate native f32 fast path (F32 ERROR -> works + 1.20-2.07x FASTER vs torch; F64-output dtype bug -> F32)
+
+Agent `BlackThrush`. `tensor_interpolate` read `tensor.storage()?.to_vec()` (F64-only) BEFORE mode
+dispatch, so EVERY F32 interpolate ERRORED with `DenseTensor(UnsupportedStorageAccess { dtype: F32 })`;
+the legacy path also always built an F64 output tensor (dtype bug — torch preserves F32). Added a
+`!requires_grad && dtype==F32` fast path `interpolate_f32` that mirrors the validation, reads contiguous
+f32 storage, and samples natively in f32 for nearest / linear(1d) / bilinear / bicubic / trilinear (area
+delegates to the dtype-preserving adaptive avg pool). Coordinates/weights stay f64 (robust flooring —
+identical integer taps as the f64 path); only the per-output accumulation + storage are f32, so output is
+F32. Grad and non-F32 inputs fall through to the byte-unchanged f64 path (conformance/goldens are f64 ->
+untouched).
+
+Parity: interpolation is a tolerance op (`interpolate_matches_torch_goldens` asserts `<1e-5`). Measured vs
+torch 2.12 f32: bilinear bit-exact on the [1,1,2,2]->4x4 golden and on the [1,2,4,5]->[8,10] probe; bicubic
+max_abs 5e-9 — all << 1e-5. New lib test `interpolate_f32_matches_torch_and_preserves_dtype` (bilinear +
+bicubic goldens within 1e-5, nearest exact gather, F32-dtype asserts) GREEN.
+
+Perf H2H (`crates/ft-api/examples/interp_f32_probe.rs`, LOCAL same-machine, torch 8 threads, min-of-7,
+[8,16,128,128] -> x2 = [8,16,256,256]; both f32 cases ERRORED before this change):
+- FT default cores (64-core box): bilinear f32 FT 4.391 ms vs PT 6.939 ms = **1.58x FASTER**; bicubic f32
+  FT 6.703 ms vs PT 13.881 ms = **2.07x FASTER**.
+- FT @ RAYON_NUM_THREADS=8 (same-thread A/B): bilinear f32 FT 5.959 vs PT 7.294 = **1.22x FASTER**;
+  bicubic f32 FT 12.174 vs PT 14.650 = **1.20x FASTER**.
+- The f32 `add` anchor (FT 1.10-1.30 ms vs torch ~0.09 ms) shows FT carries ~1.1 ms fixed per-op session
+  overhead, so the kernel-level win is conservative (subtracting it, bilinear is ~2.1x, bicubic ~2.6x).
+- f64 path is unchanged here (FT bilinear f64 ~1.08x slower / bicubic f64 ~1.40x faster vs torch) — pre-
+  existing, not part of this lever.
+
+Build was via rch on a torch-less worker (the worker binary needs GLIBC_2.43, can't run locally), so the
+H2H was run from a LOCAL `cargo build` (`/data/projects/.rch-targets/torch-cc-LOCAL`) against the
+`.venv-oracle` torch, same machine. Full `cargo test -p ft-api` = 2396 passed, my new test passed; the only
+2 failures (`cdist_p_neq2_fused_nograd_matches_broadcast_bit_exact`,
+`pdist_p_neq2_fused_nograd_matches_broadcast_bit_exact`) are PRE-EXISTING worker-dependent f64 powf 1-ULP
+flakes — confirmed identical on a clean origin/main (8edfd385) worktree (same `3.5928145470915247 vs
+3.592814547091525`), independent of this additive interpolate diff.
+
+NOTE for retries: a *bit-exact* f32 interpolate is WALLED — torch's CPU upsample uses a vectorized
+weight-precompute (FMA) kernel; no scale/index/weight/accumulate dtype combo nor Rust `mul_add` matched it
+(residual ~3-4e-7, ~half the elements off by f32 ULP). This lever lands under the established interpolate
+*tolerance* policy, not bit-exact.
+
 ## 2026-06-28 - WIN+FIX (landed): multilabel_soft_margin_loss no-grad row fast path (f32 ERROR -> 10.90x FASTER vs torch; f64 2.05x SLOWER -> 20.04x FASTER vs torch; 46.64x vs ORIG Criterion)
 
 Agent `SilverLake`. BOLD-VERIFY first checked non-main bench worktrees: the old addcmul FMA branch was
