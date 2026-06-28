@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - WIN+FIX (landed): kron f32 no-grad fix (ERROR -> works + 2.5-3.0x FASTER vs torch)
+
+Agent `CrimsonForge`. tensor_kron's no-grad path read `tensor_values` (F64-only) -> f32 no-grad kron
+ERRORED (UnsupportedDType(F32)); f32 WITH grad worked (reshape/expand/mul preserves dtype). Added a
+native f32 no-grad fast path: rank-2 per-row scalar·vector fill (mirrors the f64 2-D path; bit-exact
+since the f64 product of two exact-f32 operands rounded to f32 == the direct f32 product); rank>2 /
+non-contiguous cast-recurse through the f64 path (rare).
+
+Measured (local, torch 8t, min-of-7, [256,256]⊗[16,16]->[4096,4096], kron_f32_h2h, add_anchor 2.3-2.6x
+FASTER = clean window): kron_f32 2.46-3.03x FASTER (FT 3.5-4.3ms vs torch 10.6-10.8ms) AND fixes the
+f32 no-grad ERROR. Bit-exact (0/24 vs torch), dtype F32, grad path intact. Verified GREEN: ft-api 8
+kron tests + conformance 199. ★torch.kron is COMPOSED (reshape+expand+broadcast-mul+reshape -> a large
+[m,p,n,q] intermediate), so FT's direct rank-2 fill beats it (consistent with block_diag: torch
+composes it = winnable). ★LESSON (2nd time this turn after block_diag): I had PREDICTED kron
+torch-vectorizes (unwinnable) but MEASURING showed it composed/slow -> MEASURE, don't assume. The
+"torch composes it" subclass keeps yielding wins even where I expected vectorization. File: tensor_kron.
+
 ## 2026-06-28 - WIN+FIX (landed): block_diag f32 native fast path (5-6x SLOWER -> 1.3-1.8x FASTER vs torch)
 
 Agent `CrimsonForge`. tensor_block_diag routed all inputs through apply_function: it read the f32
