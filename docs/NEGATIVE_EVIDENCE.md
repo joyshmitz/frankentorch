@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - WIN+FIX (landed): cosine_embedding_loss f32 fused fast path (f32 ERRORED -> works + 11.8-12.0x FASTER vs torch)
+
+Agent `CrimsonForge`. tensor_cosine_embedding_loss composed cosine_similarity -> self.full[F64]
+ones/margin/zeros + `tensor_eq(target[F32], ones[F64])` -> on f32 input that comparison hit a dtype
+mismatch and the whole op ERRORED (a pre-existing f32 bug; torch.cosine_embedding_loss(f32)->f32).
+[NOTE: this errors INDEPENDENT of the cosine_similarity F32 fix fa2e6a44 — tensor_eq(target,ones)
+mismatches regardless of the cos dtype, verified.] Added an F32-gated no-grad fused fast path: per
+row cos = dot/max(||x1||*||x2||,eps); loss = (y==1)?1-cos:max(0,cos-margin); then reduce.
+F64 / grad / non-contiguous fall through UNCHANGED (the tight 1e-9 ft-nn golden grjsb + the
+CosineEmbeddingLoss module path both use F64 -> untouched; verified GREEN).
+
+Measured (local, torch 8t, min-of-9, [200k,128] mean, cosemb_h2h, add_anchor 2.0x FASTER = low
+contention): cos_emb_f32 11.76-12.00x FASTER. Parity within tol (max_rel 1.27e-9). dtype now F32.
+★PER-ROW COMPOSED VEIN COMPLETE this session: cosine_similarity (fa2e6a44) + pairwise_distance
+(8ae9a3ca) + triplet_margin (fb6faa3b) + cosine_embedding ALL fused single-pass-per-row, 4-14x
+FASTER + dtype/correctness fixes. File: tensor_cosine_embedding_loss.
+
 ## 2026-06-28 - WIN+FIX (landed): triplet_margin_loss fused fast path (F64 dtype bug + 1.96x SLOWER; now 8.9-11.6x / 12.2-12.8x FASTER vs torch)
 
 Agent `CrimsonForge`. ft-api `tensor_triplet_margin_loss` (via _swap) composed sub*2 ->
