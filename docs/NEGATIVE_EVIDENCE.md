@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - NEGATIVE (reverted): renorm f32 dim==0 fused fast path — 2.4-2.8x SLOWER vs torch (full-copy bandwidth wall)
+
+Agent `CrimsonForge`. renorm has a no-grad f64 dim==0 fused fast path; f32 falls to the composed
+full_like path (correct, fk5l). Added an f32 sibling (borrow contiguous_values_f32, per dim-0 slice
+|x|^p -> norm -> conditional scale; p=2 via x*x+sqrt), expecting a normalize-style win. MEASURED
+[200k,128] dim0 p=2 (renorm_h2h, add_anchor 1.28-1.55x FASTER = low contention): renorm_f32
+2.06-2.81x SLOWER than torch (66-70ms vs 24-28ms). Parity perfect (f32 max_rel 3.56e-9, f64
+BIT-EXACT 0.0). REVERTED. ★ROOT = OUT-OF-PLACE FULL-TENSOR COPY: renorm produces a new [200k,128]
+(100MB) tensor that is MOSTLY an unchanged copy (only over-norm slices are scaled) -> the cost is
+the clone + output write (3-4 numel passes), NOT the norm compute (switching powf->x*x gave ZERO
+perf change, proving compute is not the bottleneck). Same wall as diagonal_scatter (out-of-place
+full-copy = torch's tuned memcpy beats a Rust clone+rewrite). The existing f64 fused path almost
+certainly does NOT beat torch either (identical structure) — it only beat the ~10-pass composed
+path. DO NOT re-probe renorm (any dtype) for a torch-beating perf WIN; it is bandwidth-walled.
+Finder: crates/ft-api/examples/renorm_h2h.rs.
+
 ## 2026-06-28 - WIN+FIX (landed): cosine_embedding_loss f32 fused fast path (f32 ERRORED -> works + 11.8-12.0x FASTER vs torch)
 
 Agent `CrimsonForge`. tensor_cosine_embedding_loss composed cosine_similarity -> self.full[F64]
