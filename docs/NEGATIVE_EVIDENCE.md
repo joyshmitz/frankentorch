@@ -4,6 +4,20 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - WIN (landed): cartesian_prod f32 native fast path (14x SLOWER -> 5.6-5.9x FASTER vs torch)
+
+Agent `CrimsonForge`. tensor_cartesian_prod precomputed a Vec<Vec<usize>> index mapping SERIALLY over
+ALL total_rows (16.7M serial pushes for 2x[4096]) then gathered through apply_function (f64 upcast) ->
+measured 989ms = ~14x SLOWER than torch (~53-71ms) at [16.7M,2]. Added an F32-gated no-grad native path:
+decode each output row's per-tensor index on the fly via mixed-radix division (stride_k =
+prod(lengths[k+1..])), gather the f32 values directly, parallel over rows -> 9.3ms = 5.6-5.9x FASTER
+(a ~100x internal flip; add_anchor 1.5-2.2x = clean). Bit-exact (0/36, pure value gather), dtype F32.
+Grad / non-F32 / non-contiguous fall through. Verified GREEN: ft-api 3 cartesian_prod tests +
+conformance 199. ★ALMOST SKIPPED as "niche" — measuring found a 14x deficit (3rd time this turn
+measurement beat my assumption: block_diag, kron, cartesian_prod all won where I'd have guessed
+exhausted/unwinnable). The "serial-precompute-then-apply_function-f64-gather" anti-pattern is the tell.
+File: tensor_cartesian_prod. (tensor_combinations may have the same serial mapping -> next.)
+
 ## 2026-06-28 - WIN+FIX (landed): kron f32 no-grad fix (ERROR -> works + 2.5-3.0x FASTER vs torch)
 
 Agent `CrimsonForge`. tensor_kron's no-grad path read `tensor_values` (F64-only) -> f32 no-grad kron
