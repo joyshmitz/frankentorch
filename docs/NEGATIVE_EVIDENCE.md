@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - WIN+FIX (landed): triplet_margin_loss fused fast path (F64 dtype bug + 1.96x SLOWER; now 8.9-11.6x / 12.2-12.8x FASTER vs torch)
+
+Agent `CrimsonForge`. ft-api `tensor_triplet_margin_loss` (via _swap) composed sub*2 ->
+tensor_norm_dim*2 (libm powf even for p=2) -> self.full[F64]*2 (margin+zeros, always F64 -> f32
+input returned F64, a dtype bug; torch->f32) -> maximum -> reduce. Measured 1.96x SLOWER (f32) /
+1.09x SLOWER (f64) vs torch AND wrong f32 dtype. Added a no-grad fused fast path (f32 + f64,
+last-dim reduce, contiguous, swap+reduction-aware): one parallel pass per row computing
+relu(d_pos - d_neg + margin), eps=0 (matching the existing norm + the eps-tolerant ft-nn golden
+buluv). Grad / non-contig / mixed-dtype / other reductions fall through.
+
+Measured (local, torch 8t, min-of-9, [200k,128] mean, triplet_h2h, add_anchor 1.72-2.37x FASTER =
+low contention, 3 runs): triplet_f32 8.95-11.63x FASTER, triplet_f64 12.21-12.84x FASTER. Parity
+within tol (max_rel 2.66e-6, FT eps=0 vs torch eps=1e-6). dtype now F32. ★The ft-nn
+TripletMarginLoss MODULE has its OWN composed path (impl @15823) and does NOT delegate to this
+ft-api session fn -> all 7 ft-nn triplet tests + conformance unaffected (verified GREEN). PATTERN:
+per-row composed distance/similarity ops (cosine_similarity, pairwise_distance, triplet_margin)
+flip 4-14x when fused. File: tensor_triplet_margin_loss_swap.
+
 ## 2026-06-27 - WIN+FIX (landed): pairwise_distance fused fast path (eps-AFTER bug + F64 dtype + powf; now 8.4-10.3x / 11.7-14.2x FASTER vs torch)
 
 Agent `CrimsonForge`. ft-api `tensor_pairwise_distance` had THREE problems vs torch
