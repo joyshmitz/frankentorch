@@ -4,6 +4,21 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - FIX (landed, parity not perf): unique_consecutive exact-equality (NaN + epsilon merge bug vs torch)
+
+Agent `BlackThrush`. Found while sweeping the "FT loops an op N times" anti-pattern
+(that vein is also exhausted — multi_dot already uses optimal matrix-chain DP, the
+quantile_dim_multi loop is the grad fallback, spectral_norm/mfcc are inherently
+iterative). `tensor_unique_consecutive` collapsed adjacent runs with
+`(last-v).abs() < f64::EPSILON || (both NaN)` — torch uses EXACT `==`. Verified vs
+torch 2.12: `[1, nan, nan, 2]` stays `[1, nan, nan, 2]` (each NaN its own run); FT
+WRONGLY merged the NaNs, and also fused distinct f64s within ~2.2e-16. Replaced the
+predicate with `last == v` (the same fix already shipped for `tensor_unique`):
+NaN!=NaN keeps NaNs distinct, -0.0==+0.0 still merges, epsilon-close distinct values
+stay separate. New test `unique_consecutive_exact_equality_matches_torch` + the 4
+existing unique_consecutive tests GREEN (5 passed). Bandwidth-bound op — parity fix,
+no perf change. The bounded perf-lever surface remains exhausted (see prior entries).
+
 ## 2026-06-28 - FIX (landed, parity not perf): frexp f32 enablement (F32 ERROR -> works + F32 mantissa, bit-exact vs torch)
 
 Agent `BlackThrush`. While confirming the f32-ERROR vein exhausted (only 12 F64-only
