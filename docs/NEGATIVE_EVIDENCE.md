@@ -4,6 +4,30 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★WIN (landed): bincount/cummax/cummin missing-dtype fast paths — 4-6.5x SLOWER -> parity-or-FASTER (remove upcast/gather/serial bugs)
+
+Agent `BlackThrush`. A histogram/cumulative sweep (`crates/ft-api/examples/hist_embed_sweep_h2h.rs`)
+found embedding(10.96x)/onehot(1.95x)/countnz already FASTER, but THREE ops with a missing-dtype
+fast path falling to the slow generic (upcast/serial/gather) path:
+- **bincount f64** 6.55x SLOWER (137ms) -> **1.0-1.27x FASTER** (~12-20ms). bincount had an F32
+  fast path but F64 is the COMMON case (FT stores integer index tensors as f64) — it fell to
+  `tensor_values_lossy_f64` + a SERIAL validate/max/count. Added the f64 sibling (parallel
+  par_chunks local-histogram + merge; bounded chunks ~4x threads, NOT par_iter().fold whose
+  unbounded accumulators made 64t SLOWER than 8t). At the scatter/bandwidth ceiling = torch.
+- **cummax f32 / cummin f32** 4.05x SLOWER (446ms) -> **~parity** (109ms, 1.03x). These had an
+  F64 fast path but f32 fell to `tensor_values_lossy_f64` (128MB upcast) + serial argmax scan +
+  a 16M `index_select` GATHER of x[cum_idx] + ~5x-numel allocs. Added the f32 sibling: build
+  cum_vals DIRECTLY in the scan (cum_vals[i]=vals[max_idx], no gather, no upcast, output stays
+  f32). cummax/cummin are SCANS (sequential dependency) so the serial scan is the algorithmic
+  FLOOR — torch's cummax is also ~106ms serial; FT now matches it (was 4x above the floor).
+
+All BIT-IDENTICAL (integer counts order-invariant; same >=/<=/NaN-propagation scan rules; output
+dtype preserved). Tests GREEN: bincount/cummax/cummin 23/0. These land at parity-or-slight-win, NOT
+2x — torch's bincount (bandwidth) and cummax (serial scan) are already at their algorithmic ceilings,
+so this is GAP-CLOSING (removing FT-specific upcast/gather/serial overhead to reach the ceiling), not
+an overshoot. The remaining 109ms cummax is the inherent serial scan (a parallel Blelloch scan would
+change FP-association -> NOT bit-exact for cumsum-class, and cummax indices are tie/NaN-sensitive).
+
 ## 2026-06-28 - ★WIN (landed): f64 median 1.05x SLOWER -> ~1.5x FASTER (u64 masked-histogram radix-select, sibling of the f32 median lever)
 
 Agent `BlackThrush`. Extended the ratified f32 median radix-select (ed142dab) to the f64 path. A
