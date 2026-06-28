@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - WIN+FIX (landed): multi_margin_loss f32 fused fast path (16x SLOWER -> 2.3-5.3x FASTER vs torch)
+
+Agent `CrimsonForge`. tensor_multi_margin_loss routed the f32 input through apply_function: it
+upcast f32->f64, ran the O(N*C) hinge SERIALLY (a plain `for i in 0..n` loop), and cloned input
+for backward -> measured 16.05-16.91x SLOWER than torch on [200k,128] (325-348ms vs 20ms;
+add_anchor 2.7-2.9x FASTER = clean window). (dtype was already F32 — no dtype bug here.) Added an
+F32-gated no-grad fused fast path: borrow contiguous_values_f32, parallelize over the N samples,
+compute the per-sample multi-margin hinge in f32 (weight indexed by true class y; same per-sample
+math as the composed closure), output F32. Grad / non-contig / non-F32 / other reductions fall
+through unchanged.
+
+Measured (local, torch 8t, min-of-7, [200k,128] p=1 mean, multimargin_h2h): 2.26-5.34x FASTER
+(FT 4-9ms vs torch ~20ms; cleanest anchor-2.65x run = 5.34x). Parity max_rel 1.91e-9 (tighter than
+the old f64-upcast path's 1.35e-7). Verified GREEN: ft-nn 4 + ft-api 9 multi_margin tests +
+conformance 199. ★KEY ANTI-PATTERN = apply_function with a SERIAL per-sample loop (not just the
+f64 upcast): a parallel f32 rewrite flips 16x. File: tensor_multi_margin_loss. multilabel_margin_loss
+(L14448) has the SAME apply_function serial structure -> likely the same win (next).
+
 ## 2026-06-28 - NEGATIVE (reverted): renorm f32 dim==0 fused fast path — 2.4-2.8x SLOWER vs torch (full-copy bandwidth wall)
 
 Agent `CrimsonForge`. renorm has a no-grad f64 dim==0 fused fast path; f32 falls to the composed
