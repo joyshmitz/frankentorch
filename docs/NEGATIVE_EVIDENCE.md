@@ -4,6 +4,43 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - WIN (landed): multi-q quantile sort-once fast path — flips 1.79x LOSS to 2.54x WIN vs torch
+
+Agent `BlackThrush`. `tensor_quantile_multi` looped `tensor_quantile_interpolation`
+PER q; each q quickselects the lo AND hi order statistics (2 `tensor_kthvalue`),
+each over a fresh clone of the input — so k quantiles = 2k quickselects + 2k clones.
+MEASURED (`crates/ft-api/examples/quantile_multi_h2h.rs`, LOCAL same-machine, torch
+8t, N=8M f64, min-of-5): quantile_q5 FT 1375ms vs PT 750ms = **1.79x SLOWER**
+(single-q q1 was already 2.82x FASTER — the loop only loses when k grows).
+
+LEVER: a sort-once fast path gated `qs.len()>=3 && n>=8192 && no-grad && valid-interp
+&& all q in [0,1] && NaN-free && no -0.0`. Sort the flattened input ONCE via
+`tensor_sort` (the parallel radix from e6948289, dtype-aware) → one ascending sorted
+node, then each q reads its order statistic(s) by NARROWING the sorted tensor and
+reusing the SAME `tensor_lerp` as the loop. Since `sorted[k] == kthvalue(k+1)` and
+the lerp/index math are identical, the result is bit-for-bit identical to the per-q
+path. NaN (torch propagates) and -0.0 (radix canonicalizes +0.0/-0.0, whose tie order
+can differ from the loop's total_cmp) fall through to the unchanged loop; so do
+small/few-q inputs.
+
+Bit-exact PROOF: new `quantile_multi_sort_once_fast_path_matches_per_q_reference`
+(n=12000 → fast path; 8 q's incl q=0, q=1, on-index, fractional; ALL 5 interpolation
+modes linear/lower/higher/nearest/midpoint) asserts the fast path == the per-q
+`tensor_quantile_interpolation` reference byte-for-byte. `cargo test -p ft-api --lib
+quantile` = 21 passed, 0 failed.
+
+FINAL H2H (same harness, N=8M, min-of-5; the cost is now ONE parallel sort ~295ms vs
+the loop's ~1375ms):
+- FT default cores (64): quantile_q5 FT 295 vs PT 750 = **2.54x FASTER**; single-q q1
+  unchanged at 2.82x FASTER (loop, k<3); median 1.28x FASTER.
+- FT @ RAYON_NUM_THREADS=8 (same-thread A/B): quantile_q5 FT 462 vs PT 769 =
+  **1.67x FASTER** — wins at matched threads (was a 1.79x loss).
+
+Rollback: delete the fast-path block + `quantile_part_from_sorted` in
+`tensor_quantile_multi`; the per-q loop is untouched. Build via rch on a torch-less
+worker; H2H from a LOCAL build vs `.venv-oracle` torch (same machine). Fourth win in
+the radix-reuse vein (sort/argsort, unique inverse/counts, now multi-q quantile).
+
 ## 2026-06-28 - WIN (landed): unique return_inverse/return_counts sorted-dedup fast path — flips ~3.9x LOSS to 1.8-2.0x WIN vs torch
 
 Agent `BlackThrush`. `tensor_unique` had a sorted fast path ONLY for
