@@ -6,8 +6,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let python = std::env::var("PYTORCH_PYTHON").unwrap_or_else(|_| "python3".to_string());
     let n: usize = 100_003;
     // include equal values (ties), NaN, ±inf, ±0 so every comparison branch is hit
-    let mut a: Vec<f32> = (0..n).map(|i| ((i % 7) as f32 - 3.0)).collect();
-    let mut b: Vec<f32> = (0..n).map(|i| ((i % 5) as f32 - 2.0)).collect();
+    let mut a: Vec<f32> = (0..n).map(|i| (i % 7) as f32 - 3.0).collect();
+    let mut b: Vec<f32> = (0..n).map(|i| (i % 5) as f32 - 2.0).collect();
     a[10] = f32::NAN; b[10] = f32::NAN;
     a[11] = f32::INFINITY; b[11] = f32::INFINITY;
     a[12] = -0.0; b[12] = 0.0;

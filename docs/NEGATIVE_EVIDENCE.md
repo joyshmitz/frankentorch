@@ -4,6 +4,40 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - WIN (landed): f32 histogramdd native bins (ORIG 10.90x -> 4.75x SLOWER vs torch; 2.30x FT-side)
+
+Agent `SilverLake`. BOLD-VERIFY found no qualifying unlanded measured scratch win: the old addcmul-FMA
+worktree is already represented on main, and gxpb2 remains an explicit reject. Dug the last obvious
+count/selection-family candidate from the f32 histogram ledger: `tensor_histogramdd` still read f32 inputs
+through `tensor_values_lossy_f64`, materializing a full f64 copy before the already-parallel per-thread
+local-bin histogram. Graveyard mapping: vectorized/morselized local histograms and proof-preserving
+row-isomorphic counting; artifact discipline from alien-artifact/extreme-optimization = one lever, exact
+bin-count proof, crate-scoped bench, conformance gate.
+
+Lever: for contiguous no-grad F32 `histogramdd`, borrow the f32 storage, cast each lane to f64 at the same
+binning point (f32->f64 is exact), keep the existing range/bin-edge math, and count per-thread local bins as
+integers before one final f64 conversion. Grad, non-contiguous, non-F32 inputs, and all generic behavior fall
+through unchanged. Behavior proof: focused f32 small-bin test now checks full counts `[1,1,0,1]`; parallel
+golden still prints `histogramdd_parallel_golden_fnv=0x24229689d5b18809`
+(`sha256=a00f1f86778dfa2c872fceb3d5fe894c5279e055c6c91a1ec58f0909a63f2c2f`), and the added parallel f32
+case matches a f32-cast serial reference bit-for-bit.
+
+Measured latest-main ORIG (same local `rch exec` fallback target, valid bench-profile form):
+`AGENT_NAME=SilverLake CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cod-a rch exec -- cargo bench
+-p ft-api --bench ops_bench histogramdd/f32_1m_3d_16bins -- --warm-up-time 1 --measurement-time 3 --sample-size
+10 --noplot` measured `[26.838 ms 30.628 ms 32.924 ms]`. Candidate measured
+`[12.238 ms 13.344 ms 14.458 ms]`, Criterion p=0.00 improvement. Ratio vs ORIG: `30.628 / 13.344 = 2.30x`
+FT-side speedup. PyTorch CPU oracle for the same `[1<<20,3]` f32, 16 bins/range `[0,1]^3`, 8 threads measured
+best `2.810 ms`, so PyTorch-relative ratio improves from `30.628/2.810 = 10.90x SLOWER` to
+`13.344/2.810 = 4.75x SLOWER`. A remote candidate routing run on `hz2` measured `[2.9522 ms 3.0602 ms
+3.2853 ms]`, but RCH could not allocate a matching remote ORIG slot, so the decisive keep ratio is the same-local
+pair above. Validation: `cargo test -p ft-api histogramdd --lib -- --nocapture` PASS; `cargo check -p ft-api
+--all-targets` PASS warning-clean after tiny upstream example warning fixes; `cargo clippy -p ft-api --lib
+--tests --benches -- -D warnings` PASS; `cargo test -p ft-conformance` GREEN on `ovh-a` (199 lib + bins +
+integration/smoke/doc all ok). NOTE: full `cargo clippy -p ft-api --all-targets -- -D warnings` remains blocked
+by older example-only lint debt (`histc_f32_parity` needless_range_loop; several H2H probes type_complexity),
+not by this lever.
+
 ## 2026-06-28 - NEGATIVE (reverted): no-grad full-reduction shortcut and f32 SIMD-binary morsel retunes lost vs ORIG
 
 Agent `BlackThrush`. Land-or-dig worktree scan found no unlanded measured win:

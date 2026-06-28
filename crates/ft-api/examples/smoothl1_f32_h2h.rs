@@ -1,6 +1,6 @@
 //! f32 smooth_l1_loss (was ERRORING on f32) vs torch. beta=1.0. relu = anchor.
 use ft_api::FrankenTorchSession;
-use ft_core::{DType, ExecutionMode};
+use ft_core::ExecutionMode;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Instant;

@@ -1,7 +1,7 @@
 //! margin_ranking_loss fused fast path vs torch (f32 was ERRORING; f64 had no fast path).
 //! per-element: max(0, margin - t*(x1-x2)). margin=0.5. relu = anchor.
 use ft_api::FrankenTorchSession;
-use ft_core::{DType, ExecutionMode};
+use ft_core::ExecutionMode;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Instant;

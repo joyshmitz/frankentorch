@@ -2388,11 +2388,29 @@ fn bench_histogramdd(c: &mut Criterion) {
     let data: Vec<f64> = (0..samples * dims)
         .map(|i| ((i.wrapping_mul(1_103_515_245).wrapping_add(12_345)) & 0xffff) as f64 / 65535.0)
         .collect();
+    let data_f32: Vec<f32> = data.iter().map(|&v| v as f32).collect();
     group.throughput(Throughput::Elements(samples as u64));
     group.bench_function("f64_1m_3d_16bins", |bch| {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let t = s
             .tensor_variable(data.clone(), vec![samples, dims], false)
+            .unwrap();
+        bch.iter(|| {
+            black_box(
+                s.tensor_histogramdd(
+                    black_box(t),
+                    black_box(bins.as_slice()),
+                    Some(black_box(ranges.as_slice())),
+                    false,
+                )
+                .unwrap(),
+            )
+        });
+    });
+    group.bench_function("f32_1m_3d_16bins", |bch| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable_f32(data_f32.clone(), vec![samples, dims], false)
             .unwrap();
         bch.iter(|| {
             black_box(

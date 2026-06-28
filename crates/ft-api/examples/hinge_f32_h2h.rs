@@ -1,7 +1,7 @@
 //! f32 hinge_embedding_loss (was ERRORING on f32) vs torch. relu = anchor.
 //! per-element: t==1 ? x : max(0, margin-x). margin=1.0.
 use ft_api::FrankenTorchSession;
-use ft_core::{DType, ExecutionMode};
+use ft_core::ExecutionMode;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Instant;

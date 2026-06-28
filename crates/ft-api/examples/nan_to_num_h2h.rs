@@ -1,7 +1,7 @@
 //! nan_to_num no-grad fast path (f32+f64) vs torch. Was: ~9-pass composed (5 full_like + 2 eq
 //! + 2 where + isnan). add = anchor. nan_to_num(x): NaN->0, +inf->dtype_max, -inf->dtype_min.
 use ft_api::FrankenTorchSession;
-use ft_core::{DType, ExecutionMode};
+use ft_core::ExecutionMode;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Instant;

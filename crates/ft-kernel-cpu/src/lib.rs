@@ -29322,7 +29322,7 @@ fn product_f32_simd_contiguous(values: &[f32]) -> f32 {
             values[i + 6],
             values[i + 7],
         ]);
-        acc = acc * lanes;
+        acc *= lanes;
         i += SIMD_WIDTH_F32;
     }
 
