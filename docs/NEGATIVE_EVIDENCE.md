@@ -4,6 +4,27 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN+FIX (landed): pairwise_distance fused fast path (eps-AFTER bug + F64 dtype + powf; now 8.4-10.3x / 11.7-14.2x FASTER vs torch)
+
+Agent `CrimsonForge`. ft-api `tensor_pairwise_distance` had THREE problems vs torch
+(`torch.nn.functional.pairwise_distance` = `norm(x1 - x2 + eps, p, -1)`): (1) it added eps
+AFTER the norm (`norm(x1-x2)+eps`) — a correctness divergence (the ft-nn PairwiseDistance
+MODULE already does eps-inside; this ft-api fn diverged and was untested directly); (2) it
+built the eps const via `self.full(...)` which is ALWAYS F64 -> f32 input returned F64
+(dtype bug, torch->f32); (3) p=2 went through `tensor_norm_dim`'s libm `powf` (~10x a
+multiply) plus a full-size diff alloc. Added a no-grad fused fast path (last-dim reduce,
+contiguous, f32 AND f64): one parallel pass per reduced row computing
+`(sum |x1-x2+eps|^p)^(1/p)` directly in the input dtype (p=2 via x*x+sqrt). Composed
+fallback (grad / non-contig / mixed dtype) also fixed to eps-inside + `full_like` (dtype).
+
+Measured (local, torch 8t, min-of-9, [200k,128], pwdist_h2h, add_anchor 2.47-2.64x FASTER =
+low contention): pwdist_f32 8.44-10.25x FASTER, pwdist_f64 11.72-14.20x FASTER (pwdist_f64 is
+contention-immune, stable 5.9-7.2ms across all runs vs torch ~69-93ms). Parity: f64 BIT-EXACT
+(0.00e0) for p=1/2/3 incl the grad-path fallback; f32 within tol (max_rel ~1e-9, distance
+metric). dtype now F32. ★PATTERN (same as cosine_similarity, normalize-fused): torch's per-row
+composed distance/similarity ops are slow -> FT fused single-pass per row flips 8-14x AND fixes
+dtype/eps. File: crates/ft-api/src/lib.rs (tensor_pairwise_distance). Conformance GREEN.
+
 ## 2026-06-28 - WIN (landed): f32 histogramdd native bins (ORIG 10.90x -> 4.75x SLOWER vs torch; 2.30x FT-side)
 
 Agent `SilverLake`. BOLD-VERIFY found no qualifying unlanded measured scratch win: the old addcmul-FMA
