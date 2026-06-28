@@ -4,6 +4,25 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): f32 logit 7.4x SLOWER -> 1.6x FASTER, xlogy 5.2x SLOWER -> 3.2x FASTER (reuse the f32-native helpers)
+
+Agent `BlackThrush`. Applied the `try_f32_unary_native` / `try_f32_binary_native` helpers
+(60243856) to the next two cluster members. logit (eps=None) UPCAST to f64 via `to_dtype` +
+composed ~4 tape ops + narrowed; xlogy f32 fell to a ~8-pass composed path (the f64 fast path was
+gated `== F64`). Wired logit `(x/(1-x)).ln()` (unary) and xlogy `(x==0 && !isnan(y)) ? 0 : x*ln(y)`
+(binary) — both ~3 lines.
+
+MEASURED (FT default cores, torch 8t, min-of-7): logit **108ms -> 9.3ms = 1.59x FASTER** (1.05x @8t);
+xlogy **85ms -> 6.2ms = 3.17x FASTER** (1.26x @8t). Unlike the exp/bessel ops these beat torch at
+BOTH thread counts (a single `ln` per element is less transcendental-walled than exp/bessel-series).
+BIT-IDENTICAL to current f32 (logit already upcast-then-narrowed; xlogy's tensor_log routes f32
+through f64 — conformance confirms). Tests GREEN: logit/xlogy 25/0 + conformance 2/0.
+
+Elementwise-f32-upcast cluster from sweep2 now COMPLETE: hypot(2.2x)/logit(1.6x)/xlogy(3.2x) clean
+wins, i1e/i0e parity (bessel transcendental wall). Remaining `try_f32_unary_native` candidates = the
+rest of the special-function family (erfinv/digamma/gammaln/psi/etc. via apply_function) — all
+transcendental-walled (parity-class gap-closing), lower priority than algebraic ops.
+
 ## 2026-06-28 - ★★WIN (landed): f32-native elementwise helpers — hypot 13x SLOWER -> 2.2x FASTER, i1e/i0e 15x SLOWER -> parity (drop the apply_function/to_f64 upcast)
 
 Agent `BlackThrush`. Sweep 2 (`crates/ft-api/examples/asym_dtype_sweep2_h2h.rs`) found a CLUSTER of
