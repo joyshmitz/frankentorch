@@ -4,6 +4,41 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★LEAD (open, NOT walled): f32 softmax/log_softmax 9-10x SLOWER is a PERF/routing bug, not the SIMD-exp policy wall — round-trip hypothesis REFUTED
+
+Agent `BlackThrush`. IMPORTANT correction to the "exp-precision-walled" framing (entry
+2026-06-27, kgs4.173) AND to my own SIMD-exp decision-evidence entry: f32 softmax is
+NOT primarily blocked by the SLEEF-vs-libm parity wall. The conformance suite already
+compares softmax/log_softmax vs the torch oracle with `ULP_TOL = 8` (ft-conformance
+src/lib.rs ~39770; cross_entropy "within 32 ULP" ~14564) — it's a TOLERANCE op, so a
+~1-2 ULP SIMD exp is permitted WITHOUT a policy change. The real problem is a perf/path
+bug.
+
+MEASURED (`crates/ft-api/examples/softmax_simd_h2h.rs`, LOCAL, [8192,4096] f32 dim=1,
+torch 8t, min-of-7, add anchor 3.0-3.3x FASTER = clean): FT softmax 236 ms vs torch
+22-26 ms = **9.2-10.5x SLOWER**; log_softmax same. Barely scales with threads
+(236ms@64t vs 246ms@8t) => the cost is NOT the parallel kernel.
+
+The native f32 kernel `softmax_dim_tensor_contiguous_f32` is FAST at small reduce_size
+(kernel A/B [16384,256] dim=1 = 2.8 ms @64t, bit-exact serial==parallel), so the compute
+CAN be ~22 ms for this shape. So either (a) the API does not actually reach the native
+kernel for this case (apply_function tape path), or (b) the native kernel is pathological
+for LARGE reduce_size (4096-wide rows).
+
+REFUTED hypothesis (do NOT repeat): I theorized the cost was the f32->f64->f32 round-trip
+in `dispatch_tensor_normalize_dim_contiguous_typed` (the F32 branch routes through the
+f64-valued `dispatch_tensor_normalize_dim_contiguous_f32` then narrows back). Wrote an
+f32-native dispatch that skips the round-trip (bit-identical) — MEASURED 0 EFFECT (236ms
+unchanged). REVERTED. So the round-trip is not the bottleneck.
+
+NEXT (focused session, ~bounded once traced): instrument the f32 softmax path at
+[8192,4096] dim=1 — run `softmax_dim_tensor_contiguous_f32` directly at that exact shape
+(the A/B is hardcoded [16384,256]); if the kernel itself is ~236ms there, the bottleneck
+is the within-row scalar exp at large reduce_size (SIMD exp = the lever, within 8-ULP
+tolerance, per the decision-evidence entry below); if the kernel is ~22ms there, f32
+softmax is NOT reaching it and the fix is routing. Either way this is a real ~10x bounded
+win, the biggest open gap — distinct from a policy decision.
+
 ## 2026-06-28 - ★DECISION EVIDENCE: SIMD exp is ~10x faster at 1 ULP — the policy lever to unlock the whole exp-bound nn surface
 
 Agent `BlackThrush`. The bounded bit-exact perf surface is mined out (4 wins shipped:
