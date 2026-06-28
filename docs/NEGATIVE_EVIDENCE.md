@@ -4,6 +4,34 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): f32 dim-reduction round-trip removal — mean_dim 5.46x SLOWER -> 1.72x FASTER, var_dim 13x -> 161x (same anti-pattern as softmax)
+
+Agent `BlackThrush`. Generalized the softmax round-trip fix (56765cdd). Grepped ft-dispatch
+for the same `outcome.values.iter().map(|&v| v as f32)` narrow-after-f64-widen anti-pattern:
+`dispatch_tensor_reduction_dim_contiguous_f32` calls NATIVE f32 kernels (sum/mean/var/std/
+prod_dim_tensor_contiguous_f32) then `.map(f64::from)` widens to f64, and the typed dispatcher
+narrows back — a per-call f32->f64->f32 round-trip of the FULL OUTPUT. For a dim reduction whose
+output is LARGE (reducing a small dim of a big tensor, e.g. RGB->gray mean over the last dim),
+that round-trip dominates.
+
+MEASURED (`crates/ft-api/examples/redux_roundtrip_h2h.rs`, LOCAL, torch 8t, min-of-7, add anchor
+2.8x FASTER): [4096,2048,2] f32 reduce dim=2 -> [4096,2048] (8.4M output):
+- mean_dim: 70ms -> **6.6ms = 1.72x FASTER vs torch** (was 5.46x SLOWER); 8t 1.39x FASTER.
+- var_dim: 69ms -> 4.5ms = **161x FASTER** (8t 44.7x) — torch's var(size-2-dim) is itself
+  pathological at ~726ms, so the headline ratio is inflated; the honest internal gain is ~15x,
+  and mean_dim (torch fast at 11ms) is the representative flip.
+
+FIX: `dispatch_tensor_reduction_dim_contiguous_f32_native` returns the kernel f32 directly; the
+typed reduction-dim F32 + F16/BF16 branches use it. Covers Sum/Mean/Var/Std/Prod dim reductions.
+BIT-IDENTICAL (`(x as f64) as f32 == x`), zero parity risk -> conformance/goldens unchanged.
+Tests GREEN: ft-dispatch reduction 9/0, ft-api var_dim 5/0.
+
+REMAINING same-pattern sites (next): `dispatch_tensor_norm_dim_contiguous_typed` (norm along a
+dim), `dispatch_tensor_join_contiguous_typed` (cat/stack — measured cat 3.05x SLOWER here, but
+bandwidth so round-trip removal -> ~parity), lerp (already f32-native, fast), addmm/addmv, sort
+(slow kernel dominates so round-trip is a small fraction — already fast). The clear wins are the
+large-output + fast-parallel-kernel ops: normalize (done) and reduction-dim (done).
+
 ## 2026-06-28 - ★★★WIN (landed): f32 softmax/log_softmax 9-10x SLOWER -> 3.3-3.5x FASTER vs torch (eliminate the f32->f64->f32 dispatch round-trip)
 
 Agent `BlackThrush`. RESOLVES the LEAD below. The round-trip hypothesis was CORRECT all
