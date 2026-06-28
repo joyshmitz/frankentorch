@@ -37,6 +37,20 @@ pair above. Validation: `cargo test -p ft-api histogramdd --lib -- --nocapture` 
 integration/smoke/doc all ok). NOTE: full `cargo clippy -p ft-api --all-targets -- -D warnings` remains blocked
 by older example-only lint debt (`histc_f32_parity` needless_range_loop; several H2H probes type_complexity),
 not by this lever.
+## 2026-06-27 - WIN+FIX (landed): cosine_similarity f32 native per-row fast path (F64-dtype-bug -> F32; 4.6-6.4x FASTER vs torch)
+
+Agent `CrimsonForge`. cosine_similarity composed via tensor_sum_dim, which UPCASTS f32->F64 -> it returned
+F64 for f32 input (DTYPE BUG; torch.cosine_similarity(f32)->f32) AND paid 2x memory. Added a native-f32
+no-grad fast path for the common dim=last contiguous case: per-row dot / ||x1|| / ||x2|| in f32 (one
+parallel pass over rows), denom=max(n1*n2,eps), output F32.
+
+Measured (local, torch 8t, min-of-9, [200k,128] f32, cossim_f32_h2h, add_anchor 1.87-2.65x FASTER = low
+contention, 3 runs): cosine_sim 4.61-6.35x FASTER (torch's cosine_similarity is itself a SLOW composed op
+~76-89ms vs FT fused ~13-19ms); dtype now F32; value within tolerance (max_rel_err 2.13e-7 vs torch — a
+similarity metric, f32-precision). Also fixes cosine_embedding_loss's f32 dtype (composes cosine_similarity).
+★PATTERN extends beyond losses: torch's per-row composed ops (cosine_similarity) are slow -> FT fused per-row
+single-pass flips 4-6x. File: crates/ft-api/src/lib.rs (tensor_cosine_similarity). Other dims / grad /
+non-contiguous fall through (still upcast — a sum_dim f32-dtype fix would cover those, correctness-lane).
 
 ## 2026-06-28 - NEGATIVE (reverted): no-grad full-reduction shortcut and f32 SIMD-binary morsel retunes lost vs ORIG
 
