@@ -4,6 +4,27 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): f64 norm_dim 3.18x SLOWER -> 3.30x FASTER (parallelize the serial p=1/p=2 kernel branches)
+
+Agent `BlackThrush`. The f64 sibling of d248f167. `norm_dim_tensor_contiguous_f64` had the
+SAME serial p=1/p=2 branches (`for outer in 0..outer_size`) as the f32 kernel, with the same
+stale "cheap/bandwidth-bound, stay serial" comment — false for large output (reducing a small
+dim of a big tensor). f64 has NO dispatch round-trip (native), so this is a pure kernel fix.
+
+MEASURED (`crates/ft-api/examples/norm_f64_h2h.rs`, LOCAL, [4096,2048,2] f64 reduce dim=2 ->
+8.4M output, torch 8t, min-of-7, add anchor 3.8x FASTER):
+- norm2 (L2) BASELINE (serial) FT **55.7ms = 3.18x SLOWER** -> parallelized **5.53ms = 3.30x
+  FASTER** (8t 1.82x). ~10x internal.
+- norm1 (L1) 48 -> 5.0ms = **148x FASTER** (torch's L1-norm-over-small-dim is itself ~750ms).
+
+FIX: parallelize p=1 and p=2 with the per-output `compute(o)` closure + `into_par_iter().collect()`
+(the general-p branch already did this), bit-for-bit identical to the serial push order (o =
+outer*inner_size + inner). Tests GREEN: ft-kernel-cpu norm 20/0 (f32+f64). The norm round-trip+
+serial-kernel vein is now COMPLETE for both dtypes. ★The "fast-path-left-serial" anti-pattern
+(general case parallel, common cheap case serial under a false bandwidth-bound assumption) is the
+fresh sub-vein — grep ft-kernel-cpu for `for outer in 0..outer_size` ... `push(` siblings of an
+`into_par_iter` in the same fn.
+
 ## 2026-06-28 - ★★WIN (landed): f32 norm_dim 8.8x SLOWER -> 2.36x FASTER (round-trip removal + p=1/p=2 kernel parallelization)
 
 Agent `BlackThrush`. Continued the round-trip vein into norm_dim — but it needed TWO fixes

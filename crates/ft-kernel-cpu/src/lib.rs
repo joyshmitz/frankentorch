@@ -11906,25 +11906,44 @@ pub fn norm_dim_tensor_contiguous_f64(
             }
         }
     } else if p == 1.0 {
-        for outer in 0..outer_size {
-            for inner in 0..inner_size {
-                let mut sum = 0.0;
-                for r in 0..reduce_size {
-                    sum += data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
-                }
-                output.push(sum);
+        // Per-output o = outer*inner_size + inner; each output sums its own lane,
+        // so par_iter().collect() is bit-identical to the serial push. p=1/p=2 were
+        // SERIAL — for a large output (small reduce dim, big tensor) that strands
+        // millions of independent lane-reductions on one core (measured 3.18x SLOWER
+        // than torch at [4096,2048,2] dim=2). Sibling of the f32 fix (d248f167).
+        let compute = |o: usize| -> f64 {
+            let outer = o / inner_size;
+            let inner = o % inner_size;
+            let mut sum = 0.0;
+            for r in 0..reduce_size {
+                sum += data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
             }
+            sum
+        };
+        if checked_mul(out_numel, reduce_size, "norm_dim work").unwrap_or(usize::MAX)
+            >= PARALLEL_THRESHOLD
+        {
+            output = (0..out_numel).into_par_iter().map(compute).collect();
+        } else {
+            output.extend((0..out_numel).map(compute));
         }
     } else if p == 2.0 {
-        for outer in 0..outer_size {
-            for inner in 0..inner_size {
-                let mut sum_sq = 0.0;
-                for r in 0..reduce_size {
-                    let v = data[outer * reduce_size * inner_size + r * inner_size + inner];
-                    sum_sq += v * v;
-                }
-                output.push(sum_sq.sqrt());
+        let compute = |o: usize| -> f64 {
+            let outer = o / inner_size;
+            let inner = o % inner_size;
+            let mut sum_sq = 0.0;
+            for r in 0..reduce_size {
+                let v = data[outer * reduce_size * inner_size + r * inner_size + inner];
+                sum_sq += v * v;
             }
+            sum_sq.sqrt()
+        };
+        if checked_mul(out_numel, reduce_size, "norm_dim work").unwrap_or(usize::MAX)
+            >= PARALLEL_THRESHOLD
+        {
+            output = (0..out_numel).into_par_iter().map(compute).collect();
+        } else {
+            output.extend((0..out_numel).map(compute));
         }
     } else {
         // General fractional p: one `powf` per element + a final `powf` per
