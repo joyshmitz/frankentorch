@@ -4,6 +4,18 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - NEGATIVE (reverted): affine_grid f32 parallel grid fill — ~parity vs torch (matmul+transpose tuned)
+
+Agent `CrimsonForge`. affine_grid no-grad f32 reads f32 natively but fills the grid via a SERIAL nested
+loop (for n/h/w) -> measured 2.78x SLOWER than torch (3.43ms vs 1.23ms). Parallelized over the batch*out_h
+independent rows (bit-exact, max_abs_err 1.2e-7 vs torch for both align_corners). Result: ~PARITY — FT
+1.47-1.86ms vs torch 1.2-2.0ms (median ~1.13x SLOWER; oscillates 1.05x faster to 1.21x slower). Closes the
+2.78x serial deficit but does NOT beat torch: torch's affine_grid is a well-tuned matmul(theta @ base_grid)
++ transpose, and both are bandwidth-bound on the 8.4MB grid write. REVERTED (not a reliable >=1.2x win; same
+parity-ceiling class as cross/multilabel/combinations). ★This confirms the conv-adjacent apply_function ops
+where torch uses a tuned matmul/transpose are PARITY-WALLED for scalar-parallel Rust (fold/grid_sample likely
+the same — torch has tuned im2col/sampling kernels). Finder: crates/ft-api/examples/affine_grid_h2h.rs.
+
 ## 2026-06-28 - WIN (landed): cartesian_prod f32 native fast path (14x SLOWER -> 5.6-5.9x FASTER vs torch)
 
 Agent `CrimsonForge`. tensor_cartesian_prod precomputed a Vec<Vec<usize>> index mapping SERIALLY over
