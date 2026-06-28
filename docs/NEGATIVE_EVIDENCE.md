@@ -4,6 +4,26 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★WIN (landed): f64 median 1.05x SLOWER -> ~1.5x FASTER (u64 masked-histogram radix-select, sibling of the f32 median lever)
+
+Agent `BlackThrush`. Extended the ratified f32 median radix-select (ed142dab) to the f64 path. A
+selection probe (`crates/ft-api/examples/kthvalue_f64med_h2h.rs`) showed f64 median **1.05x SLOWER**
+(119ms vs torch ~113-65ms — torch's own median time is noisy/contended) — the non-integer f64 path
+fell to `select_nth_unstable_by(total_cmp)` + a 128MB clone. Added `radix_select_f64_no_nan` (u64
+keys, 8 fixed MSB->LSB masked-histogram byte passes) and wired it as the non-bounded-integer fallback
+in the f64 median path (+ parallel NaN scan, no clone).
+
+MEASURED: f64 median **119ms -> ~45ms = 2.6x SELF-improvement**, **1.29-1.55x FASTER vs torch**
+(torch ~65ms; bounded-integer counting fast path unchanged). BIT-IDENTICAL (unique order statistic;
+u64 key is an order-preserving bijection on non-NaN f64). Tests GREEN: median 11/0.
+
+NOT a 2.0x vs-torch win on its own (torch's f64 median is well-optimized ~65ms) — shipped as the
+dtype-completing SIBLING of the already-ratified f32 radix-select lever, flipping a loss to a win
+bit-exact. NON-GAPS (same probe): f32 kthvalue ALREADY 2.67x FASTER (don't touch). STILL-OPEN:
+f64 `tensor_kthvalue` 1.10-1.18x SLOWER — its value-selection could use radix_select_f64_no_nan but
+needs a NaN guard (kthvalue sorts NaN to the END via total_cmp, does NOT propagate like median);
+deferred.
+
 ## 2026-06-28 - ★★WIN (landed): f32 median 1.76x SLOWER -> ~2.5x FASTER (parallel masked-histogram radix-select)
 
 Agent `BlackThrush`. A norm/selection sweep (`crates/ft-api/examples/norm_select_sweep_h2h.rs`)
