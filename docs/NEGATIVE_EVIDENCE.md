@@ -4,6 +4,33 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ✗ NEGATIVE (reverted): gather dim=0 — parallelizing the outer_size==1 serial block is only 1.5x (still 7.7x SLOWER); DRAM random-read wall
+
+Agent `BlackThrush`. After the cat win I probed the SAME `outer_size > 1` serial-gate sibling in
+`gather_tensor_contiguous_f32/f64`. gather(dim=0) of a [R,C] tensor has outer_size==1 -> the whole
+output is one serial block. BUT unlike cat (sequential WRITE, page-fault-bound, parallelizes 8x),
+gather(dim=0) is `out[i,j] = src[idx[i,j], j]` = fully-RANDOM 4-byte reads scattered across the
+64MB src. It is DRAM-random-read-bound, NOT page-fault-bound.
+
+MEASURED (`crates/ft-api/examples/gather_dim0_h2h.rs`, LOCAL, src[4000,4000] idx[4000,4000] ->
+16M out, torch 8t, min-of-7, add anchor ~3x FASTER):
+- BASELINE serial FT **351ms = 12.1x SLOWER** (torch 29ms).
+- Flat-chunk parallel (per-element div+mod, parallel over whole output): FT **235ms = 7.7x SLOWER**
+  — only ~1.5x. 8 threads (252ms) ≈ 64 threads (235ms): adding cores does NOT help = classic
+  memory-system wall. 64 cores issuing random reads into one shared 64MB array thrash L3 and
+  saturate the memory controller (~940ns/effective-read), so parallelism can't approach torch's
+  cache-resident / SIMD (VGATHER) gather (~15ns/read, src fits server L3).
+
+REVERTED (kept the existing outer_size>1 div-free parallel path untouched). A 1.5x bit-exact
+self-speedup that leaves the op 7.7x behind torch does NOT clear the Score>=2.0 bar / does not
+close the gap — and it adds a per-element div/mod. Confirms the standing `bandwidth_bound_frontier`
+memory: index_select/gather/scatter random-access ops are DRAM-bound (<2x), torch wins via SIMD
+gather + cache residency. The `outer_size==1 serial-gate` lever only pays off for SEQUENTIAL-write
+ops (cat/stack), NOT random-read ops (gather). Probe harness committed for reproducibility.
+DO NOT retry gather/scatter/index_select parallelization unless a cache-blocking or radix-partition
+(sort-by-source-row) reformulation is on the table (changes output order -> needs inverse permute,
+not a trivial lever).
+
 ## 2026-06-28 - ★★WIN (landed): cat (concat) dim=0 3.05x SLOWER -> 3.32x FASTER (parallelize the single-row outer_size==1 block-copy)
 
 Agent `BlackThrush`. The "fast-path-left-serial" anti-pattern again, but the gate was on the
