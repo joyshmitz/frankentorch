@@ -4,6 +4,30 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): f32-native elementwise helpers — hypot 13x SLOWER -> 2.2x FASTER, i1e/i0e 15x SLOWER -> parity (drop the apply_function/to_f64 upcast)
+
+Agent `BlackThrush`. Sweep 2 (`crates/ft-api/examples/asym_dtype_sweep2_h2h.rs`) found a CLUSTER of
+elementwise f32 ops upcasting to f64: i1e 14.96x, hypot 12.99x, logit 7.44x, xlogy 5.17x SLOWER
+(@16M f32). Same root cause as logaddexp: the no-grad path runs in f64 (hypot: `tensor_to_f64` x2 =
+256MB; i1e/i0e: generic `tensor_apply_function` whose `&[(&[f64],..)]` forward upcasts), then narrows.
+
+FIX: two REUSABLE helpers `try_f32_unary_native(input, f)` / `try_f32_binary_native(x, y, f)` that
+read the f32 input(s) BORROWED and compute `f(x as f64[, y as f64]) as f32` in one rayon pass (no
+upcast, no apply_function). ★BIT-IDENTICAL TO CURRENT f32 BY CONSTRUCTION: the existing f32 path
+already computes each value in f64 then narrows, and `x as f64` is exact — so the value is unchanged
+and conformance is preserved without re-deriving tolerance. Wired hypot (`a.hypot(b)`), i1e/i0e
+(`bessel_i1e/i0e_scalar`). Tests GREEN: hypot/i1e/i0e/bessel 18/0 + conformance 2/0.
+
+MEASURED (FT default cores, torch 8t, min-of-7):
+- **hypot 173ms -> ~7-8ms = 1.74-2.22x FASTER** (sqrt is not transcendental-walled; clean win).
+- **i1e 218ms -> ~17ms = ~parity** (1.02-1.04x; ~13x self-speedup). At 8t 4.19x SLOWER — bessel libm
+  is transcendental-walled (like exp/log vs torch's vectorized); FT reaches the ceiling only via
+  cores at the "FT default" convention. i0e is the same (gap-closed 15x -> parity).
+
+STILL-OPEN (same helper applies): logit 7.44x / xlogy 5.17x SLOWER (verify they don't compose
+through multiple tape ops first). nanmedian 1.17x (median radix-select + NaN-skip). The helpers make
+each remaining elementwise-f32-upcast op a ~3-line fix. nan_to_num already 1.53x FASTER.
+
 ## 2026-06-28 - ★★WIN (landed): masked_select 2.0x SLOWER -> ~9x FASTER (parallel stream-compaction, no f64 mask upcast / serial filter)
 
 Agent `BlackThrush`. masked_select read the mask via `tensor_values_lossy_f64` (128MB upcast for an
