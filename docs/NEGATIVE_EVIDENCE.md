@@ -4,6 +4,37 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): f32 median 1.76x SLOWER -> ~2.5x FASTER (parallel masked-histogram radix-select)
+
+Agent `BlackThrush`. A norm/selection sweep (`crates/ft-api/examples/norm_select_sweep_h2h.rs`)
+found layernorm/topk/sort already FASTER but **median 1.76x SLOWER** (73ms vs torch 42ms @16M f32).
+The f32 no-grad median path did: a 64MB `.to_vec()` clone + a serial NaN scan + `select_nth_unstable
+_by(|a,b| a.total_cmp(b))` — and `total_cmp` is an expensive per-comparison closure (bit-manip +
+sign handling) that std can't vectorize.
+
+FIX: parallel NaN scan (no clone — reads the borrowed f32 directly) + a parallel MASKED-HISTOGRAM
+radix-select (`radix_select_f32_no_nan`). The median is a UNIQUE order statistic and the key
+`b|0x8000_0000` (pos) / `!b` (neg) is an order-preserving bijection on non-NaN f32, so the result is
+BIT-IDENTICAL to the total_cmp quickselect (proven in `crates/ft-api/examples/median_select_ab.rs`,
+which asserts 4 methods agree bit-for-bit).
+
+MEASURED (median_select_ab same-process A/B, 16M f32, min-of-9) — the SELECTION cost:
+- A total_cmp quickselect 60.4ms; C u32-key + native select_nth 30.2ms (2.0x); **E masked-histogram
+  radix-select 16.4ms (3.69x)**.
+- ⚠️KEY LESSON: a filter-and-narrow radix-select (materialize the active subset each byte pass) is
+  DISTRIBUTION-DEPENDENT — 13.8ms on spread data (sign varies) but **30ms on CLUSTERED positive data**
+  (sign bit constant + exponent clustered -> the active set never shrinks -> ~4 full passes + 4×64MB
+  allocs). The MASKED-histogram variant (full-array scan each pass, count only prefix-matching keys,
+  NO allocation) is distribution-INDEPENDENT at ~16ms. ALWAYS bench selection levers on clustered AND
+  spread data; the realistic case is clustered.
+- Full op (`norm_select_sweep_h2h`, torch 8t): median **73ms -> ~17ms = ~2.5x FASTER** (2.45-2.51x
+  uncontended; a 34ms outlier was peer-`fm-parser`-bench contention; 8t same-thread 2.12x FASTER).
+
+BIT-EXACT; tests GREEN: ft-api/ft-conformance median 11/0. The f64 median path + `tensor_kthvalue`
+still use total_cmp select_nth (u64 radix-select = 8 passes, follow-up). Also confirmed by sweeps
+(committed harnesses): where/masked_fill/diff/searchsorted/layernorm/topk/sort/tril/triu/index_select
+all ALREADY FT-FASTER — no gap.
+
 ## 2026-06-28 - ★★WIN (landed): 1-D movement ops flip/roll/repeat_interleave 5.9-9.0x SLOWER -> 3.0-3.2x FASTER
 
 Agent `BlackThrush`. A broad movement-op sweep (`crates/ft-api/examples/movement_sweep_h2h.rs`,
