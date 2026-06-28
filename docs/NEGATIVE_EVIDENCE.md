@@ -51,6 +51,20 @@ larger Rayon morsels lose locality/load-balance on the 16M-element comparison
 bench. Next viable lever needs a new storage/semantic surface (for example real
 bool mask storage) or an explicitly tolerance-accepted reduction kernel; both
 are beyond a same-contract micro-tune. AGENT_NAME=BlackThrush.
+## 2026-06-27 - WIN+FIX (landed): margin_ranking_loss fused fast path (f32 was ERRORING; 3.6-4.7x FASTER vs torch both dtypes, bit-exact)
+
+Agent `CrimsonForge`. margin_ranking_loss had NO fast path (composed full()+sub+mul+neg+add+maximum, ~7
+passes) for either dtype, and f32 ERRORED (F64 full() consts vs f32 input -> add/maximum dtype-mismatch).
+Added a fused no-grad fast path (f32 AND f64): per-element `max(0, margin - t*(x1-x2))` (NaN-propagating
+max to match tensor_maximum; `margin - t*d` == the composed `(-(t*d))+margin` bit-for-bit), then reduce.
+Composed fallback full()->full_like for the f32 GRAD path (f64 unchanged).
+
+Measured (local, torch 8t, min-of-9, 16M f32, margin_rank_h2h, anchor relu 2.51-2.98x FASTER = low
+contention, 3 runs): margin_rank 3.58-4.67x FASTER (torch's margin_ranking is a slow COMPOSED loss
+~49-57ms vs FT fused ~10-16ms); parity f64 0/8 AND f32 0/8 vs torch (reduction='none', bit-exact).
+★PATTERN (like hinge 119e6439): torch's exotic margin/embedding losses are SLOW composed ops -> FT fused
+single-pass + tensor_mean FLIPS 3-5x (unlike smooth_l1 whose mean torch fuses = bandwidth-walled). File:
+crates/ft-api/src/lib.rs (tensor_margin_ranking_loss).
 
 ## 2026-06-27 - FIX (landed): f32 smooth_l1_loss enablement (was ERRORING -> works, bit-exact 0/10 vs torch; mean ~parity)
 
