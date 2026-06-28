@@ -4,6 +4,29 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): f32 last-dim repeat 1.34x SLOWER -> 3.36x FASTER (mirror the f64 grain-copy fast path for f32)
+
+Agent `BlackThrush`. `tensor_repeat`'s no-grad fast path (grain-based tiled block-copy, the
+sequential-write / page-fault-distributing class as cat/stack) was **F64-only** — f32 repeat fell
+through to the slow per-element division-unravel tape path. repeat MATERIALIZES a replicated output
+(torch's repeat is NOT a view either), so both write the full buffer; FT's f32 tape unravel lost.
+
+MEASURED (`crates/ft-api/examples/repeat_h2h.rs`, LOCAL, x[2000,2000] repeat [1,4] -> 16M/64MB out,
+torch 8t, min-of-7):
+- f32 last-dim BASELINE (tape) FT **14.4ms = 1.34x SLOWER** -> fast path **3.13ms = 3.36x FASTER**
+  (8t 5.46ms = 2.08x FASTER). Now BEATS the f64 path's 5.8ms (half the bytes).
+- f64 last-dim was ALREADY 3.46-3.51x FASTER (existing fast path) — unchanged.
+
+FIX: made the fast path dtype-generic (macro over `contiguous_values`/`contiguous_values_f32`,
+zero 0.0_f64/0.0_f32), returning via `tensor_variable` / `tensor_variable_f32`. Pure copy ->
+BIT-IDENTICAL for both dtypes. Tests GREEN: ft-api repeat 22/0.
+
+STILL-OPEN (smaller gap, NOT done): GENERAL repeat (non-last-dim, e.g. repeat [4,1] along dim0)
+for BOTH dtypes still uses the tape — f32dim0 1.34x SLOWER (2.66x @8t), f64dim0 1.23x SLOWER. A
+general fast path (per-output-row source decode: out row `orow` copies input row `orow % src_rows`,
+parallel over rows) would close it; deferred as a separate lever (last-dim was the clear Score>=2.0
+win; dim0 is modest at default cores).
+
 ## 2026-06-28 - ✗ NEGATIVE (reverted): gather dim=0 — parallelizing the outer_size==1 serial block is only 1.5x (still 7.7x SLOWER); DRAM random-read wall
 
 Agent `BlackThrush`. After the cat win I probed the SAME `outer_size > 1` serial-gate sibling in
