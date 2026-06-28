@@ -4,6 +4,21 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-27 - WIN+FIX (landed): f32 hinge_embedding_loss enablement (was ERRORING) + fused fast path (2.9-4.6x FASTER vs torch, bit-exact)
+
+Agent `CrimsonForge`. f32 hinge_embedding_loss was BROKEN: the composed path built F64 full() consts, so
+tensor_eq/where errored "tensor comparison requires matching dtypes" on f32 input (grad AND no-grad) —
+torch supports it. Fix: (1) added an f32 no-grad fast path mirroring the f64 one (kgs4) — native f32 single
+pass `t==1 ? x : max(0, margin-x)` (NaN-propagating max to match tensor_maximum), then reduce; (2) changed
+the composed fallback full()->full_like(input) so the GRAD f32 path also works (f64 unchanged: full_like(f64)
+== full F64).
+
+Measured (local, torch 8t, min-of-9, 16M f32, hinge_f32_h2h, 3 runs, anchor relu FASTER): hinge 2.93-4.58x
+FASTER (torch's hinge is a slow composed loss ~88-173ms vs FT fused ~25-48ms); per-element parity 0/8 vs
+torch (reduction='none', dtype now F32). Correctness fix + perf. ★SIBLING-GAP: other losses with an f64
+fast path but f32-erroring composed fallback (huber/smooth_l1/cosine_embedding/soft_margin) — same fix.
+File: crates/ft-api/src/lib.rs (tensor_hinge_embedding_loss).
+
 ## 2026-06-27 - WIN (landed): f32 amax dim0 row-stream morsel floor (ORIG 8.89x -> 3.54x SLOWER vs torch; crate bench 1.19x faster)
 
 Agent `BlackThrush`. Biggest measured f32 wide H2H gap was `amax_dim0` on 4000x4000 f32:
