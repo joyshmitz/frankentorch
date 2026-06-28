@@ -4,6 +4,25 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): masked_select 2.0x SLOWER -> ~9x FASTER (parallel stream-compaction, no f64 mask upcast / serial filter)
+
+Agent `BlackThrush`. masked_select read the mask via `tensor_values_lossy_f64` (128MB upcast for an
+f32 mask), SERIALLY filtered it into an 8M-element f64 index Vec, created an index tensor, then ran
+`index_select` = 266ms, **2.0x SLOWER** than torch @16M f32 (half kept). But masked_select is a pure
+STREAM COMPACTION: read input+mask SEQUENTIALLY in row-major order, keep `input[i]` where `mask[i]!=0`
+— bandwidth-bound, NOT random-access like gather.
+
+FIX (no-grad, equal-shape, contiguous, f32/f64): mask->bool in one parallel pass (NATIVE dtype, no
+f64 upcast), then per-chunk parallel collect of kept values + concat. Reads input in its native
+dtype. BIT-IDENTICAL: per-chunk kept order concatenated in chunk order == full row-major kept order
+(kept_idx is monotonic) => same as the index_select gather. Tests GREEN: masked_select 7/0.
+
+MEASURED (`crates/ft-api/examples/asym_dtype_sweep_h2h.rs`, 16M f32, torch 8t, min-of-7): 266ms ->
+**~13ms = 8.3-10.2x FASTER** (FT default cores); 13.4x FASTER @8t. ⚠️grain tuning mattered: `n/(threads*4)`
+chunks made 64t (28ms) SLOWER than 8t (9.7ms) — the per-chunk Vec alloc + concat dominates at high
+chunk count. `n/threads` (~1 chunk/thread) -> 13ms at 64t (uniform compaction load-balances fine at
+1 chunk/thread). Same chunk-count-overhead lesson as bincount's fold-vs-par_chunks.
+
 ## 2026-06-28 - ★★WIN (landed): f32 logaddexp 11.98x SLOWER -> 1.56x FASTER (f32-native single pass, drop the apply_function f32->f64 upcast)
 
 Agent `BlackThrush`. The asymmetric-dtype sweep (`crates/ft-api/examples/asym_dtype_sweep_h2h.rs`)
