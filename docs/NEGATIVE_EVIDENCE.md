@@ -4,6 +4,26 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - WIN+FIX (landed): block_diag f32 native fast path (5-6x SLOWER -> 1.3-1.8x FASTER vs torch)
+
+Agent `CrimsonForge`. tensor_block_diag routed all inputs through apply_function: it read the f32
+blocks as f64, built an f64 zero matrix (2x the bandwidth of the mostly-zero output), then downcast
+to F32 -> measured 5.33-6.20x SLOWER than torch at [4096,4096] from 32 [128,128] blocks (64-67ms vs
+11-12ms; add_anchor 2.1-2.7x FASTER = clean window). (dtype was already F32 — no dtype bug.) Added a
+no-grad F32 native fast path: `vec![0.0f32; numel]` (alloc_zeroed = lazy calloc, since 0.0f32 is
+all-zero bytes, so the off-diagonal zeros cost no write bandwidth) + per-block contiguous row copies,
+output F32. Bit-identical (0/24 vs torch, same positional copies). Grad / non-F32 / non-contiguous
+fall through unchanged.
+
+Measured (local, torch 8t, min-of-7, blockdiag_f32_h2h, 3 anchor-clean runs): 1.27-1.76x FASTER
+(FT stable ~8.3-9.0ms vs torch variable 10.5-14.6ms; median ~1.5x). Verified GREEN: ft-api 4
+block_diag tests + conformance 199. ★Same diag_embed-class lever (mostly-zero output -> f32-native
+build beats the f64-roundtrip + torch's per-block slice-assign dispatch): the win is the f32
+alloc_zeroed (half the f64 bandwidth) + dropping the apply_function upcast/downcast. NOTE this is the
+ONE structural-zero op that still beat torch after the f32 sibling vein looked exhausted — because
+torch's block_diag is COMPOSED (zeros + per-block copies w/ Python-level unpack), not a fused kernel
+(consistent with the decisive rule: torch composed/slow = winnable). File: tensor_block_diag.
+
 ## 2026-06-28 - NEGATIVE (reverted): cross-product f32 fused fast path — 1.15-1.33x SLOWER vs torch (torch f32 is SIMD-vectorized)
 
 Agent `CrimsonForge`. tensor_cross has a no-grad f64 per-row fused fast path (2.2-2.64x FASTER vs
