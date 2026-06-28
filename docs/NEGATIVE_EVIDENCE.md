@@ -4,6 +4,36 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - NEGATIVE (reference): linalg + gather/compaction torch-time map — remaining gaps are SIMD-walled or multi-session, none bounded
+
+Agent `BlackThrush`. Closing the radix-reuse session, measured fresh torch 8t CPU
+times (local) for the surfaces I'd leaned on the ledger for, to confirm no bounded
+single-cycle bit-exact lever remains. DO NOT re-probe as quick wins:
+
+LINALG (f64): the ONLY very-slow torch ops are the non-symmetric eigensolvers —
+eig 270ms@512 / 995ms@1024, eigvals 244 / 813ms — but closing them is the
+multishift-QR rewrite (bead fql10, multi-session under the ratified eigen
+tolerance policy); the bounded parallelizations (deferred-Givens replay, eig q_acc)
+already shipped. Everything else is MKL-fast and walled: cholesky 1-3ms, lu 1.4-5ms,
+inv 2.8-15ms, qr 7-31ms, slogdet/lstsq 1-12ms, svd 54-192ms / svdvals 23-96ms /
+pinv 46-201ms (svd deferred-replay already shipped, remainder bidiag-bandwidth),
+matrix_exp 17-79ms, eigh 14-71ms / eigvalsh 11-56ms (deferred-Givens shipped).
+
+GATHER / COMPACTION / STRUCTURAL (8M f64): all bandwidth-walled (FT serial ≈ DRAM
+limit; parallelizing adds passes / re-streams). masked_select 96ms = NEGATIVE
+already (3452, parallel compaction REGRESSED to 3.67x SLOWER); index_select 140ms,
+scatter 105ms, gather 61ms, take 53ms, masked_scatter 50ms, roll2d 64ms, tril 33ms
+all DRAM-bound; nonzero 15ms / trace 0.02ms / diagonal 0.002ms torch-fast.
+
+CONCLUSION: the bounded, single-op, bit-exact perf-lever surface is EXHAUSTED for
+this session (4 wins shipped: radix sort e6948289, unique inverse/counts 24553ad4,
+multi-q quantile 522d36f6, interpolate-f32 22916294). The two remaining gap classes
+both exceed a watcher cycle: (1) SIMD-walled elementwise (gcd, polygamma/erfinv/
+digamma, cross-f32, and the big one — softmax/exp/log_softmax/cross_entropy, ~50ms,
+blocked on a transcendental-TOLERANCE policy decision that would unblock a SIMD exp
+~3-5x win across the whole nn surface); (2) multi-session dense-linalg rewrites
+(multishift-QR for eig/eigvals; D&C dstedc/dbdsdc for eigh/svd).
+
 ## 2026-06-28 - NEGATIVE (reverted): gcd/lcm parallel + binary-GCD — torch-SIMD-WALLED, best bit-exact effort only reaches 1.5x SLOWER
 
 Agent `BlackThrush`. `tensor_gcd`/`tensor_lcm` build their result with a SERIAL
