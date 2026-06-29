@@ -12918,3 +12918,30 @@ Vecs, cloning input, and reconstructing the 16MB output around a ~1ms scatter. C
 needs borrowed-slice reads / in-place tape mutation (deeper, separate lever). The ~2x here
 removes the egregious per-element alloc+divide pathologies and is a strict bit-exact win vs
 ORIG. AGENT CoralDrift.
+
+## 2026-06-29 - WIN+PARITY: index_reduce no-grad — f32 CRASH fixed + f64 175ms->110ms (~1.6x); residual = 134MB source-clone bandwidth wall
+
+Agent `CoralDrift`. Sibling of the scatter_reduce dig. `tensor_index_reduce` no-grad path read
+input/source via the F64-only `tensor_values` => no-grad f32 index_reduce CRASHED
+(UnsupportedDType(F32)); torch keeps the input dtype. The f64 reduction was also a fully serial
+triple loop (175ms vs torch's beta 20ms = 8.5x SLOWER at [4096x1024], nsrc=16384, dim=0).
+
+Fix: native per-dtype reads (f32 path added — fixes the crash, returns F32) + a generic
+bucket-parallel kernel `index_reduce_apply<T>`: bucket source rows by their target dim index
+(ascending source order => prod/mean reduce in the SAME order as the serial loop = bit-identical),
+then reduce each `(outer, dst_dim)` output row — a disjoint `[inner]` slice — in parallel via
+par_chunks_mut (race-free). include_self / first-replace / mean-divide preserved exactly. Also
+dropped the redundant `input_vals.clone()` (read input straight into `result`).
+
+Bench `examples/index_reduce_probe_h2h.rs` [4096x1024] nsrc=16384 dim=0 f64, cc-local, oracle
+.venv-oracle (8t):
+- f32: was Err(UnsupportedDType(F32)) -> now OK, dtype=F32.
+- f64 amax: 175.5 -> 109.9 ms (1.60x vs ORIG; 8.5x -> 5.5x SLOWER vs torch).
+- f64 prod: ~108 ms (5.0x SLOWER); mean ~115 ms (1.72x SLOWER).
+Tests: `cargo test -p ft-api --lib index_reduce` => 3 passed (f64 bit-exact preserved).
+
+HONEST: still 5x SLOWER than torch — the parallel reduction is now fast, but the op is
+BANDWIDTH-bound on materializing the 134MB f64 `source` via `values(source)` (clone) + reading
+it again in the reduction, same TAPE-I/O wall as scatter_reduce. Closing it needs a borrowed
+source read (no clone), a deeper lever. The ~1.6x + crash fix + dtype fix are a strict win.
+AGENT CoralDrift.
