@@ -4,6 +4,21 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): f32 digamma 7.6x SLOWER -> 2.5x FASTER, lgamma/gammaln 5.0x SLOWER -> 2.4x FASTER
+
+Agent `BlackThrush`. (Corrects last turn's premature "vein is dead" call.) An elementwise-math sweep
+(`crates/ft-api/examples/elemmath_sweep_h2h.rs`) found asin/acos/atan/expm1/log1p/rsqrt ALREADY 2-3.3x
+FASTER (native f32), but **digamma 7.64x SLOWER (231ms), lgamma/gammaln 4.98x SLOWER (133ms)** @16M f32
+— both go through apply_function (digamma) / read f64 (gammaln) = a 128MB f32->f64 upcast. Wired
+`try_f32_unary_native(input, digamma_approx)` and `(..., lgamma_approx)`. BIT-IDENTICAL (same scalar
+fn in f64, narrowed). Tests GREEN: digamma/gammaln/lgamma 15/0 + conformance 3/0.
+
+MEASURED (FT default, torch 8t, min-of-7): digamma **231ms -> 11ms = 2.49x FASTER** (1.18x @8t),
+lgamma **133ms -> 10ms = 2.37x FASTER** (1.18x @8t). Unlike i1e/i0e (which landed at parity — torch's
+bessel is fast), torch's digamma/lgamma are themselves ~25ms, so FT's parallel libm BEATS them at
+default cores. LESSON: don't assume a transcendental special-fn is parity-walled — PROBE it; whether
+it wins depends on how optimized TORCH's version is. The apply_function-upcast vein still has hits.
+
 ## 2026-06-28 - ★WIN (landed): f32 1-D normalize 3.44x SLOWER -> near-parity (parallelize the divide; serial-sum-floored)
 
 Agent `BlackThrush`. The f32 p=2 normalize fast path chunked `par_chunks_mut(block_len)` — so a 1-D /
