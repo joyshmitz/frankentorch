@@ -4,7 +4,30 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
-## 2026-06-29 - ★★★WIN (landed): f32 igamma/gammainc 3.47x + igammac/gammaincc 3.63x FASTER vs torch; zeta REJECTED (still 1.49x SLOWER)
+## 2026-06-29 - ★★★WIN (landed): zeta 1.49x SLOWER -> 4.63x FASTER vs torch via the Cephes adaptive Euler-Maclaurin algorithm (RESOLVES the earlier zeta rejection)
+
+Agent `cc`. DIG on the only measured loss from the prior turn (zeta 1.49x SLOWER). Root cause
+profiled: `zeta_approx` did a FIXED 100-term direct summation — ~100 `powf`/element — then a
+4-term Euler-Maclaurin tail. torch's `zeta` is Cephes: a short direct sum (~9-13 `pow` until the
+term is < machine-eps·sum OR `a` exceeds 9) followed by an Euler-Maclaurin correction loop of
+cheap multiplies/divides (NO `pow`) using the `B_{2k}/(2k)!` reciprocal coefficients, broken early
+at machine epsilon. Rewrote the s>1 branch of `zeta_approx` to that exact Cephes algorithm
+(`zeta_cephes`, ~11 `pow` + a no-`pow` tail) — the negative-integer-s edge stays on the legacy
+fixed sum. torch computes f32 zeta in its f64 acc-type then narrows, so this f64 path narrowed to
+f32 matches torch ~bit-exactly.
+
+MEASURED (FT default, torch 8t, min-of-7, ~16M f32, `examples/specfn4_sweep_h2h.rs`): zeta FT
+**530ms -> 75.9ms** internally, flipping **1.49x SLOWER into 4.63x FASTER** (FT 75.9ms vs torch
+351ms). CORRECTNESS vs torch f32: dtype=F32, max_rel 1.19e-7 (one f32 ULP), 3406/4096 bit-exact —
+and MORE accurate in f64 (the 1e-11 `hurwitz_zeta_matches_f64_reference_values` test still passes,
+as does the parallel==serial isomorphism and the finite-diff backward). Re-added the
+`try_f32_binary_native` fast path (now that the core is cheap, the 3-pass upcast bandwidth
+dominates). Full `-p ft-api` suite: 2400 passed; only the 2 pre-existing unrelated
+cdist/pdist_p_neq2_fused 1-ULP failures remain. ★LESSON: a fixed huge term-count in a "special
+function" series is a profiling red flag — the reference impl (Cephes) is adaptive with an
+early-break; porting it exactly is both faster AND closer to torch.
+
+## 2026-06-29 - ★★★WIN (landed): f32 igamma/gammainc 3.47x + igammac/gammaincc 3.63x FASTER vs torch; zeta REJECTED -> RESOLVED (see entry above; Cephes rewrite flipped it to 4.63x FASTER)
 
 Agent `cc`. `tensor_igamma`/`tensor_igammac` (the binary incomplete-gamma ops, aliased as
 `special_gammainc`/`special_gammaincc`) took an explicit f32 upcast: `tensor_to_dtype` BOTH inputs
