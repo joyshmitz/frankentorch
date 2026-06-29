@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★★WIN (landed): ndtr 7.9x FASTER, rad2deg 2.5x, deg2rad 2.2x, sinc 2.5x FASTER (compose-elision sub-vein)
+
+Agent `BlackThrush`. Grepped elementwise fns composing via `self.full(...)` (constant-tensor signal)
+-> a compose-elision sweep (`crates/ft-api/examples/compose_elision_sweep_h2h.rs`). Four big gaps,
+all the multi-op-compose pattern:
+- **rad2deg 13.9x SLOWER, deg2rad 12.7x SLOWER** — TRIVIAL `x*(180/pi)` but built a 128MB f64
+  CONSTANT tensor via `full()` then `tensor_mul` (2 passes + a huge alloc). -> 2.46x / 2.23x FASTER.
+- **ndtr 5.8x SLOWER -> 7.88x FASTER** (287ms -> 6.2ms; torch's own ndtr is slow ~49ms) — composed
+  mul+erf+full+add+full+mul -> `0.5*(1+libm::erf(x*FRAC_1_SQRT_2))` one pass.
+- **sinc 5.2x SLOWER -> 2.49x FASTER** — had an f64 fast path but f32 fell to the ~9-pass compose;
+  mirrored the closure (`x==0 ? 1 : sin(pi*x)/(pi*x)`).
+
+All via `try_f32_unary_native`, BIT-IDENTICAL (same f64 constants/formulas the compose used, narrowed).
+MEASURED (16M f32, torch 8t, min-of-7); 8t: ndtr 2.70x / rad2deg 1.94x FASTER, sinc 1.39x SLOWER
+(sin wall). Tests GREEN: 45/0 + conformance 4/0. ★The `self.full()`-in-an-elementwise-fn grep is the
+compose-elision finder — even a TRIVIAL scale (rad2deg) is 13x SLOWER when it allocates a 128MB
+constant tensor + extra pass. NON-GAPS this sweep: erfc 2.05x / frac 2.21x FASTER.
+
 ## 2026-06-28 - ★★WIN (landed): f32 asinh 11.8x SLOWER -> 4.2x FASTER, acosh 6.5x SLOWER -> 3.4x FASTER, atanh (inverse-hyperbolic, elide the 6-7 op compose)
 
 Agent `BlackThrush`. The reduction sweep's elementwise leftovers: asinh/acosh/atanh. asinh COMPOSED
