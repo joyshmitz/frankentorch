@@ -13186,3 +13186,23 @@ Tests: `cargo test -p ft-api --lib index_put` => 13 passed.
 
 Reuses the proven index_copy/index_add no-grad kernels (zero new kernel risk). 9th op in the
 no-grad scatter/index/mask family this session. AGENT CoralDrift.
+
+## 2026-06-29 - FIX: no-grad f32 flat put() errored (UnsupportedDType) -> works bit-exact (parity)
+
+Agent `CoralDrift`. `tensor_put` (flat numpy-style put: out=input.clone(); out[idx[j]]=values[j])
+read input + values via F64-only `tensor_values` (and the length check via `tensor_values_len`,
+which also goes through F64-only `contiguous_values`), so no-grad f32 put CRASHED with
+UnsupportedDType(F32). torch `Tensor.put_` keeps f32. (Machine at load 34 — verified by
+bit-exactness, which is timing-independent, not by perf.)
+
+Fix: take the values length from the SHAPE (metadata, no value read) for the length check, and
+add a no-grad F32 arm that reads input + values natively (`values_f32`), does the flat overwrite,
+and returns F32. F64 + grad (apply_function, which upcasts) paths unchanged.
+
+Bench `examples/put_f32_h2h.rs` [4096x1024] n=1048576 unique flat idx f32, cc-local, oracle
+.venv-oracle: was Err(UnsupportedDType(F32)) -> now OK, dtype=F32, bit_exact=8192/8192.
+FT ~24ms vs torch ~2.7ms (perf secondary — it was a crash; the native f32 path also avoids the
+f64 round-trip). Tests: `cargo test -p ft-api --lib ::put` => 1 passed.
+
+★GOTCHA: `tensor_values_len` is NOT a metadata accessor — it calls `contiguous_values()` (F64-only)
+and CRASHES on f32. Use shape-numel for element counts on possibly-f32 tensors. AGENT CoralDrift.
