@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-29 - ★HIGH-VALUE LEAD (surfaced, not yet fixed): grid_sample f32 9.63x SLOWER vs torch (71.6ms vs 7.4ms) — biggest measured gap
+
+Agent `cc`. Pivoted to a new primitive class (spatial sampling). MEASURED `tensor_grid_sample` f32
+**9.63x SLOWER** (FT 71.6ms vs torch 7.4ms @ [8,64,128,128] bilinear/zeros/align_corners=false,
+`examples/gridsample_h2h.rs`); value correct (2690/4096 bit-exact, max_abs 5.96e-8 — f64-then-narrow
+vs torch f32). Root cause: `grid_sample_f64` is already parallel (2-pass coord-resolve + rayon, ~9.3x
+on 1M) BUT the f32 path UPCASTS — converts the 8M input f32->f64 (64MB->128MB), runs the random
+bilinear GATHER on the 128MB f64 input (cache-miss-bound — the dominant cost), then casts output
+f64->f32. Two levers, BOTH non-trivial: (1) a native grid_sample_f32 (or generic over the float
+type) so the gather reads f32 (HALF the bytes + better cache) and skips the 2 conversion passes —
+estimated ~2x, i.e. 9.63x -> ~4-5x SLOWER; (2) the residual gap is torch's vectorised/cache-blocked
+bilinear gather — a deeper kernel rewrite (block the [N,H,W] positions by input tile, SIMD the
+4-tap interp). NOT attempted this turn (large change; native-f32 only partially closes it). RETRY:
+focused session — start with native grid_sample_f32 (mirror grid_sample_f64's 2-pass structure with
+f32 input slice, f64 coord math, f32 gather/output), measure, then assess the blocked-gather lever.
+embedding/embedding_bag/affine_grid/pixel_shuffle also have no f32 fast path (likely bandwidth-bound
+gather/scatter — lower priority).
+
 ## 2026-06-29 - ⛔REJECTED (reverted, ~0-gain): parallelise the map in IN-PLACE mul_scalar_/add_scalar_ — only ~1.2x (tape read-write dominates, not the map)
 
 Agent `cc`. Follow-up to the out-of-place mul_scalar win. The in-place `tensor_mul_scalar_` /
