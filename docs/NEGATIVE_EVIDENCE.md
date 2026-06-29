@@ -4,6 +4,30 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-29 - ★★★WIN (landed): softsign 1.39x SLOWER -> 7.10x FASTER vs torch (4-op compose -> fused f32 pass, BIT-EXACT)
+
+Agent `cc`. DIG into a DIFFERENT primitive class (activations). A 13-op gap-finder sweep
+(`examples/act_gapfind_h2h.rs`, vs the 2.87x-FASTER `add` anchor) found `softsign` the ONLY loss —
+1.39x SLOWER (FT 44.4ms vs torch 31.9ms) while gelu 1.23x, silu 2.42x, mish 2.26x, softplus 2.22x,
+elu 2.87x, selu 2.52x, celu 1.90x, hardswish 2.28x, tanhshrink 2.98x, logsigmoid 1.99x, logit
+2.68x were ALL FT-FASTER. Root cause: softsign `x/(1+|x|)` was a 4-op compose (abs + full_like +
+add + div), each a full pass + a 64MB intermediate, vs torch's single fused kernel.
+
+softsign is a rational VALUE op (parity absolute) so the fast path must be BIT-EXACT to torch's
+pure-f32 `a/(1+|a|)`, NOT f64-then-narrow. Trick: do the f32 arithmetic INSIDE the
+`try_f32_unary_native` closure (`|x| { let xf = x as f32; (xf/(1.0_f32+xf.abs())) as f64 }`) — the
+`x as f32` round-trips exactly through the helper's f64 boundary, so the result reproduces torch's
+exact f32 rounding.
+
+MEASURED (FT default, torch 8t, min-of-7, ~16M f32, `examples/softsign_h2h.rs`): **44.4ms ->
+5.0ms** internally, flipping **1.39x SLOWER into 7.10x FASTER** (FT 5.0ms vs torch 35.6ms).
+CORRECTNESS vs torch f32: dtype=F32, **bit_exact 4096/4096, max_ulp=0** (perfect parity). Full
+`-p ft-api` suite: 2400 passed; only the 2 pre-existing unrelated cdist/pdist_p_neq2_fused 1-ULP
+failures remain. The f64-input softsign metamorphic conformance test is provably untouched (the
+fast path returns None for any non-F32 dtype). ★LESSON: for a VALUE-op compose, the fused fast
+path must match the reference's per-op f32 rounding — compute f32-natively inside the closure
+(x-as-f32 round-trips), don't f64-then-narrow.
+
 ## 2026-06-29 - ★★★WIN (landed): spherical_bessel_j0 3.30x SLOWER -> 2.44x FASTER vs torch (7-op compose -> single fused f32 pass)
 
 Agent `cc`. DIG: a 6-op gap-finder sweep (`examples/gapfind_h2h.rs`, vs the 3.0x-FASTER `add`
