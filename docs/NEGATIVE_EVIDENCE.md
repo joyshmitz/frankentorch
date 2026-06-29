@@ -4,6 +4,26 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-29 - ★★★WIN (landed): spherical_bessel_j0 3.30x SLOWER -> 2.44x FASTER vs torch (7-op compose -> single fused f32 pass)
+
+Agent `cc`. DIG: a 6-op gap-finder sweep (`examples/gapfind_h2h.rs`, vs the 3.0x-FASTER `add`
+anchor) found `spherical_bessel_j0` the ONLY measured loss in the special-fn surface — 3.30x
+SLOWER (FT 55.9ms vs torch 16.9ms) while polygamma(5) 11.95x, airy 4.33x, scaled_k0 4.23x, digamma
+3.10x were all FT-FASTER. Root cause: the autograd-compose forward was 7 tape ops (sin +
+full_like×2 + eq + where×2 + div), each a full pass over 16M f32 plus a 64MB intermediate, vs
+torch's single vectorized `sin(x)/x`. Added a no-grad f32 fast path
+(`try_f32_unary_native(input, |x| if x==0 {1.0} else {x.sin()/x})`) computing j0 in ONE parallel
+f64-narrowed pass; the grad path (and f64 / non-contiguous) keep the compose.
+
+MEASURED (FT default, torch 8t, min-of-7, ~16M f32, `examples/sph_j0_h2h.rs`): **55.9ms -> 7.1ms**
+internally, flipping **3.30x SLOWER into 2.44x FASTER** (FT 7.1ms vs torch 17.3ms). CORRECTNESS
+vs torch f32: dtype=F32, max_rel 1.189e-7 (one f32 ULP), max_abs 5.96e-8, 3228/4096 bit-exact —
+this is a <1e-5 tolerance special fn (not bit-exact; torch uses an FMA/vectorized kernel) and the
+f64-then-narrow value is at-or-more-accurate than the prior f32 compose. `spherical_bessel_j0_
+values_and_gradient` + full `-p ft-api` suite green (2400 pass; only the 2 pre-existing unrelated
+cdist/pdist_p_neq2_fused 1-ULP failures remain). ★This completes the special-fn f32 surface — all
+torch.special/gamma ops measured are now FT-FASTER.
+
 ## 2026-06-29 - ★★★WIN (landed): zeta 1.49x SLOWER -> 4.63x FASTER vs torch via the Cephes adaptive Euler-Maclaurin algorithm (RESOLVES the earlier zeta rejection)
 
 Agent `cc`. DIG on the only measured loss from the prior turn (zeta 1.49x SLOWER). Root cause
