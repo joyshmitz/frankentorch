@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★WIN (landed): f32 1-D normalize 3.44x SLOWER -> near-parity (parallelize the divide; serial-sum-floored)
+
+Agent `BlackThrush`. The f32 p=2 normalize fast path chunked `par_chunks_mut(block_len)` — so a 1-D /
+large-block normalize (`F.normalize(vec)`, dim=0: 1 lane, block==numel) ran ENTIRELY SERIAL (sum AND
+divide) = 3.44x SLOWER (52ms vs torch 14.9ms @16M). Restructured to two phases: (1) per-lane denom
+with the SERIAL r-ascending f32 sum-of-squares KEPT (bit-exact with the norm kernel) but parallel
+ACROSS lanes; (2) parallel divide over ALL elements (division order is irrelevant). Bit-exact; tests
+12/0. The COMMON per-row case ([N,D] dim=1) is unchanged (phase-1 pars over lanes == the old
+per-block parallelism; phase-2 adds a cheap parallel divide).
+
+MEASURED: 1-D normalize **52ms -> 16.7ms = 3x self-speedup**, **1.10-1.15x SLOWER vs torch** (gap-
+closing to near-parity). ⚠️WALL: the bit-exact serial f32 sum-of-squares (~14ms for 16M, r-ascending
+order required) ≈ torch's ENTIRE fused op (14.9ms) — torch parallelizes the sum (tree), FT cannot
+without breaking bit-exactness. So 1-D normalize is FLOORED at parity; parallelizing the divide was
+the only bit-exact lever. (Same serial-reduction wall as nansum/nanmean.) Not re-probing 1-D
+reductions for >parity without a tolerance-sum policy.
+
 ## 2026-06-28 - ★★WIN (landed): f32 addcdiv 7.45x SLOWER -> ~1.6x FASTER (f32-native fused pass; common in optimizers)
 
 Agent `BlackThrush`. A fused/elementwise sweep (`crates/ft-api/examples/fused_sweep_h2h.rs`) found
