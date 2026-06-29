@@ -4,6 +4,23 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★★WIN (landed): f32 bessel-family batch (7 ops) 1.3-5x SLOWER -> 1.3-3.6x FASTER via ONE shared-helper fix
+
+Agent `BlackThrush`. The bessel/special family `tensor_special_bessel_y0/y1`, `modified_bessel_i0/i1/
+k1`, `scaled_modified_bessel_k0/k1` all route through ONE helper `special_unary_with_deriv(input,
+fwd, deriv)` which "computes in f64 then casts back" (f32->f64 lossy-read upcast). Added the f32 fast
+path INSIDE that helper (`try_f32_unary_native(input, fwd)`) — fixes ALL 7 (+ any future user) at
+once, BIT-IDENTICAL (fwd in f64, narrowed; x as f64 exact). trigamma auto-fixed too (delegates to
+the now-f32-fast polygamma). Tests GREEN: bessel 8/0 + conformance.
+
+MEASURED (FT default, torch 8t, min-of-7): modified_bessel_i0 2.74x, i1 2.85x, k1 2.98x,
+scaled_k0 3.00x, scaled_k1 3.60x FASTER; bessel_y0 1.47x, bessel_y1 1.34x FASTER (torch's y0/y1 are
+fast ~32ms; the i/k variants are slow ~57-75ms -> bigger FT wins). ★LESSON: when many ops share a
+"compute-in-f64-then-cast" HELPER, add the f32 fast path to the HELPER, not each op — one edit, N
+wins. The special-fn vein is now ~16 wins over 3 turns. REMAINING: multigammaln (composes), igamma/
+igammac/zeta (binary), spherical_bessel_j0 (composes sin(x)/x — sinc-class), chebyshev/hermite/
+laguerre polynomials (special_unary_n_with_deriv — a SECOND shared helper, same one-edit fix).
+
 ## 2026-06-28 - ★★★WIN (landed): f32 special-function batch — erfinv/erfcx/bessel_j0/j1/airy_ai/k0/polygamma all 1.9-16x SLOWER -> 1.2-3.4x FASTER
 
 Agent `BlackThrush`. (Vindicating last turn's "PROBE don't assume" correction.) A special-function
