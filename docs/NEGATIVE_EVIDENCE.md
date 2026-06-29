@@ -4,6 +4,21 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★★WIN (landed): f32 logsumexp 8.6x SLOWER -> 6.2x FASTER (f32-native per-lane fast path, drop the apply_function upcast+create_graph)
+
+Agent `BlackThrush`. logsumexp had a no-grad f64 per-lane fast path (max -> sum(exp(x-max)) -> max+
+ln(sum), parallel over lanes) but **f32 fell to `apply_function_with_create_graph`** = a 128MB f32->
+f64 upcast + a `save_for_backward` clone + SERIAL reduction = **310ms = 8.6x SLOWER** than torch
+@[4096,4096]. Mirrored the f64 fast path for f32: read the f32 lane BORROWED, compute the logsumexp
+in f64 (each `v as f64` exact), narrow the result to f32 — BIT-IDENTICAL to the current f32
+upcast-then-narrow (same max/exp/ln math, same +-inf rule), output stays F32.
+
+MEASURED (`crates/ft-api/examples/logsumexp_h2h.rs`, [4096,4096] f32, torch 8t, min-of-7): lse(dim=1)
+**310ms -> 5.78ms = 6.21x FASTER** (1.59x @8t), lse(dim=0) **4.13x FASTER** (1.09x @8t) — beats torch
+at BOTH thread counts (~54x self-speedup; torch's logsumexp is itself ~36ms, not heavily optimized,
++ exp parallelizes). Tests GREEN: ft-api logsumexp 8/0. logsumexp is hot (softmax/attention/CRF);
+this was a major latent f32 gap. Same `apply_function`-upcast pattern as the other reductions.
+
 ## 2026-06-28 - ★★★WIN (landed): max_dim/min_dim f32 ~40x SLOWER -> near-parity / 2.4x FASTER (combined 1-pass f32 value+index kernel)
 
 Agent `BlackThrush`. Sibling of the argmax fix: `tensor_max_dim`/`tensor_min_dim` (torch.max/min(dim)
