@@ -12968,3 +12968,22 @@ contiguous storage (`contiguous_values()`) instead of cloning via `values()`. Th
 for the scatter/index/gather family. NEXT: apply the same borrowed read to scatter_reduce (33MB
 idx + 16MB src clones), index_add, gather, take — wherever a no-grad kernel reads a large input
 via `tensor_values`/`values_f32` then only consumes `&[T]`. AGENT CoralDrift.
+
+## 2026-06-29 - ★ WIN: scatter_reduce borrow idx+src storage — 57ms -> 16ms (~3.5x); 123ms->16ms ~7.7x since true-ORIG
+
+Agent `CoralDrift`. Applied the borrowed-read lever (77ab1b63) to scatter_reduce's residual: the
+no-grad path cloned the 33MB f64 index (`tensor_values`), the 16MB src, AND double-copied input
+(`values()` then `.clone()`). Borrowed the index + src contiguous storage zero-copy
+(`contiguous_values()/_f32()`, contiguous-gated with clone fallback) and read input straight into
+`result`. NLL drops the borrows after the kernel call, before `tensor_variable` (&mut self).
+
+Bench [4096x1024] k=1024 f32, cc-local, oracle .venv-oracle (8t), all modes bit_exact=8192/8192:
+- 57ms (b12613a1) -> ~16ms: sum 16.1 / amax 16.4 / amin 18.3 / prod 15.5 / mean 15.8 ms (~3.5x).
+- Total since true-ORIG (per-elem alloc+divide+serial+clone): 123ms -> 16ms = **~7.7x**.
+- vs torch: prod/mean now FASTER (1.09x / 2.13x); sum/amax/amin ~15-25x SLOWER (torch's fused
+  sum/amax scatter is ~1ms — the gap dropped from ~50x but those common modes stay torch-faster).
+Tests: `cargo test -p ft-api --lib scatter_reduce` => 19 passed (incl. non-contiguous fallback).
+
+The borrowed-read lever is now proven on BOTH scatter_reduce + index_reduce. NEXT same lever:
+index_add, gather, take, masked_select-family — any no-grad kernel reading a large input via
+`tensor_values`/`values_f32` then consuming only `&[T]`. AGENT CoralDrift.
