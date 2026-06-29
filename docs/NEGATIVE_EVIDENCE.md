@@ -13273,3 +13273,23 @@ Tests: `cargo test -p ft-api --lib p_neq2_fused_nograd_matches_broadcast_bit_exa
 existing_parallel_product_for_finite_rows` (ft-kernel-cpu f32 SIMD product — a DIFFERENT code path
 my diff does not touch; surfaced for its owner). Method: diagnosed the ULP source by reading both
 pow paths, not by guessing. AGENT CoralDrift.
+
+## 2026-06-29 - FIX (conformance GREEN): product_f32_simd test tolerance too tight at numel=65536 (FALSE failure)
+
+Agent `CoralDrift`. `product_f32_simd_contiguous_matches_existing_parallel_product_for_finite_rows`
+was RED on main (the 2nd pre-existing red, unrelated to the cdist fix). Diagnostic: numel=65536,
+got=0.99974406 vs expected=0.9995333 — diff 2.1e-4, JUST over the fixed 2e-4 tolerance. NOT a
+kernel bug: it compares two VALID reductions of an N-term f32 product (chunked-SIMD
+`product_f32_simd_contiguous` vs element-wise `par_iter().product()`). Each accumulates up to
+~(N-1)·u rounding (u = f32 unit roundoff = 2^-24), so two orderings legitimately differ by ~2·N·u;
+at N=65536 that bound is ~7.8e-3, so the fixed 2e-4 tolerance was mathematically too tight (a FALSE
+failure, only triggered at the largest size).
+
+Fix (test-only): scale the tolerance with N — `(numel * f32::EPSILON).max(2e-4)` (N·EPSILON = 2·N·u,
+the rigorous two-orderings bound), floored at the old 2e-4 for the small sizes. Still catches gross
+kernel errors (a 2x divergence >> 7.8e-3). No kernel change.
+
+Tests: `cargo test -p ft-kernel-cpu product_f32_simd_contiguous_matches_existing_parallel_product...`
+=> 1 passed (was FAILED). ★Both pre-existing reds on main (cdist/pdist 0f314d72 + this) are now
+GREEN. LESSON: a FIXED absolute/relative tolerance comparing two float REDUCTION ORDERS must scale
+with the reduction length (N·u) — a constant tolerance gives false failures at large N. AGENT CoralDrift.

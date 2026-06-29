@@ -33289,7 +33289,14 @@ mod tests {
                 .par_chunks(super::PROD_F32_SIMD_CHUNK)
                 .map(super::product_f32_simd_contiguous)
                 .product::<f32>();
-            let tolerance = expected.abs().max(1.0) * 0.000_2;
+            // Two valid reductions of an N-term product (chunked-SIMD vs element-wise
+            // par_iter) each accumulate up to ~(N-1)·u rounding (u = f32 unit roundoff
+            // = 2^-24), so they can legitimately differ by ~2·N·u. The old fixed 2e-4
+            // tolerance was too tight at numel=65536 (observed 2.1e-4 divergence on a
+            // ~1.0 product, a FALSE failure). Scale with N (2·N·u, floored at the old
+            // 2e-4 for the small sizes); this still catches gross kernel errors.
+            let rel = (numel as f32 * f32::EPSILON).max(0.000_2);
+            let tolerance = expected.abs().max(1.0) * rel;
             assert!(
                 (got - expected).abs() <= tolerance,
                 "numel={numel} got={got:?} expected={expected:?} tolerance={tolerance:?}",
