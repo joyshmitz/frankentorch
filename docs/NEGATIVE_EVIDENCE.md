@@ -13038,3 +13038,26 @@ last-write-wins cases).
 4th op in the borrowed-read + bucket-parallel family (scatter_reduce / index_reduce / index_add
 / index_copy), all via `index_reduce_apply<T>` (now copy/sum/prod/mean/amax/amin). NEXT: plain
 scatter, gather, take. AGENT CoralDrift.
+
+## 2026-06-29 - WIN: index_fill no-grad fast path — 64ms -> 11ms (~5.8x); was 150x SLOWER vs torch
+
+Agent `CoralDrift`. Same compose-through-autograd waste (cf. index_add/index_copy): index_fill
+materialized BOTH a full constant `src` tensor (the fill value) AND a full expanded index, then
+routed through tensor_scatter's apply_function. No-grad FT 64ms vs torch 0.4ms = 150x SLOWER.
+
+index_fill is a scalar OVERWRITE of each indexed dim-slice (out[.., idx[r], ..] = value). No-grad
+fast path (f32/f64): read input into result, mark indexed dim positions in a bool mask, then
+parallel-fill those disjoint output rows with `value` (idempotent — duplicate indices fill the
+same row, matching torch). Half/grad fall through to the scatter compose unchanged.
+
+Bench `examples/index_fill_f32_h2h.rs` [4096x1024] k=2048 dim=0 f32, cc-local, oracle
+.venv-oracle (8t), bit_exact=8192/8192, dtype=F32:
+- ORIG (const src + expanded idx + scatter): FT ~64 ms (150x SLOWER vs torch).
+- AFTER (no-grad fast path):                  FT ~11 ms => **~5.8x vs ORIG** (16x SLOWER vs
+  torch's in-place ~0.7ms — the ~11ms floor is the tape input-clone + output-construct, not the
+  fill).
+Tests: `cargo test -p ft-api --lib index_fill` => 11 passed.
+
+5th op in the no-grad scatter/index fast-path family (scatter_reduce/index_reduce/index_add/
+index_copy/index_fill). The compose-through-autograd-with-materialization anti-pattern is now
+swept across the 1-D-index ops. NEXT: plain scatter (idx same-shape-as-src). AGENT CoralDrift.
