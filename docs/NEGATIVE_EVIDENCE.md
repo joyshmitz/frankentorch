@@ -4,6 +4,27 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-29 - ★★WIN (landed, gap-closing): trapezoid 297x SLOWER -> 3-5x SLOWER vs torch (142ms -> 3ms, fused single-pass reduction)
+
+Agent `cc`. A misc-op gap-finder (`examples/misc_gapfind_h2h.rs`, anchor 2.0-3.0x FASTER) found
+`tensor_trapezoid` **297.58x SLOWER** (FT 142.5ms vs torch 0.479ms @ [4096,4096] f32 reduce dim 1)
+— by far the biggest gap of the session. The compose (narrow+narrow+add+full_like+mul+sum_dim) does
+~5 full-size materialisations (y_sum, half, avg, ...). For the uniform-spacing case (x = None)
+added a no-grad fused fast path: integral[row] = dx·Σ_k 0.5·(y[k]+y[k+1]) in ONE pass over the
+borrowed contiguous f32/f64 storage (f64 accumulator), matching the compose's per-interval avg then
+f64 sum. Grad / x-given / non-contiguous / non-float fall through.
+
+MEASURED (FT default, torch 8t, min-of-7, 16M f32, clean window): **142.5ms -> ~3ms (~40-47x
+internal)**, taking trapezoid from **297x SLOWER to 3.22-5.08x SLOWER**. CORRECTNESS: the
+`trapezoid_uniform_spacing` + `trapezoid_dx_and_1d_x_torch_golden` + `f32_scan_quantile_trapz_
+preserve_dtype` tests exercise the fused path (no-grad contiguous) and pass vs torch; all 9
+trapezoid/cumtrapz lib tests + full `-p ft-api` suite green (2400 pass; only the 2 pre-existing
+unrelated cdist/pdist failures). NOTE: not a domination — torch's 0.479ms is a vectorized
+bandwidth-ceiling reduction (reads once, SIMD); FT's scalar 2-read-per-element loop lands ~3ms.
+Closing the last 3-5x would need a SIMD/1-read closed-form (`dx·(rowsum - 0.5·(first+last))`),
+which changes rounding (tolerance reduction); deferred. ALSO STILL OPEN from the same sweep: renorm
+9.60x SLOWER (120ms), cumulative_trapezoid 3.94x SLOWER. kron/diagflat already FT-FASTER.
+
 ## 2026-06-29 - ⛔REJECTED (reverted): cov/corrcoef "transpose-free dgemm_bt gram" — 50ms -> 173ms (3x WORSE) for the realistic tall-skinny shape
 
 Agent `cc`. corrcoef measured 2.09x SLOWER (FT 50ms vs torch 24ms @ [N=100 vars, M=160000 obs] f32,
