@@ -12732,3 +12732,43 @@ Verdict: measured loss. Candidate code and candidate-only test were manually rem
 source diff remains. The lower-level direct dot defeats the existing GEMM microkernel for
 this recurrent shape, so do not land the `m == 1` FMA bypass without a different shape gate
 and same-worker h2h proof. AGENT PearlReef.
+
+## 2026-06-29 - ★ WIN + BUGFIX: no-grad f32 embedding errored (UnsupportedDType) -> works, correct F32 dtype, 2.24-2.47x FASTER vs PyTorch
+
+Agent `CoralDrift`. `tensor_embedding` with a `requires_grad=false` **f32** weight was
+broken, not merely slow: the no-grad path read the weight via `tensor_values`, which
+requires F64 storage and returns `Err(DenseTensor(UnsupportedDType(F32)))` for an f32
+table. The grad path (`requires_grad=true`) was fine; only the inference/frozen-table
+case crashed. torch keeps f32 and returns f32.
+
+Honest BEFORE measured by gating the new fast path off (`if false && ...`), rebuilding the
+example on `frankentorch-cc-local`, and running it: the original path **errors outright**
+(`Error: DenseTensor(UnsupportedDType(F32))`) — no ratio exists because nothing ran.
+
+Fix (already drafted in the dirty tree; verified + landed this session): a `!requires_grad
+&& dtype==F32 && contiguous` fast path that gathers f32 rows DIRECTLY into an f32 result
+(`contiguous_values_f32` + `par_chunks_mut(embedding_dim)` per-row `copy_from_slice`,
+gated on `PARALLEL_ELEMENTWISE_MIN`), returns the correct F32 tensor, and falls through to
+the f64 path for non-contiguous weights / grad / other dtypes. Index validation (out-of-
+range / negative / fractional) stays upstream of the dtype branch, so the three
+`functional_embedding_*` `is_err()` guards are unaffected (they use F64 weights). Halving
+the gathered bytes (f32 vs f64) on top of removing the f64 round-trip is the perf lever.
+
+Build + run (local glibc-2.42 example, PyTorch oracle `.venv-oracle`, torch CPU 8 threads),
+shape `[50000x128]` gathering `100000` indices:
+
+`CARGO_TARGET_DIR=/data/projects/.rch-targets/frankentorch-cc-local cargo build --release -p ft-api --example embedding_f32_h2h`
+`PYTORCH_PYTHON=/data/projects/frankentorch/.venv-oracle/bin/python <bin>`
+
+- BEFORE (fast path gated off): `Error: DenseTensor(UnsupportedDType(F32))` — crash.
+- AFTER: FT `3.81-4.17 ms` vs torch `8.92-9.73 ms` => **FT 2.24-2.47x FASTER**.
+- value: `dtype=F32` (was F64-or-crash), `bit_exact=4096/4096` vs torch f32 reference.
+
+Tests: `rch exec -- cargo test --release -p ft-api --lib embedding` => 18 passed, 0 failed
+(incl. out_of_range / negative / fractional index guards, grad accumulation + padding,
+`one_hot_and_embedding_golden_matches_torch`, `embedding_equals_index_select_of_weight_rows`).
+
+Verdict: landed. Generalizes the native-f32-gather recipe (cf. grid_sample 8caab800):
+f64-only ops that read a large f32 input via F64-required `tensor_values` both crash AND
+waste bandwidth on f32 inputs — mirror them with `contiguous_values_f32` direct gather.
+Next same-vein candidates: embedding_bag, affine_grid, pixel_shuffle. AGENT CoralDrift.
