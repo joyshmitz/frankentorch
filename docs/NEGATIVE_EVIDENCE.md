@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-29 - ★★★WIN (landed): cumulative_trapezoid 3.94x SLOWER -> 7.9x FASTER vs torch (141ms -> 4.5ms, fused per-row cumsum)
+
+Agent `cc`. Last gap from the misc sweep. `tensor_cumulative_trapezoid` is trapezoid's scan sibling
+(compose ends in cumsum instead of sum_dim): narrow+narrow+add+full_like+mul+cumsum = ~5 full-size
+materialisations, 141ms (3.94x SLOWER than torch's 35.8ms @ [4096,4096] f32, dim=1). For the
+uniform-spacing LAST-dim case (x=None) added a no-grad fused fast path: each output row is an
+independent running f64 cumsum of 0.5·(y[k]+y[k+1])·dx — computed in ONE parallel pass
+(par_chunks_mut over rows). Grad / x-given / inner-dim / non-contiguous / non-float fall through.
+
+MEASURED (FT default, torch 8t, min-of-7, 16M f32, clean window anchor 2.6-2.9x FASTER): **141ms ->
+4.5ms (~31x internal)**, flipping **3.94x SLOWER into 7.9x FASTER** (FT 4.5ms vs torch 35.8ms —
+torch's cumtrapz is ~75x its own trapezoid, a much slower scan path, so the fused FT cumsum wins
+comfortably; contrast trapezoid where torch's 0.479ms reduction is at the bandwidth ceiling and FT
+only reaches 3-5x SLOWER). `cumulative_trapezoid_basic` (exercises the fused path) + grad test + full
+`-p ft-api` suite green (2400 pass; only the 2 pre-existing cdist/pdist failures). MISC NaN/scan/
+reduction vein now: nansum/nanmean/nanprod/nanvar/nanstd FASTER, trapezoid+renorm gap-closed to ~3x,
+cumulative_trapezoid FASTER, kron/diagflat FASTER, corrcoef=peer GEMM.
+
 ## 2026-06-29 - ★WIN (landed, gap-closing) + a REJECTED sub-lever: renorm f32 9.6x SLOWER -> 3.1x SLOWER (120ms -> 44ms, asymmetric-dtype mirror); powf-elision REJECTED (~0-gain)
 
 Agent `cc`. The misc gap-finder flagged `tensor_renorm` 9.6x SLOWER (FT 120ms vs torch 12.6ms @
