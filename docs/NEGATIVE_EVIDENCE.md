@@ -4,6 +4,25 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-29 - ★★★WIN (landed): nanprod 6.73x SLOWER -> 1.72-1.79x FASTER vs torch (81ms -> 7.8ms, fused NaN->1 clean)
+
+Agent `cc`. Same lever as nansum, applied across the NaN family. A NaN-family gap-finder
+(`examples/nan_gapfind_h2h.rs`, anchor 2.08-2.34x FASTER) found `tensor_nanprod` 6.73x SLOWER vs
+the user-equivalent `torch.prod(torch.nan_to_num(a, nan=1.0))` (torch has no `nanprod`); nan_to_num
+was already 2.02x FASTER. nanprod's compose `ones_like + isnan + where(NaN->1) + prod` materialises
+3 tensors + f32->f64 round-trips. Replaced the cleaning with ONE parallel pass (NaN->1 on the
+borrowed contiguous f32/f64 storage) + reuse the SAME `tensor_prod` — bit-identical (cleaned values
+byte-for-byte `where(isnan,1,x)`; same reduction).
+
+MEASURED (FT default, torch 8t, min-of-7, ~16M f32, clean window): **81ms -> 7.8ms (~10x
+internal)**, flipping **6.73x SLOWER into 1.72-1.79x FASTER** (FT 7.7-7.9ms vs torch 13.6-13.8ms).
+Full `-p ft-api` suite green (2400 pass; only the 2 pre-existing unrelated cdist/pdist failures);
+fix is bit-identical to the prior compose by construction. STILL OPEN in the NaN family (torch
+lacks built-ins; baseline = mask + reduction): nanvar 3.62x SLOWER (155ms), nanstd 3.52x SLOWER
+(157ms) — heavier variance composes, same fused-clean + reuse-sibling lever should apply; and
+`tensor_nanmin`/`nanmax` have an F64-only fused fast path with f32 falling through (asymmetric-dtype
+— mirror it). nan_to_num already FT-FASTER (no change).
+
 ## 2026-06-29 - ★★★WIN (landed): nanmean 1.9x SLOWER -> 3.3-3.5x FASTER vs torch (51ms -> 8ms; reuse fused nansum + fused NaN count)
 
 Agent `cc`. Follow-up to the nansum fix. `tensor_nanmean` did NOT reuse the now-fast `tensor_nansum`
