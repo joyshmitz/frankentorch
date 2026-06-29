@@ -12808,3 +12808,33 @@ table upcast). ELEMENTWISE / same-size-copy crash-fixes (prelu, and by extension
 f32gate=False elementwise entries) are CORRECTNESS-ONLY — torch's fused SIMD + FT tape
 materialization make them perf losses. Fix them for parity, do not file them as perf wins.
 AGENT CoralDrift.
+
+## 2026-06-29 - ★ WIN: embedding_bag f32 no-grad native gather+reduce — max mode 2.35x SLOWER -> 3.47x FASTER vs torch; sum/mean 4.8-4.9x vs ORIG
+
+Agent `CoralDrift`. Same asymmetric-dtype bandwidth vein as the embedding win (2fa4c8ef).
+`tensor_embedding_bag` routes `weight` through `tensor_apply_function`, which UPCASTS the
+entire f32 table to f64 (read 25MB + write 51MB) before gathering — pure overhead for the
+common no-grad/inference case (it does NOT crash, unlike plain embedding, because apply_function
+upcasts via `contiguous_values_as_f64`). Added a `!grad && F32 && contiguous` fast path that
+reads the table once as f32, gathers + reduces per bag NATIVELY in f32 (same per-bag math,
+first-element max tie-break, and out-of-range check as the f64 closure), and returns F32.
+
+Bench `examples/embedding_bag_f32_h2h.rs` [50000x128] 20000 bags x8 idx, cc-local local build,
+PyTorch oracle `.venv-oracle` (torch CPU 8t). ORIG measured by gating the fast path off
+(`if false &&`) + rebuild. All modes bit_exact=8192/8192, dtype=F32:
+
+- mode=max:  ORIG FT `84-85 ms` (2.29-2.35x SLOWER vs torch ~36ms) -> AFTER FT `11.8 ms` =>
+  **7.2x vs ORIG and 3.24-3.47x FASTER vs torch** (FLIP). torch's CPU max-mode embedding_bag
+  is a slow generic kernel (~36-41ms); FT's single gather+per-column max beats it.
+- mode=sum:  ORIG FT `56-57 ms` -> AFTER FT `11.6 ms` = **4.9x vs ORIG**; vs torch `~0.8ms`
+  still 14x SLOWER (torch fuses gather+sum to sub-ms SIMD; FT pays the table read + tape
+  construct). Bit-exact, strict improvement over ORIG.
+- mode=mean: ORIG FT `54-55 ms` -> AFTER FT `11.4 ms` = **4.8x vs ORIG**; vs torch `~1.4ms`
+  still 8x SLOWER. Bit-exact, strict improvement over ORIG.
+
+HONEST: the headline is max-mode's torch-beating flip. sum/mean are large self-speedups
+(removing the f64 upcast) that remain slower than torch's fused gather-reduce — kept in the
+fast path because they are bit-exact and 4.8-4.9x faster than the prior FT code (strict win
+vs ORIG), not because they beat torch. Tests: `cargo test -p ft-api --lib embedding_bag` =>
+2 passed (grad propagation + parallel-matches-serial). Fast path only touches the no-grad f32
+path (previously the f64-upcast path) => zero regression. AGENT CoralDrift.
