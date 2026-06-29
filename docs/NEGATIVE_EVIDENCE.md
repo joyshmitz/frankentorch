@@ -4,6 +4,21 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): f32 entr 2.4x FASTER, xlog1py 3.2x FASTER, rel_entr (no torch baseline) — entropy/log siblings via the f32-native helpers
+
+Agent `BlackThrush`. The `if dt != DType::F64` grep's remaining clean (non-linalg, non-
+transcendental) members: entr/rel_entr/xlog1py — all UPCAST f32->f64 then narrow (rel_entr also
+composed ~10 tape ops). Wired the helpers: entr `x<0 ? -inf : x==0 ? 0 : -x*ln(x)`, xlog1py
+`(x==0 && !isnan(y)) ? 0 : x*ln1p(y)` (sibling of xlogy), rel_entr single-closure equivalent of the
+where-chain (`x==0 -> 0; x<0 -> inf; x>0 && y<=0 -> inf; else x*ln(x/y)`). BIT-IDENTICAL to current
+f32 (all already upcast-then-narrow).
+
+MEASURED (`crates/ft-api/examples/entr_probe_h2h.rs`, 16M f32, torch 8t, min-of-7): entr **2.40x
+FASTER** (7ms vs 16.8ms), xlog1py **3.23x FASTER** (7.2ms vs 23.4ms). rel_entr: torch 2.12 has NO
+`torch.special.rel_entr` (no baseline) — shipped as the bit-identical sibling (10-op upcast+compose
+-> single pass, FT 8.7ms); CONFORMANCE confirms correctness (13/0). Tests GREEN: entr/xlog1py/
+rel_entr 25/0 + conformance 13/0. The single-`ln` algebraic ops keep beating torch at default cores.
+
 ## 2026-06-28 - ★★WIN (landed): f32 celu 17.3x SLOWER -> 2.5x FASTER, selu 8.5x SLOWER -> 2.2x FASTER (f32-native activations)
 
 Agent `BlackThrush`. Activation sweep (`crates/ft-api/examples/activation_sweep_h2h.rs`) — most
