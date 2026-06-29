@@ -4,6 +4,32 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★★WIN (landed): argmax/argmin f32 40-50x SLOWER -> ~parity (drop the tape's 128MB f32->f64 upcast)
+
+Agent `BlackThrush`. An arg/reduce sweep (`crates/ft-api/examples/argreduce_h2h.rs`) found
+**argmax(dim=1) 41.5x SLOWER, argmin(dim=1) 49.8x SLOWER, argmax(dim=0) 10.5x SLOWER** (77.8ms vs
+torch 1.8ms @ [4096,4096]) — among the worst gaps of the session, on SUPER-COMMON ops. Root cause:
+the tape `argmax`/`argmin` (ft-autograd) call `contiguous_values_as_f64()` = a 128MB f32->f64 UPCAST
+clone before the f64 kernel, DESPITE a parallel native `argmax_dim_tensor_contiguous_f32` existing.
+
+FIX: ft-api `tensor_argmax`/`tensor_argmin` f32 fast path (`argextremum_f32_fast`) running the native
+f32 kernel on the BORROWED f32 values, indices widened f32->f64 to match the tape's F64 output.
+BIT-IDENTICAL index: f32->f64 is order-preserving (incl. NaN/tie semantics — the kernel has a
+matches-serial-with-ties-and-nan test), and indices < 2^24 are exact in f32. argmax is
+non-differentiable so there is no grad path. Tests GREEN: argmax/argmin 13/0.
+
+MEASURED: argmax(dim=1) **77.8ms -> 2.66ms = 29x self-speedup** = 1.51x SLOWER vs torch (1.10x FASTER
+@8t); argmin(dim=1) 1.35x SLOWER; argmax(dim=0) **10.5x SLOWER -> 1.39x FASTER**. Lands at ~parity
+(torch's argmax(dim=1) is SIMD-vectorized ~1.8ms = a per-element wall; FT parallel-scalar matches it
+at 8t). Gap-closing from 40-50x above the ceiling to the ceiling on a hot op. ★The
+`contiguous_values_as_f64()` call in ft-autograd is the SAME upcast-bug pattern as ft-api's
+`tensor_values_lossy_f64` — grep ft-autograd for it (other tape ops may upcast f32 too).
+
+NEGATIVE (same-turn, `crates/ft-api/examples/nan_reduce_h2h.rs`): nansum/nanmean ~2x SLOWER but
+WALLED — bit-exact requires `tensor_sum`'s order (can't fuse replace+sum like torch's single
+vectorized pass), so even a 2-pass rewrite stays slower. nanmin/nanmax already 5-10x FASTER. Don't
+re-probe nan-reductions.
+
 ## 2026-06-28 - ★★WIN (landed): ndtri 14.5x SLOWER -> 3.1x FASTER, angle 9.1x SLOWER -> 2.1x FASTER (more compose-elision)
 
 Agent `BlackThrush`. A loss/special sweep (`crates/ft-api/examples/loss_sweep_h2h.rs`) found
