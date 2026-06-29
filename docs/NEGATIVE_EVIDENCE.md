@@ -4,6 +4,31 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-29 - ★★★WIN (landed): f32 igamma/gammainc 3.47x + igammac/gammaincc 3.63x FASTER vs torch; zeta REJECTED (still 1.49x SLOWER)
+
+Agent `cc`. `tensor_igamma`/`tensor_igammac` (the binary incomplete-gamma ops, aliased as
+`special_gammainc`/`special_gammaincc`) took an explicit f32 upcast: `tensor_to_dtype` BOTH inputs
+to f64, recurse into the f64 path, then `tensor_to_dtype` the result back — THREE extra full-tensor
+alloc+copy passes (≈3×64MB @ 16M f32). Added `try_f32_binary_native(a, x, igamma_approx)` /
+`igammac_approx` at the top (equal-shape both-f32 no-grad; these ops don't broadcast anyway) —
+bit-identical to the prior f32 output (same `*_approx` the f64 path runs; f64->f32 narrow == `as
+f32`), output F32.
+
+MEASURED (FT default, torch 8t, min-of-7, ~16M f32, `examples/specfn4_sweep_h2h.rs`): igamma
+**3.47x** FASTER (FT 54.4ms vs torch 188.5ms), igammac **3.63x** FASTER (FT 55.5ms vs torch
+201.4ms). CORRECTNESS vs torch f32: both dtype=F32; igamma max_rel 7.5e-7, igammac max_rel 8.9e-7
+(~6 f32 ULP — UNCHANGED from prior FT, my change is bit-identical to the prior f32 path, only
+faster; the spread vs torch is torch's own f32 approximation, FT computes in f64 then narrows).
+
+★REJECTED — zeta (Hurwitz `tensor_zeta` / `special_zeta`): the SAME `try_f32_binary_native(s, a,
+zeta_approx)` fast path was bit-identical and removed the 3-pass upcast, but zeta is **1.49x
+SLOWER than torch regardless** (FT 530ms vs torch 356ms @ 16M f32) — FT's `zeta_approx` series is
+algorithmically slower per-element than torch's kernel, and the upcast is only ~4% of that. The
+fast path was reverted (a still-losing op is not a win to ship); a real zeta win needs a faster
+`zeta_approx` (Euler–Maclaurin / fewer terms), not the upcast lever. Retry condition: only after
+`zeta_approx` itself is sped up. ft-api suite green (2400 pass; the 2 pre-existing
+cdist/pdist_p_neq2_fused 1-ULP failures are unrelated).
+
 ## 2026-06-29 - ★★★WIN (landed): f32 log_ndtr 3.87x + mvlgamma/multigammaln 4.99x FASTER vs torch (apply_function -> f32 fast path)
 
 Agent `cc`. Continuation of the special-fn f32 vein. `tensor_special_log_ndtr` and
