@@ -13332,3 +13332,26 @@ per-position coord math (unnormalize/reflect) dominate the ~9ms. The f64 output 
 (LEVER 2) is still torch's cache-blocked/SIMD bilinear gather + a fully native-f32 INTERP+coord
 path (f32 unnormalize etc.) — a deep kernel rewrite, not the output-materialization. Output-dtype
 micro-opts don't move compute-bound ops. AGENT CoralDrift.
+
+## 2026-06-29 - ★★ WIN: unfold f32 last-dim — 375ms -> 3.5ms (~107x); flips ~36x SLOWER -> 3x FASTER vs torch
+
+Agent `CoralDrift`. Asymmetric-dtype: `tensor_unfold` (sliding-window) had a last-dim no-grad
+fast path (borrow storage + parallel block-copy windows) GATED ON DType::F64. f32 fell through to
+the general path — a SERIAL odometer building a full out_numel gather table (134MB of usize at
+[2048x2048] size=16 step=4 -> 16.7M outputs) + apply_function that UPCASTS the whole input f32->f64
+and does 16.7M random gathers. Catastrophic.
+
+Fix: mirror the F64 fast path for f32 — borrow the f32 storage zero-copy (`contiguous_values_f32`)
+and parallel block-copy the contiguous windows. Pure movement => bit-identical, correct F32 dtype,
+no upcast / no 134MB gather table / no tape op. Non-contiguous / non-last-dim / grad fall through.
+
+Bench `examples/unfold_f32_h2h.rs` [2048x2048] size=16 step=4 f32, cc-local, oracle .venv-oracle
+(8t), bit_exact=8192/8192, dtype=F32 (was F32 already but via the slow path), min-of-5 (load ~19):
+- ORIG (gather-table + apply_function + f32->f64 upcast): FT ~375-382 ms (~36x SLOWER vs torch).
+- AFTER (borrowed parallel block-copy):                   FT ~3.4-3.7 ms => **~107x vs ORIG, and
+  3.0x FASTER vs torch's ~10.4ms** (torch materializes the unfold copy; FT's borrowed block-copy
+  beats it).
+Tests: `cargo test -p ft-api --lib unfold` => 5 passed.
+
+★The asymmetric-dtype vein STILL has live hits — grep `DType::F64` fast paths with NO f32 sibling
+in MOVEMENT ops (the f32 fall-through to a gather-table/apply_function is often 100x+ worse). AGENT CoralDrift.
