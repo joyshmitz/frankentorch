@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): f32 addcdiv 7.45x SLOWER -> ~1.6x FASTER (f32-native fused pass; common in optimizers)
+
+Agent `BlackThrush`. A fused/elementwise sweep (`crates/ft-api/examples/fused_sweep_h2h.rs`) found
+addcmul/hardshrink already ~parity but **addcdiv 7.45x SLOWER** (108ms vs torch 14.6ms @16M f32).
+addcdiv had a no-grad fast path gated `== F64`; f32 fell to the composed path (div f32 ->
+`scale_by_constant` = `const_tensor_like(value as f32)` x mul -> add = 3 passes + a 128MB f32
+constant tensor). Added the f32 sibling: one parallel pass `id[i] + (d1[i]/d2[i]) * (value as f32)`
+— BIT-EXACT with the compose (checked scale_by_constant: it casts value->f32 and muls in f32, so the
+arithmetic + rounding + order match exactly). Tests GREEN: addcdiv 4/0.
+
+MEASURED (16M f32, torch 8t, min-of-7): **108ms -> ~8-11ms = 1.28-2.01x FASTER** (avg ~1.6x; 1.22x
+@8t). ⚠️addcdiv is BANDWIDTH-bound (3 reads + 1 write = 256MB) — one min-of-7 run caught a contended
+64t window (26.7ms = 1.83x SLOWER); RE-MEASURE on a bandwidth-bound op when default-cores looks
+worse than 8t (min-of-N can still include a fully-contended window). addcmul (1.42x) / hardshrink
+(1.60x) SLOWER are small/parity — left. normalize 3.44x SLOWER = next (Lp-norm reduction+div compose).
+
 ## 2026-06-28 - ★★★WIN (landed): f32 logsumexp 8.6x SLOWER -> 6.2x FASTER (f32-native per-lane fast path, drop the apply_function upcast+create_graph)
 
 Agent `BlackThrush`. logsumexp had a no-grad f64 per-lane fast path (max -> sum(exp(x-max)) -> max+
