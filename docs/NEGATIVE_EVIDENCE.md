@@ -13312,3 +13312,23 @@ f64 -> F64 (no regression). Tests: `cargo test -p ft-api --lib unique_consecutiv
 ★The wrong-dtype-for-f32 parity vein (read f32 via lossy/apply_function but BUILD F64 without
 narrowing) is now also harvested — scan: `values_lossy_f64(input)` + `tensor_variable(` + no
 `tensor_dtype`/narrow. AGENT CoralDrift.
+
+## 2026-06-29 - REJECT ~0-gain: grid_sample native-f32 OUTPUT (compute-bound, not output-bound)
+
+Agent `CoralDrift`. The biggest known gap is grid_sample f32 (~5-7x SLOWER vs torch). LEVER 1
+(native-f32 gather) shipped earlier; the residual: interp/coord math is f64 and the f32 caller
+builds an f64 output Vec then DOWNCASTS it (write-f64 + read-f64 + write-f32 = 3 passes of
+output-size bandwidth). Tried: make `grid_sample_f64` generic over the OUTPUT type `O` + a
+narrowing `convert`, so the f32 path materializes f32 DIRECTLY (1 write pass). Bit-identical
+(compute unchanged; the f32 values are the same `gather(...) as f32`), close(1e-5)=8192/8192.
+
+Result: ~0-gain. Bench `examples/grid_sample_f32_h2h.rs` [8x32x64x64]->[128x128] bilinear f32,
+cc-local, oracle .venv-oracle, min-of-5 (load ~14): ORIG (f64 out + downcast) ~9.79ms vs AFTER
+(native f32 out) ~9.21ms = ~1.06x (WITHIN NOISE). REVERTED the generic refactor (kept the bench).
+
+WHY: grid_sample is COMPUTE-bound — the 4-tap bilinear interp + the cache-miss-ish gather + the
+per-position coord math (unnormalize/reflect) dominate the ~9ms. The f64 output Vec + downcast is
+~50MB of bandwidth, small vs the compute, so removing it frees ~0.5ms (noise). ★The real lever
+(LEVER 2) is still torch's cache-blocked/SIMD bilinear gather + a fully native-f32 INTERP+coord
+path (f32 unnormalize etc.) — a deep kernel rewrite, not the output-materialization. Output-dtype
+micro-opts don't move compute-bound ops. AGENT CoralDrift.
