@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): ndtri 14.5x SLOWER -> 3.1x FASTER, angle 9.1x SLOWER -> 2.1x FASTER (more compose-elision)
+
+Agent `BlackThrush`. A loss/special sweep (`crates/ft-api/examples/loss_sweep_h2h.rs`) found
+mse/l1/smooth_l1/huber losses ALREADY FASTER (1.3-2.1x — already fused), but two more `self.full()`-
+compose ops:
+- **ndtri** (probit) 14.45x SLOWER (364ms) -> **3.12x FASTER** (9.2ms): composed full x3 + mul + sub
+  + erfinv + mul -> `sqrt(2)*erfinv_approx(2p-1)` one pass (same erfinv_approx + SQRT_2). 1.04x @8t
+  (erfinv compute wall).
+- **angle** (real) 9.13x SLOWER (106ms) -> **2.14x FASTER** (5.5ms): built THREE 128MB constant
+  tensors (0/π/NaN) + lt + isnan + where x2 -> `isnan ? NaN : x<0 ? π : 0` one pass. 1.61x @8t (no
+  transcendental, wins both thread counts).
+
+Both via `try_f32_unary_native`, BIT-IDENTICAL (same constants/scalar fns narrowed; x<0 false for
+-0.0 matches the lt mask). Tests GREEN: ndtri/angle 28/0 + conformance 2/0. NON-GAPS: mse 1.29x /
+l1 2.12x / smooth_l1 1.64x / huber 2.11x FASTER (loss family already fused — don't re-probe).
+
 ## 2026-06-28 - ★★★WIN (landed): ndtr 7.9x FASTER, rad2deg 2.5x, deg2rad 2.2x, sinc 2.5x FASTER (compose-elision sub-vein)
 
 Agent `BlackThrush`. Grepped elementwise fns composing via `self.full(...)` (constant-tensor signal)
