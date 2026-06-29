@@ -12987,3 +12987,28 @@ Tests: `cargo test -p ft-api --lib scatter_reduce` => 19 passed (incl. non-conti
 The borrowed-read lever is now proven on BOTH scatter_reduce + index_reduce. NEXT same lever:
 index_add, gather, take, masked_select-family — any no-grad kernel reading a large input via
 `tensor_values`/`values_f32` then consuming only `&[T]`. AGENT CoralDrift.
+
+## 2026-06-29 - ★★ WIN: index_add no-grad fast path — 484ms -> 11ms (~44x); was 271x SLOWER vs torch
+
+Agent `CoralDrift`. index_add (f32/f64) ALWAYS composed through scatter_add for autograd: it
+materialized a full [outer, src_dim, inner] EXPANDED index (33MB for [4096x1024]) replicating
+the 1-D index, then ran scatter_add's apply_function. For no-grad this was catastrophic — FT
+484ms vs torch 1.8ms = **271x SLOWER**.
+
+index_add is a bucketed SUM along `dim` (out[.., idx[r], ..] += src[.., r, ..]) = exactly the
+index_reduce kernel with reduce="sum", include_self=true. Added "sum" to `index_reduce_apply`
+(`*slot += sv`, no divide) and a no-grad fast path: borrow src storage zero-copy, read input
+straight into result, bucket-parallelize the accumulate over disjoint output rows. Sources
+accumulate in ascending `r` order = scatter_add's flat walk => bit-identical. Grad path
+unchanged (still composes through scatter_add for the tape).
+
+Bench `examples/index_add_f32_h2h.rs` [4096x1024] nsrc=16384 dim=0 f32, cc-local, oracle
+.venv-oracle (8t), bit_exact=8192/8192, dtype=F32:
+- ORIG (expanded-idx + scatter_add): FT 479-484 ms (271-294x SLOWER vs torch).
+- AFTER (no-grad fast path):          FT ~11 ms => **~44x vs ORIG** (5.5x SLOWER vs torch's
+  fused ~2ms — gap dropped from 271x).
+Tests: `cargo test -p ft-api --lib index_add` => 14 passed (incl. grad/backward cases).
+
+Pattern: borrowed-read + bucket-parallel, the 3rd op in the family (after scatter_reduce
+17d03467 + index_reduce 77ab1b63). NEXT: index_copy / scatter (plain) / gather / take. AGENT
+CoralDrift.
