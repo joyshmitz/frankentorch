@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-29 - ★★★WIN (landed): mul_scalar f32 6.42x SLOWER -> 2.31-2.36x FASTER vs torch (70ms -> 4.5ms, asymmetric-dtype f32 parallel mirror) — HOT CORE OP
+
+Agent `cc`. Pivoted from losses to the asymmetric-dtype re-grep (`== DType::F64` fast-path gates
+with f32 fall-through). `tensor_mul_scalar` — a HOT core op (attention scale, norm/affine, loss
+scaling, …) — had a no-grad PARALLEL fast path gated on F64 only; f32 fell through to the tape op
+which maps `value * (scalar as f32)` in f32 SERIALLY. Added the f32 parallel sibling — BIT-IDENTICAL
+(the tape's f32 path is already f32-native `value * (scalar as f32)`, so parallelising it is
+zero-blast-radius, not a rounding change).
+
+MEASURED (FT default, torch 8t, min-of-7, 16M f32; original measured by disabling the path =
+70.284ms = 6.42x SLOWER): **70ms -> ~4.5ms (~15x internal)**, flipping **6.42x SLOWER into
+2.31-2.36x FASTER** (FT 4.4-5.0ms vs torch 10-12ms), value **bit_exact 4096/4096** vs torch.
+Full `-p ft-api` suite green (2400 pass; only the 2 pre-existing cdist/pdist failures) — confirming
+zero blast radius despite mul_scalar being used internally by many ops. ★The asymmetric-dtype lever
+(F64-parallel fast path, f32-serial fall-through) is still live — re-grep more `== DType::F64` gates.
+
 ## 2026-06-29 - ⛔REJECTED (reverted, REGRESSION): multilabel_margin_loss "parallelise the serial forward" — 26ms -> 39ms (WORSE)
 
 Agent `cc`. Last loss without a fast path. Its no-grad forward runs inside apply_function looping
