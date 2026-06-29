@@ -4,6 +4,27 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-29 - ⛔REJECTED (reverted): cov/corrcoef "transpose-free dgemm_bt gram" — 50ms -> 173ms (3x WORSE) for the realistic tall-skinny shape
+
+Agent `cc`. corrcoef measured 2.09x SLOWER (FT 50ms vs torch 24ms @ [N=100 vars, M=160000 obs] f32,
+fixed bench, anchor clean). `tensor_cov` centers then does an EXPLICIT `tensor_transpose(centered)`
++ `tensor_matmul`; I hypothesised the transpose materialisation was the cost and replaced the
+no-grad unweighted path with a direct `centered @ centered.T` via
+`matmul_rhs_transposed_contiguous_f64` (the dgemm_bt kernel the pdist/cdist fast paths use), centering
+in one parallel pass.
+
+MEASURED: **REGRESSED to 173ms (7.1-7.4x SLOWER, 3x WORSE than the 50ms compose)**. Root cause: the
+realistic corrcoef shape is tall-skinny — N=M_out=100, contraction K=160000. dgemm_bt computes each
+of the 100×100 gram entries as a dot of two length-160000 rows; with 128MB of centered data not
+fitting in cache, the kernel re-streams it ~N times (bandwidth-bound), whereas the original
+transpose+`tensor_matmul` blocks the huge-K dimension better. (Also hit `contiguous_values()` is
+F64-ONLY — it errors `UnsupportedDType(F32)`; must use `contiguous_values_as_f64()` for f32 — which
+silently made the first measurement a 0.003ms error path.) FULLY REVERTED; cov/corrcoef back to the
+compose (13 tests green throughout). The real corrcoef gap (FT 50ms vs torch/MKL 24ms) is FT's GEMM
+kernel vs MKL on a tall-skinny shape — a ft-kernel-cpu GEMM concern (peer-reserved; see GEMM
+bandwidth vein), NOT an ft-api compose lever. Retry condition: a K-blocked tall-skinny GEMM
+microkernel, not the dgemm_bt swap.
+
 ## 2026-06-29 - ★★★WIN (landed): nanvar/nanstd 3.5-3.6x SLOWER -> ~11x FASTER vs torch (155ms -> 4ms, two-pass fused variance)
 
 Agent `cc`. The NaN-family gap-finder flagged `tensor_nanvar` 3.62x / `tensor_nanstd` 3.52x SLOWER
