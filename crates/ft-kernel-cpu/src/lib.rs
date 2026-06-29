@@ -6873,6 +6873,28 @@ pub fn conv2d_backward_f64(
 /// `p == +inf` reduces by max-abs; finite `p > 0` accumulates `Σ|Δ|^p` then takes
 /// the `1/p` power. (`p == 0` / `p == 2` are handled by their own paths.)
 #[must_use]
+/// Per-element power matching `pow_tensor_contiguous_f64`'s integer-exponent elision
+/// (kgs4.172): `x^1=x`, `x^2=x*x`, `x^3=x*x*x`, `x^-1=1/x` are BIT-EXACT vs torch f64
+/// (libm `powf` is 1 ULP off torch for those), else libm `powf`. The fused cdist/pdist
+/// p-norm paths must use this for BOTH the per-element `|Δ|^p` AND the final `Σ^(1/p)`
+/// so they stay bit-identical to the broadcast op-graph (which goes through `tensor_pow`)
+/// and to torch — `powf` alone was 1 ULP off for integer `p` (e.g. p=3) and integer `1/p`
+/// (e.g. p=0.5 -> 1/p=2), which broke the cdist/pdist isomorphism tests.
+#[inline]
+fn pow_p_elide_int(x: f64, p: f64) -> f64 {
+    if p == 1.0 {
+        x
+    } else if p == 2.0 {
+        x * x
+    } else if p == 3.0 {
+        x * x * x
+    } else if p == -1.0 {
+        1.0 / x
+    } else {
+        x.powf(p)
+    }
+}
+
 pub fn cdist_forward_f64(
     x1: &[f64],
     x2: &[f64],
@@ -6919,9 +6941,9 @@ pub fn cdist_forward_f64(
                 } else {
                     for k in 0..m {
                         let diff = (x1[x1_base + k] - x2[x2_row + k]).abs();
-                        dist += diff.powf(p);
+                        dist += pow_p_elide_int(diff, p);
                     }
-                    dist = dist.powf(inv_p);
+                    dist = pow_p_elide_int(dist, inv_p);
                 }
                 *slot = dist;
             }
@@ -6975,9 +6997,9 @@ pub fn pdist_forward_f64(input: &[f64], n: usize, m: usize, p: f64) -> Vec<f64> 
                 } else {
                     for k in 0..m {
                         let diff = (input[i_base + k] - input[j_base + k]).abs();
-                        dist += diff.powf(p);
+                        dist += pow_p_elide_int(diff, p);
                     }
-                    dist = dist.powf(inv_p);
+                    dist = pow_p_elide_int(dist, inv_p);
                 }
                 row.push(dist);
             }

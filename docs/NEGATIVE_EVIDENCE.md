@@ -13251,3 +13251,25 @@ change; orthogonal). f64-only reads => zero f64 regression by construction.
 
 ★This retires the in-place f32-crash sub-vein in one uniform pass (the writeback was already
 dtype-aware — only the read needed broadening). AGENT CoralDrift.
+
+## 2026-06-29 - FIX (conformance GREEN): fused cdist/pdist p-norm 1-ULP off torch for integer p -> bit-exact (2 red tests restored)
+
+Agent `CoralDrift`. cdist_p_neq2_fused_nograd_matches_broadcast_bit_exact + pdist_... were RED on
+main (1-ULP fused-vs-broadcast mismatch at p=3). Root cause (diagnosed, not guessed): the broadcast
+op-graph goes through `tensor_pow`, which ELIDES integer exponents to repeated multiplication
+(x^2=x*x, x^3=x*x*x, x^-1=1/x) specifically to match torch f64 (kgs4.172: "ft's powf was 1 ULP off
+torch" for integer exp). The fused `cdist_forward_f64`/`pdist_forward_f64` used `diff.powf(p)` +
+`dist.powf(inv_p)` — so for integer p (p=3) AND integer 1/p (p=0.5 -> 1/p=2) the fused path was
+1 ULP off BOTH the broadcast op-graph AND torch. The `tensor_pow` elision was added after the fused
+kernel, silently breaking the isomorphism.
+
+Fix: shared `pow_p_elide_int(x, p)` helper replicating tensor_pow's exact elision (1/2/3/-1 ->
+mult, else powf), used at all 4 sites (per-element |Δ|^p + final Σ^(1/p), in both cdist & pdist).
+Surgical change to the two fused forwards only.
+
+Tests: `cargo test -p ft-api --lib p_neq2_fused_nograd_matches_broadcast_bit_exact` => 2 passed
+(were FAILED); `--lib cdist` 12 passed, `--lib pdist` 9 passed (no regression); `-p ft-kernel-cpu`
+563 passed. ⚠️ONE unrelated PRE-EXISTING red remains on main: `product_f32_simd_contiguous_matches_
+existing_parallel_product_for_finite_rows` (ft-kernel-cpu f32 SIMD product — a DIFFERENT code path
+my diff does not touch; surfaced for its owner). Method: diagnosed the ULP source by reading both
+pow paths, not by guessing. AGENT CoralDrift.
