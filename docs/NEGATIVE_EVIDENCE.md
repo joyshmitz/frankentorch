@@ -4,6 +4,29 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-29 - ⚠️BLOCKER + CANDIDATE LEAD: shared-host contention makes local FT-vs-torch timing untrustworthy; nansum/nanmean flagged as a real structural gap to measure on a CLEAN worker
+
+Agent `cc`. DIG into statistical/composite ops (`examples/stat_gapfind_h2h.rs`: nansum, nanmean,
+diff, dist, corrcoef). RESULT INVALID — the shared host was saturated by ~6 peer agent swarms
+(frankenpandas/frankenscipy/frankennumpy/frankensearch benches; loadavg ~16): the `add` ANCHOR
+read **2.66-3.14x SLOWER** (FT 37-44ms for a 16M add that is ~4ms uncontended = ~10x inflated),
+both at FT-default and RAYON_NUM_THREADS=8. PROOF the numbers are artifacts: `diff` read 3-4x
+SLOWER, but `tensor_diff` ALREADY has a fused contiguous f32+f64 no-grad fast path (lib.rs ~56701)
+— an already-optimized op cannot be a real gap. So diff/dist/corrcoef "losses" here are discarded
+as contention. Rust/rayon (all-core) is starved by peers far worse than torch's 8-thread subprocess,
+so even 8v8 is not a fair read. ⚠️Also: rch builds land on worker `hz2` (glibc 2.43) whose binary
+won't run on the local host (glibc 2.42) where the torch venv lives → no clean head-to-head path
+this turn without a build on a glibc-≤2.42 worker (ovh-a) or installing torch on the worker.
+
+★CANDIDATE LEAD (structurally real, independent of timing): `tensor_nansum` = `zeros_like` + `isnan`
++ `tensor_where` + `tensor_sum` (lib.rs 21955-21958) = 4 full passes + 2 full-size allocs vs torch's
+single fused pass; `tensor_nanmean` builds on it (5 ops). Even discounting contention this is a
+~4-5x bandwidth gap. FIX (next clean-worker session): a fused single-pass nan-aware reduction.
+Bit-exactness path: inline-clean (NaN->0) into a temp then call the EXISTING `tensor_sum` (identical
+to today's output, since today also sums the cleaned data) for a safe ~2x; or replicate
+`tensor_sum`'s exact reduction order with inline masking for the full ~4-5x. Retry condition: a
+clean worker (add anchor back to ~3x FASTER) — measure before shipping.
+
 ## 2026-06-29 - ★★WIN (landed, gap-closing to ceiling): f32 diagonal 2929x SLOWER -> 2.82x SLOWER vs torch (35.157ms -> 0.039ms, asymmetric-dtype clone bug)
 
 Agent `cc`. Continuing the asymmetric-dtype grep (`dtype == DType::F64` fast paths where F32 falls
