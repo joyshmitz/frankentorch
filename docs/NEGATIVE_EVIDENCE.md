@@ -12772,3 +12772,39 @@ Verdict: landed. Generalizes the native-f32-gather recipe (cf. grid_sample 8caab
 f64-only ops that read a large f32 input via F64-required `tensor_values` both crash AND
 waste bandwidth on f32 inputs — mirror them with `contiguous_values_f32` direct gather.
 Next same-vein candidates: embedding_bag, affine_grid, pixel_shuffle. AGENT CoralDrift.
+
+## 2026-06-29 - PARITY FIX (no perf win): no-grad f32 PReLU errored (UnsupportedDType) -> works bit-exact; perf lever REJECTED (torch fused SIMD floor)
+
+Agent `CoralDrift`. Continuation of the embedding crash-vein (2fa4c8ef). Scanned ft-api for
+the exact pattern — a fn with a grad path via `tensor_apply_function` (which upcasts f32 via
+`contiguous_values_as_f64`, ft-autograd:8442) PLUS a separate no-grad path that reads inputs
+via the F64-ONLY `tensor_values` (crashes on f32). Python scan over fn bodies found 34 such
+functions; `tensor_prelu` was the hottest with no f32 gate.
+
+CONFIRMED BUG: `tensor_prelu` no-grad path (lib.rs ~19069) called `tensor_values(weight)` +
+`tensor_values(input)` directly => `Err(DenseTensor(UnsupportedDType(F32)))` for f32 storage.
+So no-grad f32 PReLU (inference of an f32 PReLU net) was BROKEN, not slow. torch keeps f32.
+
+FIX (landed): native-f32 no-grad fast path — `prelu_forward_values_f32` (f32 select+multiply,
+rayon over `PARALLEL_ELEMENTWISE_MIN`), gated `!grad(input) && !grad(weight) && both F32 &&
+both contiguous`, returns F32 via `tensor_variable_f32`. Bit-identical to torch (f32 math
+inside the closure). Falls through to the f64 path for grad/non-f32/non-contiguous.
+Tests: `cargo test -p ft-api --lib prelu` => 2 passed (backward parity + scalar weight); the
+fast path only touches the previously-CRASHING path => zero regression risk.
+
+PERF (honest, REJECTED as a lever): bench `examples/prelu_f32_h2h.rs` [8x256x56x56]=6.4M f32
+per-channel, cc-local local build, PyTorch oracle `.venv-oracle` (torch CPU 8t):
+- value: dtype=F32, bit_exact=8192/8192 (was a crash).
+- perf: FT `5.5-7.5 ms` vs torch `0.20-0.31 ms` => **FT ~18-38x SLOWER**.
+This is NOT a perf win. PReLU is a pure elementwise op: torch fuses it to a single SIMD pass
+on a cache-hot tensor (~0.2ms), while FT pays tape materialization — `contiguous_values_f32`
+clone + compute + `tensor_variable_f32` construct (~3 passes over 25.6MB). No single lever
+flips an elementwise op below torch's fused-SIMD floor, so the perf gap stays open by design;
+the CORRECTNESS (crash->bit-exact) is the entire value here.
+
+VEIN LESSON: crash-fixes in this 34-fn vein are PERF wins only when the op GATHERS / avoids a
+big f64 upcast with an output of different size (embedding: 2.4x FASTER, gather skips whole-
+table upcast). ELEMENTWISE / same-size-copy crash-fixes (prelu, and by extension the other
+f32gate=False elementwise entries) are CORRECTNESS-ONLY — torch's fused SIMD + FT tape
+materialization make them perf losses. Fix them for parity, do not file them as perf wins.
+AGENT CoralDrift.
