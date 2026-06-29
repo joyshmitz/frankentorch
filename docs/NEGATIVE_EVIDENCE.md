@@ -4,6 +4,25 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★★WIN (landed): aminmax 31.6x SLOWER -> 2.3x FASTER (fuse the two dim-reductions into one min+max scan) — NEW VEIN
+
+Agent `BlackThrush`. A reduction sweep (`crates/ft-api/examples/reduction_sweep_h2h.rs`) found
+std_mean/var_mean/atan2 already FASTER but **aminmax 31.63x SLOWER** (160ms vs torch 5ms @ [4096,4096]
+reduce dim=1) — the BIGGEST single gap of the session. Root cause: aminmax COMPOSED `tensor_min_dim`
++ `tensor_max_dim` = TWO full dim-reductions that EACH also compute argmin/argmax INDICES (which
+aminmax discards), while torch fuses min+max in ONE index-free pass.
+
+FIX (no-grad f32/f64 fast path): scan each output lane ONCE tracking both min and max (parallel over
+lanes via `(0..out_numel).into_par_iter()`, lane base = outer_idx*dim_size*inner + inner_idx, stride
+`inner`). No indices, one pass. BIT-EXACT: min/max are the exact extrema; any-NaN -> (NaN,NaN)
+propagation matches torch.min/max (and the old compose). Tests GREEN: aminmax 4/0.
+
+MEASURED: **160ms -> 1.9ms = 2.33x FASTER vs torch** (FT default cores; 2.56x @8t — beats torch at
+BOTH thread counts, ~84x self-speedup). ★NEW VEIN distinct from the f32-upcast one: ops that COMPOSE
+multiple full reductions/passes where torch FUSES them (look for `tensor_*_dim` + `tensor_*_dim`
+composition, or value-ops that needlessly compute discarded indices). Sweep also flagged elementwise
+asinh 11.8x / acosh 6.5x SLOWER (the f32-upcast vein — transcendental log+sqrt, parity-class at best).
+
 ## 2026-06-28 - ★★WIN (landed): f32 entr 2.4x FASTER, xlog1py 3.2x FASTER, rel_entr (no torch baseline) — entropy/log siblings via the f32-native helpers
 
 Agent `BlackThrush`. The `if dt != DType::F64` grep's remaining clean (non-linalg, non-
