@@ -4,6 +4,25 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-29 - ⛔REJECTED (reverted, ~0-gain): bucketize/searchsorted f32 uniform-interpolation search; gap is I/O-bound not search-bound. (unique/quantile confirmed FT-FASTER)
+
+Agent `cc`. A selection/search gap-finder (`examples/sel_gapfind_h2h.rs`, anchor 3.0x FASTER, 16M
+f32) measured: unique **2.90x FASTER**, quantile **2.58x FASTER** (radix-select, already won),
+bucketize **1.32x SLOWER** (FT 46.5ms vs torch 35.3ms — the only gap). Found a real asymmetric
+gap: `tensor_searchsorted` (which backs bucketize) has an f64 uniform-spacing INTERPOLATION search
+(`uniform_searchsorted_f64`/`lower_bound_uniform_f64`, O(1) for evenly-spaced bins) but the f32
+branch always did plain binary search. Mirrored it for f32 (`uniform_searchsorted_f32` +
+lower/upper_bound_uniform_f32, bit-identical via the same f32-comparison refinement; 12
+searchsorted/bucketize tests green).
+
+MEASURED: **~0-GAIN** (46.5ms -> ~47ms, within noise) even though the uniform model IS detected
+(exact 4.0-spaced f32 bins). Root cause: with only 256 bins the binary search is ~8 cheap steps —
+NOT the bottleneck. bucketize's cost is I/O: it reads 16M values, materialises a **16M f64 index
+Vec (128MB)**, then converts to the int output. The search algorithm is a tiny fraction. REVERTED
+(per REVERT ~0-gain). Retry condition: the real lever is emitting the integer index output directly
+(skip the f64 Vec), OR very large bin counts (≫256) where binary-search depth actually dominates —
+neither applies to the realistic bucketize. NOTE: unique + quantile are FT-FASTER (don't re-probe).
+
 ## 2026-06-29 - ★★★WIN (landed): cumulative_trapezoid 3.94x SLOWER -> 7.9x FASTER vs torch (141ms -> 4.5ms, fused per-row cumsum)
 
 Agent `cc`. Last gap from the misc sweep. `tensor_cumulative_trapezoid` is trapezoid's scan sibling
