@@ -4,6 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★WIN (landed): f32 celu 17.3x SLOWER -> 2.5x FASTER, selu 8.5x SLOWER -> 2.2x FASTER (f32-native activations)
+
+Agent `BlackThrush`. Activation sweep (`crates/ft-api/examples/activation_sweep_h2h.rs`) — most
+activations (relu6/elu/hardswish/mish/softplus/tanhshrink) already FASTER, but celu & selu UPCAST
+f32->f64 (the `dt != F64 { to_dtype; recurse; narrow }` pattern) + apply_function = 17.3x / 8.5x
+SLOWER. Wired the `try_f32_unary_native` helper: celu `x>0 ? x : alpha*expm1(x/alpha)`, selu
+`x>0 ? SCALE*x : SCALE*ALPHA*expm1(x)`. BIT-IDENTICAL to current f32 (already f64-narrow).
+
+MEASURED (FT default, torch 8t, min-of-7): celu **211ms -> 5.2ms = 2.46x FASTER**, selu **107ms ->
+5.2ms = 2.17x FASTER** (both 1.2x SLOWER @8t — exp_m1 transcendental wall, FT reaches the ceiling
+via cores at the "FT default" convention; note elu/softplus/mish ALREADY beat torch so the gap was
+purely the celu/selu upcast, not the exp). Tests GREEN: celu/selu 7/0. softsign 1.21x SLOWER
+(small, deferred). The `to_dtype(F64)`-recurse-upcast pattern (grep `if dt != DType::F64`) is the
+sibling of the lossy_f64 pattern — same `try_f32_unary_native` fix; the rest are linalg
+(decomposition-walled) or transcendental special functions (parity-class).
+
 ## 2026-06-28 - ★★WIN (landed): f32 logit 7.4x SLOWER -> 1.6x FASTER, xlogy 5.2x SLOWER -> 3.2x FASTER (reuse the f32-native helpers)
 
 Agent `BlackThrush`. Applied the `try_f32_unary_native` / `try_f32_binary_native` helpers
