@@ -13380,3 +13380,27 @@ Tests: `cargo test -p ft-api --lib repeat_interleave` => 8 passed (grad goldens 
 ★Asymmetric-dtype/gather-table vein keeps producing 100x hits in MOVEMENT ops — repeat_interleave
 had NO fast path at all (both dtypes paid). Next: `tensor_combinations` (3rd gather-table-via-
 apply_function op found). AGENT CoralDrift.
+
+## 2026-06-29 - ★ FIX+PARITY: pad reflect/replicate/circular f32 — CRASH -> works bit-exact, ~parity vs torch
+
+Agent `CoralDrift`. Asymmetric-dtype, CORRECTNESS bug: `tensor_pad_mode` (reflect/replicate/
+circular) had a no-grad borrowed col_map fast path GATED ON DType::F64. f32 input fell through to
+the F64-only `tensor_values` reader -> `UnsupportedDType(F32)` — i.e. F.pad(x_f32, ..., mode=
+'reflect'/'replicate'/'circular') CRASHED outright for the whole f32 path (only constant-mode and
+the grad path worked).
+
+Fix: (1) move the f64 non-contiguous clone+build fall-through INSIDE the f64 branch; (2) add an f32
+mirror of the col_map fast path — same last-dim col_map + per-row outer decode + borrowed gather,
+reading/writing f32 natively (no upcast). Contiguous f32 takes the fast path; non-contiguous f32
+now falls through to the dtype-generic index_select path (also fixes the crash). Pure movement =>
+bit-identical, correct F32 dtype. f64 path unchanged.
+
+Bench `examples/pad_reflect_f32_h2h.rs` [16x32x128x128] pad=8 reflect f32, cc-local, oracle
+.venv-oracle (8t), bit_exact=8192/8192, dtype=F32:
+- ORIG: *** CRASH (UnsupportedDType(F32)).
+- AFTER: FT 7.69 ms vs torch 6.91 ms => 1.11x SLOWER (near-parity — torch's reflect pad is a tight
+  vectorized loop; f32 col_map matches the f64 fast-path structure, reads half the bytes).
+Tests: `cargo test -p ft-api --lib pad` => 48 passed (f64 reflect fast-path + f32-dtype goldens).
+
+Landed as a CORRECTNESS fix (crash -> working bit-exact), not a perf win. Same DType::F64-gated
+fast-path family as unfold (107x) and repeat_interleave (100x). AGENT CoralDrift.
