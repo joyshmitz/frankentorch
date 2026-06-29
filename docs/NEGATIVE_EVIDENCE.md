@@ -12945,3 +12945,26 @@ BANDWIDTH-bound on materializing the 134MB f64 `source` via `values(source)` (cl
 it again in the reduction, same TAPE-I/O wall as scatter_reduce. Closing it needs a borrowed
 source read (no clone), a deeper lever. The ~1.6x + crash fix + dtype fix are a strict win.
 AGENT CoralDrift.
+
+## 2026-06-29 - ★★ WIN: index_reduce borrowed source — 110ms -> 27ms (~4x); FLIPS 5.5x SLOWER -> parity-or-FASTER vs torch (the tape-I/O wall, broken)
+
+Agent `CoralDrift`. Follow-up to 168f130d, which left index_reduce ~5x SLOWER than torch with
+the residual identified as the 134MB f64 `source` CLONE (`tensor_values`/`values_f32` deep-copy
+the whole input). Confirmed `DenseTensor::contiguous_values()/_f32()` return a BORROWED `&[f64]`/
+`&[f32]` zero-copy. Read the source storage by reference (contiguous-gated; non-contiguous falls
+back to the clone) — the kernel only needs `&[T]`.
+
+This single change removed the dominant materialization pass:
+Bench [4096x1024] nsrc=16384 dim=0 f64, cc-local, oracle .venv-oracle (8t):
+- amax: 109.9 -> 26-29 ms (~4x) => 5.5x SLOWER -> **1.04x FASTER** vs torch.
+- prod: 108  -> 29-36 ms (~3.3x) => ~parity (1.04-1.56x).
+- mean: 115  -> 27-28 ms (~4x) => **2.5x FASTER** vs torch.
+Total since true-ORIG (serial+clone): 175ms -> 27ms = **~6.5x**, 8.5x SLOWER -> faster-than-torch.
+Tests: `cargo test -p ft-api --lib index_reduce` => 3 passed (bit-identical — borrow reads the
+SAME storage the clone copied).
+
+★★KEY: the tape-I/O wall flagged on scatter_reduce + index_reduce IS closeable — borrow the
+contiguous storage (`contiguous_values()`) instead of cloning via `values()`. This is THE lever
+for the scatter/index/gather family. NEXT: apply the same borrowed read to scatter_reduce (33MB
+idx + 16MB src clones), index_add, gather, take — wherever a no-grad kernel reads a large input
+via `tensor_values`/`values_f32` then only consumes `&[T]`. AGENT CoralDrift.
