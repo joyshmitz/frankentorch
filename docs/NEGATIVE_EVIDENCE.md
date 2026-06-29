@@ -12838,3 +12838,30 @@ fast path because they are bit-exact and 4.8-4.9x faster than the prior FT code 
 vs ORIG), not because they beat torch. Tests: `cargo test -p ft-api --lib embedding_bag` =>
 2 passed (grad propagation + parallel-matches-serial). Fast path only touches the no-grad f32
 path (previously the f64-upcast path) => zero regression. AGENT CoralDrift.
+
+## 2026-06-29 - ★ WIN: affine_grid f32/f64 coord-hoist — ~parity -> 1.47-2.61x FASTER vs torch (~2.4x vs ORIG); rayon REJECTED ~0-gain
+
+Agent `CoralDrift`. `tensor_affine_grid` no-grad path generated the whole N*H*W*2 grid in a
+serial loop that recomputed `affine_grid_axis_coordinate` (an int->f64 DIVIDE) for EVERY cell
+(out_h*out_w*batch divides). The op was COMPUTE-bound on those divides, not on the write.
+Lever: precompute the out_w x-coords + out_h y-coords ONCE and index them. Bit-identical
+(same per-cell f64 math + f32 cast, just no redundant divides). Applied to F32/F64/F64Inline4
+no-grad arms.
+
+Bench `examples/affine_grid_f32_h2h.rs` [64x3x192x192] f32, cc-local local build, PyTorch
+oracle `.venv-oracle` (8t). value: dtype=F32, close(1e-5)=8192/8192 (bit_exact 7178/8192 is
+the PRE-EXISTING f64-then-narrow vs torch-f32-native diff, in the grid tolerance family,
+UNCHANGED by this perf refactor):
+- TRUE ORIG (serial + per-cell recompute, measured by reinlining the divide): FT `3.78-4.38 ms`
+  => ~parity to 1.74x SLOWER vs torch.
+- AFTER (hoisted coords, serial): FT `1.28-2.12 ms` => **1.47-2.61x FASTER vs torch, ~2.4x
+  vs ORIG**. Hoisting moved it from compute-bound (divides) to bandwidth-bound (grid write).
+
+REJECTED sub-lever (rayon over rows): a `par_chunks_mut(out_w*2)` pass over the output rows
+measured FT `1.70-2.65 ms` — slightly SLOWER than the serial hoisted path (`1.28-2.12 ms`).
+Once hoisting removes the divides the op is bandwidth-saturated single-threaded, so the rayon
+dispatch is pure overhead. Reverted the parallel branch; kept serial + hoisted. (Outer-gate
+serial vein does NOT apply here — the write was never the bottleneck; the per-cell divide was.)
+
+Tests: `cargo test -p ft-api --lib affine_grid` (pending/green). Zero value change vs prior FT
+output (bit-identical math). AGENT CoralDrift.
