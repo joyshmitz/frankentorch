@@ -4,7 +4,22 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
-## 2026-06-29 - ★HIGH-VALUE LEAD (surfaced, not yet fixed): grid_sample f32 9.63x SLOWER vs torch (71.6ms vs 7.4ms) — biggest measured gap
+## 2026-06-29 - ★★WIN (landed, gap-closing): grid_sample f32 9.63x SLOWER -> 4.05-4.85x SLOWER vs torch (71.6ms -> 35ms, native-f32 gather)
+
+Agent `cc`. Landed lever (1) from the lead below. Made `grid_sample_f64` GENERIC over the input
+element type (`<T> where f64: From<T>`; gather does `f64::from(input[idx])`), so the no-grad f32
+path passes the f32 storage DIRECTLY instead of converting the whole 8M input to f64 first. The
+random bilinear gather now reads f32 (half the bytes + better cache) and the input-conversion pass
+is gone; coord/interp math stays f64 so the result is BIT-IDENTICAL (`f64::from(f32)` exact).
+MEASURED (16M-ish, [8,64,128,128] bilinear, `examples/gridsample_h2h.rs`): **71.6ms -> 35-37ms
+(~2x internal)**, 9.63x SLOWER -> **4.05-4.85x SLOWER**; value unchanged (2690/4096 bit-exact,
+max_abs 5.96e-8). 13 grid_sample tests (golden-vs-torch, all modes, f32 grad, bit-exact) + full
+`-p ft-api` lib suite green (2400 pass; 2 pre-existing cdist/pdist). RESIDUAL ~4.5x = lever (2):
+torch's vectorised/cache-blocked bilinear gather (block [N,H,W] positions by input tile, SIMD the
+4-tap interp) — a deeper kernel rewrite, still open. (The grad path keeps the f64 apply_function;
+only the no-grad f32 forward is accelerated.)
+
+## 2026-06-29 - ★HIGH-VALUE LEAD (lever 1 LANDED above; lever 2 open): grid_sample f32 — biggest measured gap was 9.63x SLOWER
 
 Agent `cc`. Pivoted to a new primitive class (spatial sampling). MEASURED `tensor_grid_sample` f32
 **9.63x SLOWER** (FT 71.6ms vs torch 7.4ms @ [8,64,128,128] bilinear/zeros/align_corners=false,
