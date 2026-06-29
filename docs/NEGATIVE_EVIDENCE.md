@@ -13163,3 +13163,26 @@ Tests: `cargo test -p ft-api --lib masked_scatter` => 8 passed.
 
 Same family pattern (compose-through-autograd-with-materialization + F64-only read crash on
 f32), now also covering the mask-driven scatter. AGENT CoralDrift.
+
+## 2026-06-29 - WIN: index_put single-index no-grad — route to index_copy/index_add — 41ms -> 11ms (~3.7x); was 26x SLOWER vs torch
+
+Agent `CoralDrift`. `tensor_index_put` (advanced indexing) cloned every index tensor + UPCAST
+f32 values -> f64, then ran the tape kernel. No-grad single-index f32 FT 41ms vs torch 1.5ms =
+26.5x SLOWER.
+
+The common case — a SINGLE 1-D index selecting whole dim-0 slices (values shaped [n, input[1..]])
+— is exactly index_copy (accumulate=false) / index_add (accumulate=true) along dim 0, both of
+which already have direct borrowed-read no-grad fast paths (546eee8b / 11301445). Route the
+no-grad single-index case to them. Bit-identical for in-range indices (torch index_put on
+duplicate indices with accumulate=false is unspecified, as is index_copy). Multi-index /
+broadcasting / grad / non-f32f64 / dtype-mismatch fall through to the tape path unchanged.
+
+Bench `examples/index_put_probe_h2h.rs` [4096x1024] n=4096 single-idx overwrite f32, cc-local,
+oracle .venv-oracle (8t), bit_exact=8192/8192, dtype=F32 (clean min — machine was at load 42.9,
+contended reads discarded):
+- ORIG (tape index_put + f32->f64 upcast): FT ~41 ms (26.5x SLOWER vs torch ~1.5ms).
+- AFTER (route to index_copy):             FT ~11 ms => **~3.7x vs ORIG** (8x SLOWER vs torch).
+Tests: `cargo test -p ft-api --lib index_put` => 13 passed.
+
+Reuses the proven index_copy/index_add no-grad kernels (zero new kernel risk). 9th op in the
+no-grad scatter/index/mask family this session. AGENT CoralDrift.
