@@ -13404,3 +13404,29 @@ Tests: `cargo test -p ft-api --lib pad` => 48 passed (f64 reflect fast-path + f3
 
 Landed as a CORRECTNESS fix (crash -> working bit-exact), not a perf win. Same DType::F64-gated
 fast-path family as unfold (107x) and repeat_interleave (100x). AGENT CoralDrift.
+
+## 2026-06-29 - ★★ WIN: combinations r=2 f32/f64 — 305ms -> 16ms (~19x); flips 2.72x SLOWER -> 7.29x FASTER vs torch
+
+Agent `CoralDrift`. `tensor_combinations` built the full combo index table with a SERIAL recursion
+(`generate_idx`, ~6.2M usize pushes at n=2500 r=2), then CLONED it (a second 50MB usize Vec just for
+the backward closure) and gathered through apply_function (which UPCASTS f32->f64) + a tape node.
+
+Two-part fix: (1) general no-grad fast path — gather native (f32 stays f32) in parallel reusing the
+combo table directly (no clone, no upcast, no tape): 305 -> 181ms (1.59x SLOWER, generate_idx still
+serial). (2) r==2 (the dominant pairwise case) closed-form fast path BEFORE generate_idx: pairs
+(i,j), j in (i+1 | i)..n in lexicographic order are fully described in closed form, so fill the
+output in PARALLEL over the first element i via flat_map_iter (order-preserving = matches torch),
+skipping generate_idx + the index table entirely. 181 -> 16ms.
+
+Bench `examples/combinations_f32_h2h.rs` [n=2500 r=2] f32, cc-local, oracle .venv-oracle (8t),
+bit_exact=8192/8192, dtype=F32:
+- ORIG (serial generate_idx + 50MB clone + f32->f64 upcast + tape): FT 305 ms (2.72x SLOWER).
+- AFTER (r==2 parallel closed-form fill):                            FT  16 ms => **~19x vs ORIG,
+  7.29x FASTER vs torch's ~117ms**.
+Tests: `cargo test -p ft-api --lib combinations` => 4 passed (basic, with_replacement, grad, empty).
+
+r!=2 keeps the general no-grad parallel-gather path (1.59x SLOWER, generate_idx-bound — winnable
+later via combinatorial-number-system unranking). Grad / non-contiguous fall through. Same
+F64-gated/apply_function-gather family as unfold (107x), repeat_interleave (100x), pad (crash fix).
+f32_crash_probe.rs swept take_along_dim/flip/roll/tensordot/cartesian_prod/block_diag/trace/diag —
+all f32-clean (no more crashes in that batch). AGENT CoralDrift.
