@@ -12887,3 +12887,34 @@ there is no gap to close. ★LESSON: the coord-hoist lever pays ONLY when the op
 on the recomputed function (small output relative to per-cell work). For large-output spatial
 ops (big upsample) the write dominates → hoist is ~0-gain. Check output-size vs per-cell-work
 before hoisting. AGENT CoralDrift.
+
+## 2026-06-29 - ★ WIN: scatter_reduce no-grad — 123ms -> 57ms (~2.1x vs ORIG), removed per-element heap alloc + per-element divide + serial scatter/validate
+
+Agent `CoralDrift`. Probing torch's rare-mode CPU paths (cf. embedding_bag max) surfaced a
+catastrophic FT gap instead: no-grad f32 `scatter_reduce` was FT 110-140x SLOWER than torch
+(~123ms vs ~1ms) for sum/amax/amin/prod. Three stacked pathologies in the no-grad loop:
+1. `let mut coords = vec![0usize; ndim];` INSIDE the per-element loop — a heap alloc per
+   scatter element (millions of allocs).
+2. the flat->multi-dim unravel did a pair of HARDWARE INTEGER DIVIDES per element.
+3. the scatter + the index validation were both fully serial.
+
+Fixes (all bit-identical, verified bit_exact=8192/8192 all 5 modes): (a) eliminate the
+per-element coords Vec — accumulate out_flat inline; (b) walk idx in (outer, dim, inner)
+order so flat_i/out_flat are loop-carried mul/add (no divides), same scatter order =
+bit-identical; (c) parallelize over `outer` — each outer row owns a DISJOINT [dim_size*inner]
+output segment (no cross-row write conflict), so `par_chunks_mut` over rows is race-free
+(generic `scatter_reduce_apply<T>`, per-chunk counts + mean-divide); (d) parallelize the
+shared `validate_index_tensor_values` per-element check via `par_iter().try_for_each`
+(error-preserving) — helps every index op.
+
+Bench `examples/scatter_reduce_f32_h2h.rs` [4096x1024] k=1024 f32, cc-local local build,
+PyTorch oracle `.venv-oracle` (8t), all modes bit_exact=8192/8192, dtype=F32:
+- ORIG: sum 123.6 / amax 126.6 / amin 123.9 / prod 122.5 / mean 153.9 ms.
+- AFTER: sum 57.1 / amax 56.6 / amin 62.7 / prod 62.0 / mean 57.8 ms => **~2.0-2.7x vs ORIG**.
+
+HONEST: still 44-59x SLOWER than torch (~1ms). The scatter itself is now parallel/fast; the
+residual is TAPE-MODEL I/O — reading the 33MB f64 index + 16MB input + 16MB src as cloned
+Vecs, cloning input, and reconstructing the 16MB output around a ~1ms scatter. Closing that
+needs borrowed-slice reads / in-place tape mutation (deeper, separate lever). The ~2x here
+removes the egregious per-element alloc+divide pathologies and is a strict bit-exact win vs
+ORIG. AGENT CoralDrift.
