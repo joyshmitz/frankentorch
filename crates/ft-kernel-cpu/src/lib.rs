@@ -12477,6 +12477,127 @@ pub fn max_dim_tensor_contiguous_f64(
     Ok((values, indices))
 }
 
+/// f32-native combined (values, indices) max-reduction along `dim` — ONE pass per lane (vs the
+/// 2-pass extremum+argmax fast path). Mirrors `max_dim_tensor_contiguous_f64`'s lane rule exactly
+/// (first strict-max wins, NaN short-circuits to its index) on f32 values, so it is BIT-EXACT with
+/// the f64 kernel (f32->f64 is order-preserving). Values stay f32; indices are f32 (exact for
+/// reduce_size < 2^24).
+pub fn max_dim_values_indices_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<(Vec<f32>, Vec<f32>), KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "max_dim shape volume overflow")?;
+    let out_numel = checked_mul(outer_size, inner_size, "max_dim shape multiplication overflow")?;
+    if out_numel == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    if reduce_size == 0 {
+        return Err(KernelError::EmptyReductionDim { dim });
+    }
+    let offset = meta.storage_offset();
+    let mut values = vec![f32::NEG_INFINITY; out_numel];
+    let mut indices = vec![0.0_f32; out_numel];
+    let data = &input[offset..];
+    let lane = |out_idx: usize, v: &mut f32, ix: &mut f32| {
+        let outer = out_idx / inner_size;
+        let inner = out_idx % inner_size;
+        let base = outer * reduce_size * inner_size + inner;
+        for r in 0..reduce_size {
+            let val = data[base + r * inner_size];
+            if val.is_nan() {
+                *v = f32::NAN;
+                *ix = r as f32;
+                break;
+            } else if val > *v {
+                *v = val;
+                *ix = r as f32;
+            }
+        }
+    };
+    if out_numel.saturating_mul(reduce_size) >= PARALLEL_THRESHOLD
+        && rayon::current_num_threads() > 1
+    {
+        values
+            .par_iter_mut()
+            .zip(indices.par_iter_mut())
+            .enumerate()
+            .for_each(|(i, (v, ix))| lane(i, v, ix));
+    } else {
+        for (i, (v, ix)) in values.iter_mut().zip(indices.iter_mut()).enumerate() {
+            lane(i, v, ix);
+        }
+    }
+    Ok((values, indices))
+}
+
+/// f32-native combined (values, indices) min-reduction along `dim` — sibling of
+/// [`max_dim_values_indices_contiguous_f32`] (first strict-min `<` wins, NaN short-circuits).
+pub fn min_dim_values_indices_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<(Vec<f32>, Vec<f32>), KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "min_dim shape volume overflow")?;
+    let out_numel = checked_mul(outer_size, inner_size, "min_dim shape multiplication overflow")?;
+    if out_numel == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    if reduce_size == 0 {
+        return Err(KernelError::EmptyReductionDim { dim });
+    }
+    let offset = meta.storage_offset();
+    let mut values = vec![f32::INFINITY; out_numel];
+    let mut indices = vec![0.0_f32; out_numel];
+    let data = &input[offset..];
+    let lane = |out_idx: usize, v: &mut f32, ix: &mut f32| {
+        let outer = out_idx / inner_size;
+        let inner = out_idx % inner_size;
+        let base = outer * reduce_size * inner_size + inner;
+        for r in 0..reduce_size {
+            let val = data[base + r * inner_size];
+            if val.is_nan() {
+                *v = f32::NAN;
+                *ix = r as f32;
+                break;
+            } else if val < *v {
+                *v = val;
+                *ix = r as f32;
+            }
+        }
+    };
+    if out_numel.saturating_mul(reduce_size) >= PARALLEL_THRESHOLD
+        && rayon::current_num_threads() > 1
+    {
+        values
+            .par_iter_mut()
+            .zip(indices.par_iter_mut())
+            .enumerate()
+            .for_each(|(i, (v, ix))| lane(i, v, ix));
+    } else {
+        for (i, (v, ix)) in values.iter_mut().zip(indices.iter_mut()).enumerate() {
+            lane(i, v, ix);
+        }
+    }
+    Ok((values, indices))
+}
+
 pub fn min_dim_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,

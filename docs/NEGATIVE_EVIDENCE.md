@@ -4,6 +4,24 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-28 - ★★★WIN (landed): max_dim/min_dim f32 ~40x SLOWER -> near-parity / 2.4x FASTER (combined 1-pass f32 value+index kernel)
+
+Agent `BlackThrush`. Sibling of the argmax fix: `tensor_max_dim`/`tensor_min_dim` (torch.max/min(dim)
+returning values+indices) also went through the tape's `contiguous_values_as_f64()` 128MB upcast +
+f64 kernel = ~40x SLOWER. Added an ft-api no-grad f32 fast path (`extremum_dim_f32_fast`).
+- First cut used the existing native f32 kernels SEPARATELY (extremum_f32 value + argmax_f32 index)
+  = TWO scans -> max_dim(dim=1) 4.08ms = 2.75x SLOWER (torch does value+index in ONE pass).
+- Wrote a COMBINED 1-pass kernel `max_dim_values_indices_contiguous_f32` / `min_..._f32` in
+  ft-kernel-cpu (exact mirror of `max_dim_tensor_contiguous_f64`'s lane: first strict `>`/`<` wins,
+  NaN short-circuits to its index — BIT-EXACT on f32, f32->f64 order-preserving). One scan ->
+  max_dim(dim=1) **1.69ms = 1.14x SLOWER vs torch** (near-parity, torch's is SIMD), min_dim(dim=1)
+  1.29x SLOWER, **max_dim(dim=0) 4.65ms = 2.40x FASTER**.
+
+~47x self-speedup (80ms -> 1.69ms); values stay F32, indices widened F32->F64 (tape parity). No-grad
+contiguous f32 only (grad -> tape backward). LESSON: when matching torch on a (value,index) reduction,
+a 2-pass (separate value + index kernel) leaves you ~2x behind — torch fuses; write the COMBINED
+1-pass kernel. Tests GREEN: max_dim/min_dim (kernel+api+conformance).
+
 ## 2026-06-28 - ★★★WIN (landed): argmax/argmin f32 40-50x SLOWER -> ~parity (drop the tape's 128MB f32->f64 upcast)
 
 Agent `BlackThrush`. An arg/reduce sweep (`crates/ft-api/examples/argreduce_h2h.rs`) found
