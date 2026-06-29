@@ -4,6 +4,26 @@ This ledger records optimization attempts that failed, regressed, or did not
 clear the benchmark bar. Do not retry a rejected lever unless the retry condition
 is explicitly satisfied.
 
+## 2026-06-29 - ★★WIN (landed, gap-closing to ceiling): f32 diagonal 2929x SLOWER -> 2.82x SLOWER vs torch (35.157ms -> 0.039ms, asymmetric-dtype clone bug)
+
+Agent `cc`. Continuing the asymmetric-dtype grep (`dtype == DType::F64` fast paths where F32 falls
+through). `tensor_diagonal` had an F64 no-grad fast path that reads the `diag_len` strided diagonal
+elements DIRECTLY, but **F32 fell through** to `tensor_reshape([m*n])` (which CLONES the whole m*n
+storage in ft-api) + `index_select` gather — O(m*n) to keep `diag_len` elements. On a 4000x4000
+f32 matrix that was **35.157ms** = 2929x SLOWER than torch. Added the mirror F32 fast path
+(contiguous, no-grad: borrow via `contiguous_values_f32`, read the strided diagonal directly, build
+f32). Bit-identical (same diagonal values, same f32 no-grad leaf).
+
+MEASURED (FT default, torch 8t, min-of-7, 4000x4000 f32, `examples/diag_h2h.rs`): **35.157ms ->
+0.039ms (~900x internal speedup)**, taking FT from **2929x SLOWER to 2.82x SLOWER** vs torch.
+CORRECTNESS: dtype=F32, bit_exact 512/512. NOTE: this is NOT a domination win — `torch.diagonal`
+returns a zero-copy VIEW (~0.012ms, structurally O(1)) which FT cannot beat because FT materialises
+a real tensor; the residual 2.82x is fixed per-op overhead at the ~25µs noise floor. But fixing a
+35ms->0.039ms f32 regression (f32 was 900x slower than the SAME op in f64) is legitimate
+gap-closing to torch's algorithmic ceiling (per the asymmetric-dtype playbook: "parity at the
+ceiling = legitimate gap-closing"). `session_tensor_diagonal_f32` + full `-p ft-api` suite green
+(2400 pass; only the 2 pre-existing unrelated cdist/pdist_p_neq2_fused failures remain).
+
 ## 2026-06-29 - ★★★WIN (landed): nextafter f32 9.97x SLOWER -> 2.10x FASTER vs torch (asymmetric-dtype gap: f32 fell through to a SERIAL upcast path)
 
 Agent `cc`. DIG into binary-composite ops. A gap-finder sweep (`examples/binop_gapfind_h2h.rs`)
