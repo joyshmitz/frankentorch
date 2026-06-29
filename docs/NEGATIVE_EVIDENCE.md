@@ -13061,3 +13061,28 @@ Tests: `cargo test -p ft-api --lib index_fill` => 11 passed.
 5th op in the no-grad scatter/index fast-path family (scatter_reduce/index_reduce/index_add/
 index_copy/index_fill). The compose-through-autograd-with-materialization anti-pattern is now
 swept across the 1-D-index ops. NEXT: plain scatter (idx same-shape-as-src). AGENT CoralDrift.
+
+## 2026-06-29 - WIN: scatter_add no-grad fast path — 120ms -> 52ms (~2.3x); was 25x SLOWER vs torch
+
+Agent `CoralDrift`. scatter_add (the base op that index_add/copy/fill compose through) routed
+ALL no-grad calls through the autograd tape kernel: cloned the index, UPCAST f32 src -> f64
+(16MB f32 -> 33MB f64), then ran the tape scatter_add. No-grad f32 FT 120ms vs torch 4.7ms =
+25x SLOWER (bit-exact 8192/8192 — the current f64-narrow already matches torch here).
+
+scatter_add == scatter_reduce with reduce="sum". No-grad fast path (f32/f64, gated on index
+shape == input shape except at `dim` = the FT scatter constraint): borrow src zero-copy (NO
+f32->f64 upcast), read input into result, reduce via the existing `scatter_reduce_apply` (sum).
+Half / grad / non-matching-shape fall through to the tape op unchanged.
+
+Bench `examples/scatter_add_probe_h2h.rs` [4096x1024] nsrc=4096 dim=0 f32, cc-local, oracle
+.venv-oracle (8t), bit_exact=8192/8192, dtype=F32:
+- ORIG (tape kernel + f32->f64 upcast): FT ~120-125 ms (25x SLOWER vs torch).
+- AFTER (no-grad fast path):            FT ~52 ms => **~2.3x vs ORIG** (10x SLOWER vs torch).
+Tests: `cargo test -p ft-api --lib scatter_add` => 11 passed (f32-native bit-exact to goldens).
+
+HONEST: only 2.3x (vs the family's bigger wins) because **dim=0 has outer=1**, and
+scatter_reduce_apply parallelizes over `outer` — so the dim=0 scatter runs SERIAL (the win is
+purely removing the f32 upcast + tape overhead). scatter conflicts run ALONG `dim`, so dim=0
+same-shape scatter can't parallelize over disjoint output rows without per-cell buckets
+(memory-heavy) / atomics / sort — torch uses those. dim>=1 scatter_add DOES parallelize here.
+The f32->f64 src upcast removal generalizes to scatter (plain). AGENT CoralDrift.
