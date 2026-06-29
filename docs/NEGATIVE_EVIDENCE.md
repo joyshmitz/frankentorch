@@ -13113,3 +13113,27 @@ Tests: `cargo test -p ft-api --lib scatter` => 68 passed (scatter/scatter_add/sc
 masked/diagonal/slice). HONEST: 2.1x (dim=0 serial, same limit as scatter_add 0ad9d906) — the
 win is removing the f32 upcast + tape overhead. The "copy" arm only affects this path
 (scatter_reduce passes sum/prod/mean/amax/amin). AGENT CoralDrift.
+
+## 2026-06-29 - REJECT: dim=0 scatter parallel via counting-sort-by-target — REGRESSES (63ms -> 81-92ms)
+
+Agent `CoralDrift`. The documented "one big unclaimed lever": parallelize dim=0 (outer==1)
+scatter, which `scatter_reduce_apply` runs SERIAL (it pars over `outer`, and dim=0 has a single
+output segment). Tried: counting-sort the source flat positions by their target row (stable, O(n)
+count + O(n) fill), then reduce each disjoint output row in parallel via par_chunks_mut(inner).
+Bit-exact (8192/8192, the stable sort preserves per-cell flat order).
+
+Result: REGRESSION. scatter [4096x1024] nsrc=4096 dim=0 f32: serial 63ms -> counting-sort
+81-92ms. REVERTED (`scatter_reduce_apply` restored; the landed serial path stays).
+
+WHY it's slower despite parallelizing: the serial outer-walk reads `src` SEQUENTIALLY (flat
+order) and writes `result` randomly-by-target into the L3-resident 16MB output — the random
+WRITES were never the bottleneck (L3 hits). The counting-sort INVERTS this: it makes `src` reads
+RANDOM (gather by sorted source position, scattered across 16MB) + adds a 33MB `sorted` array
+with a random-write fill pass. The added random-gather bandwidth + sort overhead exceed the
+parallelism gain. ★LESSON: for scatter, SEQUENTIAL src read + random L3 write (serial) beats
+random src gather + parallel write (sorted) — don't trade sequential reads for parallelism when
+the random side is already L3-resident. torch's ~5ms dim=0 scatter uses a different primitive
+(likely SIMD + cache-blocked tiles, not sort). The dim=0 serial scatter (the ~2.1x landed wins
+for scatter/scatter_add) is the achievable ceiling for the rayon-bucket approach; closing to
+torch needs SIMD/tiling in ft-kernel-cpu (peer scope), not an ft-api rayon rewrite. AGENT
+CoralDrift.
