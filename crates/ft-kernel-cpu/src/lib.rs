@@ -11453,12 +11453,22 @@ pub fn dot_tensor_contiguous_f64(
     // preserve. Same O(log N · ε) precision contract — collect
     // builds a contiguous Vec that pairwise_sum_f64 reads as a
     // slice. Tracked under frankentorch-cunc.
-    let scratch: Vec<f64> = lhs_slice
-        .iter()
-        .zip(rhs_slice)
-        .map(|(&l, &r)| l * r)
-        .collect();
-    Ok(pairwise_sum_f64(&scratch))
+    //
+    // For large N, parallelize BOTH the product collect (rayon collect is
+    // order-preserving → identical scratch) and the reduction via the par
+    // pairwise sum (same mid=len/2 tree → bit-for-bit identical). The serial
+    // dot was the whole op's wall (~739x SLOWER than torch's BLAS dot at 4M).
+    let scratch: Vec<f64> = if n >= SUM_PARALLEL_THRESHOLD {
+        use rayon::prelude::*;
+        lhs_slice
+            .par_iter()
+            .zip(rhs_slice.par_iter())
+            .map(|(&l, &r)| l * r)
+            .collect()
+    } else {
+        lhs_slice.iter().zip(rhs_slice).map(|(&l, &r)| l * r).collect()
+    };
+    Ok(pairwise_sum_f64_maybe_par(&scratch))
 }
 
 pub fn outer_tensor_contiguous_f64(
@@ -29477,12 +29487,22 @@ pub fn dot_tensor_contiguous_f32(
     // zip+map+collect mirrors the f64 fix (frankentorch-cunc):
     // skip the zero-init memset since the scratch is single-use
     // and every cell is unconditionally overwritten.
-    let scratch: Vec<f32> = lhs_slice
-        .iter()
-        .zip(rhs_slice)
-        .map(|(&l, &r)| l * r)
-        .collect();
-    Ok(pairwise_sum_f32(&scratch))
+    //
+    // For large N, parallelize BOTH the product collect (order-preserving →
+    // identical scratch) and the reduction via the par pairwise sum (same
+    // mid=len/2 tree → bit-for-bit identical). Mirrors the f64 dot fix; the
+    // serial dot was the wall (~739x SLOWER than torch's BLAS dot at 4M).
+    let scratch: Vec<f32> = if n >= SUM_PARALLEL_THRESHOLD {
+        use rayon::prelude::*;
+        lhs_slice
+            .par_iter()
+            .zip(rhs_slice.par_iter())
+            .map(|(&l, &r)| l * r)
+            .collect()
+    } else {
+        lhs_slice.iter().zip(rhs_slice).map(|(&l, &r)| l * r).collect()
+    };
+    Ok(pairwise_sum_f32_maybe_par(&scratch))
 }
 
 pub fn outer_tensor_contiguous_f32(

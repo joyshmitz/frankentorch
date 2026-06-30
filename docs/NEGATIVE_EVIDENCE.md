@@ -13509,3 +13509,29 @@ Residual vs torch (~40-49x in DEBUG) is now the input RESHAPE (dstack/column_sta
 input to add a trailing 1 before cat) + output construction + debug-vs-release bandwidth — NOT the
 fill. The interleave fast path benefits the whole stack-along-last-dim family, not just these two.
 Follow-up: check whether tensor_reshape clones (would be the next lever). AGENT CoralDrift.
+
+## 2026-06-30 - ★★ WIN: dot / vdot f64+f32 — 69.8ms -> 8.6ms (~8x); flips 739x SLOWER -> 78x SLOWER vs torch
+
+Agent `CoralDrift`. `dot_tensor_contiguous_f64/f32` (the kernel behind tensor_dot / vdot) was FULLY
+SERIAL: a serial `lhs.iter().zip(rhs).map(|l,r| l*r).collect()` into a `n`-sized scratch Vec, then
+a serial `pairwise_sum`. At n=4M that's a serial 4M-multiply + 16MB collect + serial pairwise pass —
+measured 69.8ms, ~739x SLOWER than torch's BLAS sdot (0.094ms). NOT asymmetric (both dtypes serial).
+
+Fix (both dtypes): for n >= SUM_PARALLEL_THRESHOLD (524288), parallelize the product collect
+(rayon's IndexedParallelIterator collect is ORDER-PRESERVING → identical scratch) and use the
+already-existing `pairwise_sum_*_maybe_par` for the reduction (splits the SAME mid=len/2 tree via
+rayon::join → documented BIT-FOR-BIT identical). So bit-exact in all cases; small n keeps the serial
+path verbatim.
+
+Bench `examples/gapfind3_clean_h2h.rs` vdot [4M] f32 (inputs OUTSIDE timer), cc-local, oracle
+.venv-oracle (8t), min-of-5:
+- ORIG (serial collect + serial pairwise_sum): FT 69.8 ms (739x SLOWER).
+- AFTER (parallel collect + par pairwise sum): FT  8.6 ms => **~8x vs ORIG, 78x SLOWER vs torch**.
+Tests: `cargo test -p ft-kernel-cpu --lib dot` (dot_tensor_contiguous_pairwise_precision_at_large_n
++ matmul pairwise) + full ft-kernel-cpu lib => 564 passed, 0 failed.
+
+Residual (~78x debug) is torch's BLAS sdot (FMA SIMD + threads, ~340GB/s) vs FT's bit-exact scalar
+pairwise dot + debug-vs-release; in release FT's parallel pairwise is ~1-2ms (~10-15x, the bit-exact-
+pairwise-vs-BLAS floor). FOLLOW-UP lever: a FUSED pairwise_dot (sum a[i]*b[i] with the same mid tree,
+NO 16MB scratch) — bit-identical, removes the alloc+16MB-write+16MB-read (~2x more). gapfind3 also
+found kron 57.8x + roll(multi-dim) 16.47x SLOWER (next); fliplr/flipud already FT-faster. AGENT CoralDrift.
