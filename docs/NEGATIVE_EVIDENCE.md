@@ -13631,3 +13631,36 @@ kron's gap is scalar-inner-multiply vs torch SIMD (needs f32x8, cross-crate ft-a
 deferred). prod 14.75x = already parallel (prod_dim global par_chunks path), SIMD/cache-bound.
 sum/mean/var/std 2-5x SLOWER = FT's accurate pairwise reduce vs torch flat-SIMD (precision policy,
 NOT a lever). AGENT CoralDrift.
+
+## 2026-06-30 - ★ WIN: rot90 f32+f64 cache-blocked transpose — f32 31x SLOWER -> ~8.5x (3.01ms->1.50ms, ~2.0x)
+
+Agent `SlateTern`. `rot90(k=1|3, [0,1])` had a no-grad fast path gated on `DType::F64` ONLY — f32
+fell through to the `flip(transpose(x))` compose (the ASYMMETRIC-DTYPE gap; gapfind2_clean f32
+[2048,2048] = 31x SLOWER vs torch). But the f64 fast path itself was a NAIVE single-pass gather that
+reads DOWN a column (stride = `cols`), wasting ~15/16 of every cache line — the strided-transpose
+wall. Same-process A/B (inputs OUTSIDE timer, min-of-9) proved the naive single-pass was only 1.06x
+vs the compose (FT's transpose is a LAZY view, so the compose was already ONE strided flip pass).
+
+★LEVER = CACHE-BLOCKED TRANSPOSE (NOT just dtype-mirror): tile the output into TILE×TILE (=64) blocks;
+read the matching input block via CONTIGUOUS row runs into an L1-resident `[T;TILE*TILE]` buffer,
+transpose+flip INSIDE the buffer, then write output rows contiguously. Both reads and writes are now
+sequential; the strided access is confined to the L1-resident tile. Generalized over f32/f64 via a
+`rot90_build!($read,$zero,$build)` macro (contiguous_values / contiguous_values_f32). Parallel over
+a-tiles (`out.par_chunks_mut(TILE*rows)`), serial-tiled fallback below PARALLEL_ELEMENTWISE_MIN.
+Bit-identical (pure positional movement) — same index formula, just blocked traversal.
+
+★Same-process min-of-9 A/B (cc-local --release, inputs outside timer, contention-invariant ratios):
+- f32: OLD compose 3.56ms -> tiled 1.61ms = **2.21x** (TILE=64; TILE=32 was 1.84ms, worse).
+- f64: naive single-pass 3.33ms -> tiled 2.46ms = 1.35x (f32 = 0.66x of f64, half the bytes).
+- bit-exact: f32 tiled == compose (to_bits equal); f32 tiled == f64 tiled on partial-tile [130,67].
+★vs-torch (gapfind2_clean f32 [2048,2048], load ~12): FT 1.50ms vs torch 0.11-0.18ms = **8.5-13.6x
+SLOWER** (was 31x). Residual = torch's AVX512 register-transpose (~106GB/s) vs FT scalar-tiled
+(~20GB/s); SIMD register-transpose would close more (bigger lever, deferred). Tests: `cargo test -p
+ft-api --lib rot90` => 9 passed (incl new rot90_f32_nograd_parallel_tiled_matches_f64 covering the
+parallel tiled path + partial tiles in both dims).
+
+★LESSON: an asymmetric-dtype fast path that's itself strided-transpose-bound won't win by mirroring —
+the naive single-pass barely beat the lazy-transpose compose (1.06x). The win came from CACHE-BLOCKING
+the transpose (read contiguous tile rows, transpose in L1, write contiguous rows). Movement ops that
+are TRANSPOSE-shaped (rot90, future: as_strided/permute-materialize) need tiling, NOT just
+parallelize-the-write. AGENT SlateTern.
