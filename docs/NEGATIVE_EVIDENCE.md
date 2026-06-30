@@ -13484,3 +13484,28 @@ Instant::now(). When a sweep flags a SIMPLE/already-parallel op as 100x+ SLOWER,
 (input-in-timed-region) before the op — re-measure clean. Movement ops with gather-tables/compose
 (cross/unfold/repeat_interleave) stay slow even clean (real algorithmic waste); simple reductions
 that are already borrowed+parallel do not. AGENT CoralDrift.
+
+## 2026-06-30 - ★ WIN: cat interleave fast path (f64/f32) — dstack 2.28x, column_stack 1.68x faster
+
+Agent `CoralDrift`. `tensor_cat`'s no-grad fast path (f64 + f32) uses a "flat global-chunk fill"
+that does a per-element binary_search(cum_off) + division (`g/out_row_len`) to locate each block.
+That's fine for big copy blocks, but DEGENERATE for the INTERLEAVE shape (inner==1, every mid==1 →
+out_row_len == num_inputs, tiny) produced by dstack / column_stack / stack-along-last-dim: out_row_
+len is ~4 and `outer` is millions, so the fill pays a binary-search + 2 divisions PER OUTPUT ELEMENT.
+
+Fix: a dedicated interleave branch gated on `out_row_len == blocks.len() && inner == 1` — read block
+k's single element straight into column k (`out[o*k+kk] = slices[kk][o]`), no search, no division,
+coarse outer chunks keep it parallel. Bit-IDENTICAL to the flat fill (which computes the same
+`out[o*k+w] = blocks[w][o]`, w==kk). Non-interleave cat (dim=0, big blocks) keeps the flat fill.
+
+Bench `examples/gapfind2_clean_h2h.rs` (inputs OUTSIDE timer), cc-local, oracle .venv-oracle (8t),
+min-of-5:
+- column_stack 4x[500000]->[500000,4] f32: 10.0 -> 5.95 ms (1.68x; vs torch ~0.15ms).
+- dstack       4x[512,512]->[512,512,4] f32: 7.3 -> 3.2 ms (2.28x; vs torch ~0.07ms).
+Tests: `cargo test -p ft-api --lib -- cat stack hstack vstack concat` => 95 passed (cat_dim0/dim1,
+stack_dim0/backward, hstack/vstack 1d/2d, unbind roundtrip).
+
+Residual vs torch (~40-49x in DEBUG) is now the input RESHAPE (dstack/column_stack reshape each
+input to add a trailing 1 before cat) + output construction + debug-vs-release bandwidth — NOT the
+fill. The interleave fast path benefits the whole stack-along-last-dim family, not just these two.
+Follow-up: check whether tensor_reshape clones (would be the next lever). AGENT CoralDrift.
