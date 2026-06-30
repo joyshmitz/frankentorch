@@ -13457,3 +13457,30 @@ torch / standard_basis / anti_commutativity / diff_golden all green).
 Found via `examples/gapfind_batch_h2h.rs` sweep — also surfaced count_nonzero 208x SLOWER + cumprod
 115x SLOWER (next targets); meshgrid 10007x is torch returning lazy views (not a fair target).
 Same DType::F64-gated fast-path family as unfold/repeat_interleave/pad/combinations. AGENT CoralDrift.
+
+## 2026-06-30 - ⛔ CORRECTION + REJECT: count_nonzero (208x) + cumprod (115x) gapfind hits were BENCH ARTIFACTS
+
+Agent `CoralDrift`. The cross win's ledger entry listed count_nonzero 208x + cumprod 115x as "next
+targets" from `gapfind_batch_h2h.rs`. ⚠️ Those numbers were INFLATED — the gapfind `bench()` helper
+materializes the input (a 16MB tensor_variable_f32) INSIDE the timed region (the input-in-timed-
+region trap from memory: a ~3-30ms 16M copy SWAMPS a fast op). Re-measured with inputs OUTSIDE the
+timer (`examples/cnz_cumprod_clean_h2h.rs`, min-of-7):
+- count_nonzero [4M] f32: FT 2.94ms vs torch 0.29ms = 10.3x SLOWER (not 208x).
+- cumprod [2048,2048] dim=1 f32: FT 5.10ms vs torch 0.40ms = 12.8x SLOWER (not 115x).
+
+Both REJECTED as levers (no algorithmic waste to remove):
+- count_nonzero ALREADY borrows storage zero-copy (values_f32_borrowed) + parallel chunked scan +
+  16-way-unrolled abs-bit count. Nothing to fix.
+- cumprod_tensor_contiguous_f32 ALREADY parallelizes over outer lanes (par_chunks_mut) + has the
+  leading-dim block-transpose trick, mirroring the f64 kernel. Each lane is an inherently serial
+  scan. Nothing to fix.
+The residual ~10-13x is the DEBUG-build-FT vs RELEASE-torch compute gap on bandwidth/compute-bound
+reductions (per-element f32 work isn't vectorized in debug; torch is release SIMD) — it shrinks in
+release and is NOT an algorithmic lever. cross (5a31bdc4) was the real win in this sweep (its 293x
+was a CLEAN measurement — cross_f32_mirror_h2h materializes inputs before the timer).
+
+★LESSON (re-confirmed): a hand-rolled multi-op gapfind helper MUST create inputs before
+Instant::now(). When a sweep flags a SIMPLE/already-parallel op as 100x+ SLOWER, suspect the harness
+(input-in-timed-region) before the op — re-measure clean. Movement ops with gather-tables/compose
+(cross/unfold/repeat_interleave) stay slow even clean (real algorithmic waste); simple reductions
+that are already borrowed+parallel do not. AGENT CoralDrift.
