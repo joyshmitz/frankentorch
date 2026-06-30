@@ -3382,6 +3382,43 @@ fn pairwise_sum_f64_maybe_par(values: &[f64]) -> f64 {
     }
 }
 
+/// Fused dot-product pairwise sum: returns `sum(a[i]*b[i])` using the SAME
+/// `mid = len/2` tree as `pairwise_sum_f64(&[a[i]*b[i]])`, so it is BIT-FOR-BIT
+/// identical to building a products Vec and reducing it — but WITHOUT
+/// materializing the n-sized scratch (the collect's 16MB write + reread).
+/// Requires `a.len() == b.len()`.
+fn pairwise_dot_f64(a: &[f64], b: &[f64]) -> f64 {
+    const BLOCK: usize = 128;
+    if a.len() <= BLOCK {
+        return a.iter().zip(b).map(|(&x, &y)| x * y).sum();
+    }
+    let mid = a.len() / 2;
+    pairwise_dot_f64(&a[..mid], &b[..mid]) + pairwise_dot_f64(&a[mid..], &b[mid..])
+}
+
+/// Parallel `pairwise_dot_f64` — same midpoint tree via `rayon::join` down to
+/// PAR_BLOCK, so bit-for-bit identical to the serial fused dot.
+fn pairwise_dot_f64_par(a: &[f64], b: &[f64]) -> f64 {
+    const PAR_BLOCK: usize = 1 << 14;
+    if a.len() <= PAR_BLOCK {
+        return pairwise_dot_f64(a, b);
+    }
+    let mid = a.len() / 2;
+    let (al, ar) = a.split_at(mid);
+    let (bl, br) = b.split_at(mid);
+    let (ls, rs) = rayon::join(|| pairwise_dot_f64_par(al, bl), || pairwise_dot_f64_par(ar, br));
+    ls + rs
+}
+
+#[inline]
+fn pairwise_dot_f64_maybe_par(a: &[f64], b: &[f64]) -> f64 {
+    if a.len() >= SUM_PARALLEL_THRESHOLD {
+        pairwise_dot_f64_par(a, b)
+    } else {
+        pairwise_dot_f64(a, b)
+    }
+}
+
 /// Like `pairwise_sum_f64`, but applies a closure `f` to each element
 /// before adding. Used by norm helpers — `norm_l1` sums `|x|`,
 /// `norm_l2` sums `x*x`, generic `norm_lp` sums `|x|^p` — to inherit
@@ -11454,21 +11491,12 @@ pub fn dot_tensor_contiguous_f64(
     // builds a contiguous Vec that pairwise_sum_f64 reads as a
     // slice. Tracked under frankentorch-cunc.
     //
-    // For large N, parallelize BOTH the product collect (rayon collect is
-    // order-preserving → identical scratch) and the reduction via the par
-    // pairwise sum (same mid=len/2 tree → bit-for-bit identical). The serial
-    // dot was the whole op's wall (~739x SLOWER than torch's BLAS dot at 4M).
-    let scratch: Vec<f64> = if n >= SUM_PARALLEL_THRESHOLD {
-        use rayon::prelude::*;
-        lhs_slice
-            .par_iter()
-            .zip(rhs_slice.par_iter())
-            .map(|(&l, &r)| l * r)
-            .collect()
-    } else {
-        lhs_slice.iter().zip(rhs_slice).map(|(&l, &r)| l * r).collect()
-    };
-    Ok(pairwise_sum_f64_maybe_par(&scratch))
+    // Fused parallel dot: `pairwise_dot_f64_maybe_par` reduces sum(l*r) over the
+    // same mid=len/2 tree as the old `pairwise_sum_f64(&products)` (bit-for-bit
+    // identical) but WITHOUT the n-sized products scratch (no 16MB write+reread)
+    // and parallel via rayon::join for large N. The serial dot was the whole op's
+    // wall (~739x SLOWER than torch's BLAS dot at 4M).
+    Ok(pairwise_dot_f64_maybe_par(lhs_slice, rhs_slice))
 }
 
 pub fn outer_tensor_contiguous_f64(
@@ -28708,6 +28736,38 @@ fn pairwise_sum_f32_maybe_par(values: &[f32]) -> f32 {
     }
 }
 
+/// F32 companion to `pairwise_dot_f64`. Bit-for-bit identical to building the
+/// products Vec and calling `pairwise_sum_f32`, but without the scratch.
+fn pairwise_dot_f32(a: &[f32], b: &[f32]) -> f32 {
+    const BLOCK: usize = 128;
+    if a.len() <= BLOCK {
+        return a.iter().zip(b).map(|(&x, &y)| x * y).sum();
+    }
+    let mid = a.len() / 2;
+    pairwise_dot_f32(&a[..mid], &b[..mid]) + pairwise_dot_f32(&a[mid..], &b[mid..])
+}
+
+fn pairwise_dot_f32_par(a: &[f32], b: &[f32]) -> f32 {
+    const PAR_BLOCK: usize = 1 << 14;
+    if a.len() <= PAR_BLOCK {
+        return pairwise_dot_f32(a, b);
+    }
+    let mid = a.len() / 2;
+    let (al, ar) = a.split_at(mid);
+    let (bl, br) = b.split_at(mid);
+    let (ls, rs) = rayon::join(|| pairwise_dot_f32_par(al, bl), || pairwise_dot_f32_par(ar, br));
+    ls + rs
+}
+
+#[inline]
+fn pairwise_dot_f32_maybe_par(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() >= SUM_PARALLEL_THRESHOLD {
+        pairwise_dot_f32_par(a, b)
+    } else {
+        pairwise_dot_f32(a, b)
+    }
+}
+
 /// F32 companion to `pairwise_sum_map_f64` — see that function for
 /// the precision-correctness rationale.
 fn pairwise_sum_map_f32<F>(values: &[f32], f: F) -> f32
@@ -29488,21 +29548,11 @@ pub fn dot_tensor_contiguous_f32(
     // skip the zero-init memset since the scratch is single-use
     // and every cell is unconditionally overwritten.
     //
-    // For large N, parallelize BOTH the product collect (order-preserving →
-    // identical scratch) and the reduction via the par pairwise sum (same
-    // mid=len/2 tree → bit-for-bit identical). Mirrors the f64 dot fix; the
-    // serial dot was the wall (~739x SLOWER than torch's BLAS dot at 4M).
-    let scratch: Vec<f32> = if n >= SUM_PARALLEL_THRESHOLD {
-        use rayon::prelude::*;
-        lhs_slice
-            .par_iter()
-            .zip(rhs_slice.par_iter())
-            .map(|(&l, &r)| l * r)
-            .collect()
-    } else {
-        lhs_slice.iter().zip(rhs_slice).map(|(&l, &r)| l * r).collect()
-    };
-    Ok(pairwise_sum_f32_maybe_par(&scratch))
+    // Fused parallel dot (mirrors the f64 path): reduces sum(l*r) over the same
+    // mid=len/2 tree as the old `pairwise_sum_f32(&products)` (bit-for-bit
+    // identical) but WITHOUT the n-sized products scratch, parallel via
+    // rayon::join for large N.
+    Ok(pairwise_dot_f32_maybe_par(lhs_slice, rhs_slice))
 }
 
 pub fn outer_tensor_contiguous_f32(

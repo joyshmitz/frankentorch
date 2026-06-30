@@ -13535,3 +13535,22 @@ pairwise dot + debug-vs-release; in release FT's parallel pairwise is ~1-2ms (~1
 pairwise-vs-BLAS floor). FOLLOW-UP lever: a FUSED pairwise_dot (sum a[i]*b[i] with the same mid tree,
 NO 16MB scratch) — bit-identical, removes the alloc+16MB-write+16MB-read (~2x more). gapfind3 also
 found kron 57.8x + roll(multi-dim) 16.47x SLOWER (next); fliplr/flipud already FT-faster. AGENT CoralDrift.
+
+## 2026-06-30 - ★ WIN (follow-up): fused dot/vdot — 8.6ms -> 3.3ms (another 2.6x; ~21x total vs ORIG)
+
+Agent `CoralDrift`. Follow-up to d9dd16b1 (which parallelized the dot via parallel collect + par
+pairwise sum, 69.8->8.6ms). That still materialized an n-sized products scratch Vec (16MB write +
+reread). Added fused `pairwise_dot_f64/f32[_par][_maybe_par]` helpers that reduce `sum(a[i]*b[i])`
+over the SAME mid=len/2 tree (BIT-FOR-BIT identical to `pairwise_sum(&products)`) WITHOUT the
+scratch — read lhs+rhs once (32MB), products computed in the 128-elem leaf, parallel via rayon::join
+for n>=524288.
+
+Bench `examples/gapfind3_clean_h2h.rs` vdot [4M] f32, cc-local, min-of-2 (post-contention):
+- d9dd16b1 (parallel collect + par sum, 16MB scratch): FT 8.6 ms (78x SLOWER).
+- AFTER (fused, no scratch):                            FT 3.3 ms => **2.6x vs d9dd16b1, ~21x vs
+  the original serial dot (69.8ms), ~25x SLOWER vs torch's BLAS sdot (~0.13ms)**.
+Tests: dot precision (pairwise_at_large_n) + full ft-kernel-cpu lib => 564 passed, 0 failed.
+
+Residual ~25x is debug-vs-release + BLAS sdot (FMA SIMD) vs FT's bit-exact scalar pairwise tree
+(in release ~5-10x, the bit-exact-pairwise floor). The fused helpers are reusable for any future
+dot-shaped reduction. AGENT CoralDrift.
