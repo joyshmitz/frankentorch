@@ -13605,3 +13605,29 @@ ft-kernel-cpu lib => 564 passed, 0 failed.
 ★LESSON: DEBUG benches overstate vs-torch ratios for bandwidth/compute ops (debug FT scalar vs
 release torch SIMD) — use --release for honest vs-torch numbers; the ORIG-vs-AFTER internal ratio is
 valid in either. Whole vector_norm f32 surface now FT-faster or bit-exact-gap-closed. AGENT CoralDrift.
+
+## 2026-06-30 - ★ WIN: roll multi-dim (rank-2) single-pass — 3.30ms -> 1.84ms (~1.8x release); 11x SLOWER -> 8x
+
+Agent `CoralDrift`. `tensor_roll_dims` did N SEQUENTIAL `tensor_roll` calls — each materializes a
+full intermediate tensor (Vec + tape node), so a 2-D roll was 2 full passes + an intermediate (11.0x
+SLOWER than torch in release at [2048,2048]). Added a no-grad rank-2 single-pass fast path:
+accumulate the per-dim shift (s0,s1) and roll in ONE parallel pass — per output row, pick the source
+row by the dim-0 shift `(i-s0).rem_euclid(n0)`, then block-copy the row rotated by the dim-1 shift
+`sh1=s1.rem_euclid(n1)` (out[..sh1]=src[n1-sh1..], out[sh1..]=src[..n1-sh1], 2 contiguous runs).
+Provably bit-identical to the sequential composition: out[i,j]=in[(i-s0)%n0,(j-s1)%n1] either way.
+Grad / rank!=2 / non-contiguous / dim>=2 fall through to the sequential rolls. f32+f64.
+
+★RELEASE bench `examples/gapfind3_clean_h2h.rs` [2048,2048] shifts[3,5] dims[0,1] f32, cc-local
+--release, min (machine contended ~46 procs — AFTER min beats the LOW-contention ORIG, so the ratio
+is a conservative floor):
+- ORIG (2 sequential rolls + intermediate): FT 3.30ms (11.0x SLOWER).
+- AFTER (single fused pass):                FT 1.84ms => **~1.8x vs ORIG, 8.1x SLOWER vs torch**.
+Residual is torch's SIMD memcpy-roll (0.22ms) vs FT scalar block-copy. Tests: `cargo test -p ft-api
+--lib roll` => 9 passed (incl flip_roll_golden_matches_torch, roll_2d_dim1, roll_backward_2d).
+
+★REJECTED same sweep (release): kron 14.79x SLOWER — coarse-grain rows-per-task REGRESSED it
+(1.63->2.18ms; the 2048 per-row tasks were already well-balanced, NOT scheduling-bound) -> reverted;
+kron's gap is scalar-inner-multiply vs torch SIMD (needs f32x8, cross-crate ft-api->ft-kernel-cpu,
+deferred). prod 14.75x = already parallel (prod_dim global par_chunks path), SIMD/cache-bound.
+sum/mean/var/std 2-5x SLOWER = FT's accurate pairwise reduce vs torch flat-SIMD (precision policy,
+NOT a lever). AGENT CoralDrift.
