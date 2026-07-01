@@ -13859,3 +13859,29 @@ file-swap to HEAD, same session): **47ms -> ~6ms = ~7-8x**, correct bit-exact. T
 ft-api 2403 + ft-conformance 276 all 0 failed. ★LESSON (refines the permute one): a `vec![x; numel]`
 before a branch where the PARALLEL arm builds+returns its own buffer is not just a slow fill — it's DEAD
 work; move the alloc into the arm that uses it. AGENT SlateTern.
+
+## 2026-07-01 - ⛔ REJECT: par_zeroed regresses under contention (pad/broadcast materialize gaps not cheaply fixable)
+
+Agent `SlateTern`. Probed the MATERIALIZE ops (materialize_probe_h2h, [2048,2048] f32, inputs OUTSIDE
+timer): repeat 1.07-1.24x FASTER, tile 1.06-1.07x FASTER, repeat_interleave ~1x (all DONE); but **pad
+6-7x SLOWER** (3-5ms vs torch 0.44-0.60ms) and **broadcast_to 11-19x SLOWER** (2.8-4ms vs torch's
+materialized 0.21-0.25ms). Both allocate a serial `vec![0.0/values[0]; numel]` then parallel-fill —
+the kron/permute first-touch pattern. But:
+
+★⛔ THE par_zeroed LEVER REGRESSES UNDER CONTENTION. Same-process A/B (pad_alloc_ab, [2048,2048]->
+[2050,2050] f64, min-of-11, LOAD ~10): A serial `vec![0.0]`+fill 4.9-5.1ms vs B par-zero(`(0..n)
+.into_par_iter().map(|_|0.0).collect()`)+fill **6.1-9.2ms = 0.55-0.80x = SLOWER**; warm-reuse floor
+3.3ms. Under load the rayon parallel-collect can't get worker threads, so the parallel zero-init is
+PURE OVERHEAD (dispatch + alloc) vs a straight serial memset. ★So the serial-first-touch "par_zeroed"
+lever (kron bfaba050 won 1.5x, permute 544371fb won ~5x) only pays under LOW contention / when threads
+are free — it is NOT a reliable win, and on a heavier fill (pad's row-copy) under load it's a NET LOSS.
+NOTE: for pad value==0 the zero-init is LOAD-BEARING (provides the border zeros), and for expand every
+output element IS overwritten (so the init is dead) — but neither can be elided safely (ft-autograd/
+ft-api are `#![forbid(unsafe_code)]`, so no uninit `set_len`; par_zeroed regresses).
+
+★CONCLUSION: pad/broadcast_to are NOT cheaply fixable. The residual gap = torch's SIMD/cache-blocked
+copy kernel (pad warm-fill floor was 3.3ms at load 10 ≈ still 6-7x — a bandwidth/kernel wall, partly
+contention-inflated) + FT's forbid-unsafe safe-fill floor. A real fix needs a faster contiguous
+block-copy kernel (ft-kernel-cpu SIMD), not a par-fill tweak — PEER/deferred. No dead-fill found
+elsewhere (compute_dependencies `pending` vec is used, flip_slice alloc already in its serial branch).
+AGENT SlateTern.
