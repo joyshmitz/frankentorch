@@ -13664,3 +13664,35 @@ the naive single-pass barely beat the lazy-transpose compose (1.06x). The win ca
 the transpose (read contiguous tile rows, transpose in L1, write contiguous rows). Movement ops that
 are TRANSPOSE-shaped (rot90, future: as_strided/permute-materialize) need tiling, NOT just
 parallelize-the-write. AGENT SlateTern.
+
+## 2026-07-01 - ★ WIN: kron f32+f64 parallel first-touch — 14-20x SLOWER -> 9.4-11.7x (1.9ms->0.95ms, ~2.0x)
+
+Agent `SlateTern`. kron [128,128]⊗[16,16]->[2048,2048] was the biggest measured gap (~14-20x SLOWER
+vs torch). ⛔THE MEMORY'S DIAGNOSIS WAS WRONG ("scalar-inner-mult vs SIMD, needs f32x8 cross-crate,
+deferred"): a same-process A/B (standalone, min-of-15) of the inner scaled-copy showed SIMD is a
+~0-GAIN lever — scalar-zip 0.32ms vs f32x8-chunks 0.35ms (0.91x) vs f32x8-preload 0.33ms (0.96x),
+all bit-exact. ★★THE REAL BOTTLENECK: the fresh 16MB output buffer. `let mut result = vec![0.0f32;
+total]` ZERO-INITIALIZES SERIALLY, so ONE thread pays every first-touch page fault (~1ms) BEFORE the
+parallel fill runs — the parallel fill then only overwrites already-resident pages, so the serial
+zero dominates. A/B (fresh-alloc each iter, min-of-15): A `vec![0.0]`+parallel-fill 1.34ms; B
+par-first-touch+fill 0.89ms = **1.50x**; D par-collect direct-compute (div/mod per elem) 2.71ms
+(SLOWER — the unravel div/mod is the killer, ~2.7ms); C warm-reuse fill (no fault) 0.34ms = the
+no-fault floor. An uninit `set_len`+fill would reach C (~4x) but ft-api is `#![forbid(unsafe_code)]`.
+
+★FIX = `par_zeroed_f32/f64(n)` helper: `(0..n).into_par_iter().map(|_|0.0).collect()` — rayon's
+INDEXED collect writes each thread's slice straight into fresh (uninitialized) capacity with NO serial
+zero pass, so the page faults distribute across the pool. Bit-IDENTICAL to `vec![0.0;n]` (same zeros,
+same fill). Gated >= PARALLEL_FIRST_TOUCH_MIN (1<<18 = 256K elem ~1MB). Wired into kron f32 + f64
+output allocation. ★vs-torch (gapfind3_clean, inputs OUTSIDE timer): ORIG FT ~1.9ms (14-20x SLOWER)
+-> AFTER FT ~0.95ms (9.4-11.7x SLOWER) = **~2.0x internal**. Residual = torch writes in-place at
+bandwidth (~0.1ms, 160GB/s) with no fresh alloc; FT still allocs+faults+builds a tape leaf. Tests:
+kron 8 passed + full ft-api lib suite green.
+
+★★GENERAL LEVER (broad follow-up): the serial-`vec![0.0;n]`-before-parallel-fill anti-pattern defeats
+the parallel fill's first-touch benefit in MANY ft-api ops — cat's interleave fast path (`vec![0.0;
+outer*out_row_len]` → column_stack/dstack), rot90's tiled fill (`vec![$zero;len]`), roll, and any
+no-grad op that allocs a large fresh output then parallel-fills it. Swap `vec![0.0;n]` ->
+`par_zeroed_f32/f64(n)` for a free ~1.3-1.5x each (bit-exact). ★LESSON: before assuming a slow
+parallel-fill op needs SIMD/a better inner loop, MEASURE the fill in isolation (warm buffer) — if the
+fill is already fast, the cost is the SERIAL first-touch of the fresh output, not the compute. This
+distinguishes the SIMD wall (kron memory claim, FALSE) from the first-touch wall (TRUE). AGENT SlateTern.
