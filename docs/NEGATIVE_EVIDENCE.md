@@ -13696,3 +13696,38 @@ no-grad op that allocs a large fresh output then parallel-fills it. Swap `vec![0
 parallel-fill op needs SIMD/a better inner loop, MEASURE the fill in isolation (warm buffer) — if the
 fill is already fast, the cost is the SERIAL first-touch of the fresh output, not the compute. This
 distinguishes the SIMD wall (kron memory claim, FALSE) from the first-touch wall (TRUE). AGENT SlateTern.
+
+## 2026-07-01 - ★★ WIN: reshape/squeeze/unsqueeze zero-copy Arc-share (ft-autograd) — full DATA COPY eliminated
+
+Agent `SlateTern`. Digging the biggest clean ft-api losses (column_stack 17.5x, dstack 11x SLOWER)
+with a same-process PHASE-TIMER (reshape vs cat-interleave vs full, inputs OUTSIDE timer) found the
+cost is NOT the cat — it's the RESHAPE: dstack's 4× `reshape([512,512]->[512,512,1])` = **1.47ms**,
+column_stack's 4× `reshape([500000]->[500000,1])` = **~3.5ms**, while the cat interleave was only
+0.6-1.0ms. A reshape that just adds a trailing-1 dim should be an O(1) metadata view, but
+`ft_autograd::TensorTape::reshape` -> `compact_typed_storage` -> `slice_typed_storage` did
+`values[start..end].to_vec()` — a FULL DATA COPY of the whole storage on EVERY reshape (and
+squeeze/unsqueeze/flatten/expand-materialize, all of which route through compact_typed_storage), even
+for a contiguous non-offset tensor where the "slice" is the ENTIRE Arc.
+
+★FIX = `slice_or_share_arc<T>(values, start, end)`: when `start==0 && end==values.len()` (the full-
+storage case that reshape-of-contiguous always hits) return `Arc::clone(values)` (an O(1) refcount
+bump) instead of `.to_vec()`. A genuine sub-slice (storage_offset>0 / narrowed span) still copies.
+★SAFE because ALL in-place storage mutation goes through `Arc::make_mut` (COPY-ON-WRITE) — verified
+NO `Arc::get_mut`/`try_unwrap`/`into_inner` on storage anywhere in ft-core/ft-autograd (4+5 make_mut
+sites) — so a later write to either the input or the reshaped view clones THEN rather than aliasing.
+This matches torch, where reshape returns a VIEW over the same storage. Applied to all 8 Arc-backed
+TensorStorage variants (F32/F64/F16/BF16/Complex64/Complex128/QInt8/QUInt8); F64Inline4 (≤4 elem,
+no Arc) keeps the tiny copy.
+
+★MEASUREMENT (phase-timer, same session, contention-invariant ratios under load ~12): reshape phase
+**1.47ms -> 0.0008ms** (elimination); dstack full **2.48ms -> 0.67ms = 3.7x**; column_stack full
+**4.48ms -> 0.94ms = 4.8x**. vs-torch (gapfind2_clean, contention-noisy): column_stack 17.5x -> ~5-10x
+SLOWER, dstack ~11x (dstack residual = the cat interleave itself now). Tests: ft-autograd 476 +
+ft-api lib + ft-conformance (green).
+
+★★GENERAL: reshape/squeeze/unsqueeze/flatten are used PERVASIVELY (composite ops reshape constantly —
+column_stack/dstack/hstack/vstack, flatten-then-op, view-materialize chains) — this removes a hidden
+whole-tensor copy from EVERY one. The biggest single ft-api-wide perf lever this campaign: not a new
+kernel, a copy ELISION in the tape's view-op storage handling. ★LESSON: when a "view" op (reshape/
+squeeze/flatten) is slow, check whether the tape MATERIALIZES a copy instead of sharing the Arc —
+phase-time the composite (reshape vs the actual work) to expose it. AGENT SlateTern.

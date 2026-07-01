@@ -19676,39 +19676,69 @@ impl TensorTape {
         })
     }
 
+    /// Slice a shared storage buffer. When the requested range covers the WHOLE
+    /// buffer — the common `reshape`/`squeeze`/`unsqueeze`/`flatten` case for a
+    /// contiguous, non-offset tensor — share the `Arc` (an O(1) refcount bump)
+    /// instead of copying every element. A genuine sub-slice (offset > 0 or a
+    /// narrowed span) still copies. Sharing is SAFE because in-place mutation goes
+    /// through `Arc::make_mut` (copy-on-write): a later write to either the input
+    /// or the reshaped view clones then, so the storages never alias destructively.
+    /// This matches torch, where these ops return a view over the same storage.
+    fn slice_or_share_arc<T: Clone>(
+        values: &Arc<Vec<T>>,
+        start: usize,
+        end: usize,
+    ) -> Result<Arc<Vec<T>>, AutogradError> {
+        if start > end || end > values.len() {
+            return Err(AutogradError::DenseTensor(
+                DenseTensorError::InsufficientStorage {
+                    needed: end,
+                    actual: values.len(),
+                },
+            ));
+        }
+        if start == 0 && end == values.len() {
+            Ok(Arc::clone(values))
+        } else {
+            Ok(Arc::new(values[start..end].to_vec()))
+        }
+    }
+
     fn slice_typed_storage(
         storage: &TensorStorage,
         start: usize,
         end: usize,
     ) -> Result<TensorStorage, AutogradError> {
         match storage {
-            TensorStorage::F32(values) => Ok(TensorStorage::F32(Arc::new(
-                Self::checked_storage_slice(values, start, end)?.to_vec(),
-            ))),
-            TensorStorage::F64(values) => Ok(TensorStorage::F64(Arc::new(
-                Self::checked_storage_slice(values, start, end)?.to_vec(),
-            ))),
+            TensorStorage::F32(values) => {
+                Ok(TensorStorage::F32(Self::slice_or_share_arc(values, start, end)?))
+            }
+            TensorStorage::F64(values) => {
+                Ok(TensorStorage::F64(Self::slice_or_share_arc(values, start, end)?))
+            }
+            // Inline storage has no Arc to share; it is at most 4 elements, so the
+            // copy is negligible.
             TensorStorage::F64Inline4(values) => Ok(TensorStorage::F64(Arc::new(
                 Self::checked_storage_slice(values.as_slice(), start, end)?.to_vec(),
             ))),
-            TensorStorage::F16(values) => Ok(TensorStorage::F16(Arc::new(
-                Self::checked_storage_slice(values, start, end)?.to_vec(),
-            ))),
-            TensorStorage::BF16(values) => Ok(TensorStorage::BF16(Arc::new(
-                Self::checked_storage_slice(values, start, end)?.to_vec(),
-            ))),
-            TensorStorage::Complex64(values) => Ok(TensorStorage::Complex64(Arc::new(
-                Self::checked_storage_slice(values, start, end)?.to_vec(),
-            ))),
-            TensorStorage::Complex128(values) => Ok(TensorStorage::Complex128(Arc::new(
-                Self::checked_storage_slice(values, start, end)?.to_vec(),
-            ))),
-            TensorStorage::QInt8(values) => Ok(TensorStorage::QInt8(Arc::new(
-                Self::checked_storage_slice(values, start, end)?.to_vec(),
-            ))),
-            TensorStorage::QUInt8(values) => Ok(TensorStorage::QUInt8(Arc::new(
-                Self::checked_storage_slice(values, start, end)?.to_vec(),
-            ))),
+            TensorStorage::F16(values) => {
+                Ok(TensorStorage::F16(Self::slice_or_share_arc(values, start, end)?))
+            }
+            TensorStorage::BF16(values) => {
+                Ok(TensorStorage::BF16(Self::slice_or_share_arc(values, start, end)?))
+            }
+            TensorStorage::Complex64(values) => {
+                Ok(TensorStorage::Complex64(Self::slice_or_share_arc(values, start, end)?))
+            }
+            TensorStorage::Complex128(values) => {
+                Ok(TensorStorage::Complex128(Self::slice_or_share_arc(values, start, end)?))
+            }
+            TensorStorage::QInt8(values) => {
+                Ok(TensorStorage::QInt8(Self::slice_or_share_arc(values, start, end)?))
+            }
+            TensorStorage::QUInt8(values) => {
+                Ok(TensorStorage::QUInt8(Self::slice_or_share_arc(values, start, end)?))
+            }
         }
     }
 
