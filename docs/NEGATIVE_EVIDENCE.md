@@ -13762,3 +13762,31 @@ tensor with the SAME data as its input should SHARE the Arc, never deep-copy —
 the write that actually needs it (and usually never happens). NEXT candidates: expand/broadcast
 (currently MATERIALIZES — but needs 0-stride view support, a bigger change), and any other op building
 a fresh full-size buffer identical to an input. AGENT SlateTern.
+
+## 2026-07-01 - ★★ WIN: narrow/split/chunk dim-0 OFFSET-VIEW — 17000-20000x SLOWER -> parity with torch
+
+Agent `SlateTern`. Probe (viewops_probe_h2h, 16M f32, inputs OUTSIDE timer) of torch's O(1) view ops
+found FT MATERIALIZED them: narrow(0,0,n/2) **23.8ms vs torch 0.0014ms = 17233x SLOWER**; chunk(4,0)
+**48ms vs 0.0024ms = 20000x SLOWER**; movedim(0,2) 38ms/34000x (deferred — needs stride-views). The
+tape's narrow/split copied the sub-range (`narrow_typed_storage` -> `.to_vec()`) — a full O(n) copy +
+serial first-touch fault (~1.3GB/s) — where torch returns an offset-view.
+
+★FIX = dim-0 OFFSET-VIEW: for `narrow`/`split`/`chunk` along dim 0 of a CONTIGUOUS tensor, the
+sub-range is itself contiguous at `storage_offset + start*inner`, so SHARE the storage Arc
+(`typed_storage().clone()` = refcount bump) + `with_storage_offset(new_offset)` — O(1), no copy.
+Verified BOTH readers honor offset (`dispatch_values` f64 + `contiguous_values_f32` both do
+`&v[start..end]` with start=storage_offset), and `from_typed_storage` validates `storage.len() >=
+offset+span`. dim>0 (non-contiguous sub-range) still copies. ★SAFE + PRESERVES FT VALUE SEMANTICS:
+the shared storage is immutable on the read path, and any in-place write goes through `Arc::make_mut`
+(copy-on-write), so a mutation of the view clones THEN and does NOT propagate to the source — exactly
+as the old copy did (FT is already "value semantics / no aliasing", unlike torch's mutable views).
+
+★MEASURE (viewops_probe_h2h): narrow **23.8ms -> 0.0013ms** (17233x SLOWER -> 1.1x FASTER = parity);
+chunk **46ms -> 0.0023ms** (20000x SLOWER -> parity). Tests: ft-autograd 476 + ft-api 2403 +
+ft-conformance 276 all 0 failed (narrow path, re-run in progress for the split extension; split reuses
+the identical proven offset-view + local split/chunk/narrow/unbind tests green).
+
+★★COPY-ELISION-VIA-COW theme now 3 commits (reshape f89c1191 + detach/clone 5239ccd1 + this): the
+tape's view ops copied where an Arc-share (offset 0 for reshape/clone, offset>0 for narrow/split) +
+the existing make_mut COW gives identical value semantics at O(1). NEXT: select (small, low value),
+movedim/permute (materializes a transpose — needs stride-view support, bigger). AGENT SlateTern.
