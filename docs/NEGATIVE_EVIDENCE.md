@@ -13731,3 +13731,34 @@ whole-tensor copy from EVERY one. The biggest single ft-api-wide perf lever this
 kernel, a copy ELISION in the tape's view-op storage handling. ★LESSON: when a "view" op (reshape/
 squeeze/flatten) is slow, check whether the tape MATERIALIZES a copy instead of sharing the Arc —
 phase-time the composite (reshape vs the actual work) to expose it. AGENT SlateTern.
+
+## 2026-07-01 - ★★ WIN: detach/clone/data zero-copy Arc-share — detach 82000x SLOWER -> parity (34.5ms->0.001ms)
+
+Agent `SlateTern`. Sibling of the reshape zero-copy fix (f89c1191): `clone_dense_tensor_from_node`
+(backing tensor_clone / tensor_detach / tensor_data) did `Arc::new(values.as_ref().clone())` — a FULL
+DEEP COPY of the whole storage on every call. torch's `.detach()` is a ZERO-COPY view (shared
+storage), and `.clone()` is observably independent (which copy-on-write also gives). detach of a 16M
+f32 (64MB) tensor: FT **34.5ms** (deep copy + serial first-touch fault of the fresh 64MB) vs torch
+**0.0005ms = 82000x SLOWER**; clone 34.5ms vs torch 11.5ms (torch clone eagerly copies) = 3x SLOWER.
+
+★FIX = `Arc::clone(values)` (O(1) refcount bump) instead of `Arc::new(values.as_ref().clone())`, for
+all 8 Arc-backed TensorStorage variants (F64Inline4 stays inline-copy). SAFE + observably identical to
+a deep copy because ALL in-place storage mutation goes through `Arc::make_mut` (copy-on-write) — a
+later write to either the source or the clone/detach clones THEN, so they never alias destructively.
+Matches torch: detach SHARES storage; clone is observably independent (COW just defers the copy
+until/unless a write actually needs it — and often it never does, so the copy is elided entirely).
+
+★MEASURE (detach_clone_h2h, 16M f32, inputs OUTSIDE timer, min-of-9): detach **34.5ms -> 0.0010ms**
+(82000x SLOWER -> 2.1-2.4x SLOWER = parity with torch's zero-copy detach; residual = tape node
+creation); clone **34.5ms -> 0.0009ms** (3x SLOWER -> ~14000x FASTER than torch, because torch clone
+EAGERLY copies 11.5ms while FT COW-shares lazily). Tests: ft-autograd 476 + 80 clone/detach/inplace +
+ft-api lib 2403 + ft-conformance 276, all 0 failed.
+
+★★COPY-ELISION-VIA-COW THEME (2 commits: reshape f89c1191 + this): the tape's view/movement/copy ops
+(reshape/squeeze/unsqueeze/flatten + clone/detach/data) all eagerly `.to_vec()`/`.clone()` the whole
+storage where an `Arc::clone` + the existing `make_mut` COW gives identical semantics at O(1). ★RULE:
+in a COW-storage tape (all mutation via `Arc::make_mut`, no get_mut/try_unwrap), any op that produces a
+tensor with the SAME data as its input should SHARE the Arc, never deep-copy — the copy is deferred to
+the write that actually needs it (and usually never happens). NEXT candidates: expand/broadcast
+(currently MATERIALIZES — but needs 0-stride view support, a bigger change), and any other op building
+a fresh full-size buffer identical to an input. AGENT SlateTern.
