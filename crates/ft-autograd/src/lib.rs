@@ -28524,6 +28524,56 @@ mod tests {
         }
     }
 
+    // Locks the DIM-0 offset-view path (narrow/split share the storage Arc + set storage_offset
+    // instead of copying — 4ac5aeff) for the HALF dtypes: the existing f16/bf16 shape-op tests
+    // narrow along dim 2 (the copy path) and read RAW storage, so they never exercise an
+    // offset > 0 view. Here we narrow/split along dim 0 (which produces a shared offset-view for
+    // ALL dtypes) and assert the LOGICAL values via contiguous_values_as_f64() — the accessor
+    // that honors storage_offset — so a half-dtype reader that ignored the offset would fail.
+    #[test]
+    fn dim0_offset_view_half_dtypes_read_logical_values() {
+        for half in [DType::F16, DType::BF16] {
+            let mut tape = TensorTape::new();
+            // [4, 2] = rows [1,2],[3,4],[5,6],[7,8]
+            let src: Vec<f32> = (1..=8).map(|i| i as f32).collect();
+            let tensor = if half == DType::F16 {
+                DenseTensor::from_contiguous_values_f16(
+                    src.iter().map(|&x| Float16::from_f32(x)).collect(),
+                    vec![4, 2],
+                    Device::Cpu,
+                )
+                .unwrap()
+            } else {
+                DenseTensor::from_contiguous_values_bf16(
+                    src.iter().map(|&x| BFloat16::from_f32(x)).collect(),
+                    vec![4, 2],
+                    Device::Cpu,
+                )
+                .unwrap()
+            };
+            let a = tape.leaf_tensor(tensor, false);
+
+            // narrow rows [2, 4) -> [2, 2] at storage_offset 4; read LOGICAL values.
+            let nw = tape.narrow(a, 0, 2, 2).unwrap();
+            assert_eq!(tape.dtype(nw).unwrap(), half);
+            let nv = tape.node(nw).unwrap().tensor.contiguous_values_as_f64().unwrap();
+            assert_eq!(nv, vec![5.0, 6.0, 7.0, 8.0], "narrow dim0 {half:?}");
+
+            // squeeze/unsqueeze/reshape of the offset-view must preserve the logical values.
+            let un = tape.unsqueeze(nw, 0).unwrap(); // [1,2,2]
+            let rs = tape.reshape(un, vec![4]).unwrap();
+            let rv = tape.node(rs).unwrap().tensor.contiguous_values_as_f64().unwrap();
+            assert_eq!(rv, vec![5.0, 6.0, 7.0, 8.0], "reshape offset-view {half:?}");
+
+            // split along dim 0 -> two offset-views; each reads its own logical rows.
+            let parts = tape.split(a, &[1, 3], 0).unwrap();
+            let p0 = tape.node(parts[0]).unwrap().tensor.contiguous_values_as_f64().unwrap();
+            let p1 = tape.node(parts[1]).unwrap().tensor.contiguous_values_as_f64().unwrap();
+            assert_eq!(p0, vec![1.0, 2.0], "split[0] {half:?}");
+            assert_eq!(p1, vec![3.0, 4.0, 5.0, 6.0, 7.0, 8.0], "split[1] {half:?}");
+        }
+    }
+
     #[test]
     fn complex_shape_ops_preserve_dtype_and_imaginary_values() {
         let mut tape = TensorTape::new();
