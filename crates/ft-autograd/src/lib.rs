@@ -10151,56 +10151,71 @@ impl TensorTape {
                 _ => {}
             }
         }
-        // Batched last-two-dim swap (perm = identity prefix + swap of the FINAL two dims — the
-        // `.mT` / transpose(-1,-2) case on a 3-D+ tensor, hot in batched matmul / attention). Each
-        // batch plane is an independent [a, b] matrix transpose, so route every plane to the AVX2
-        // `transpose_2d_into` kernel (~3x the generic cache-blocked SCALAR transpose that
-        // `permute_slice`'s rotation path would use) in parallel over batches. f64/f32 only;
-        // bit-identical (pure data movement — the same kernel the 2-D [1,0] path above uses).
-        let nd = perm.len();
-        if nd >= 3
-            && perm[nd - 2] == nd - 1
-            && perm[nd - 1] == nd - 2
-            && (0..nd - 2).all(|i| perm[i] == i)
+        // ROTATION permute with a SCALAR element (elem == 1): perm fixes an identity prefix +
+        // suffix and left-rotates the middle dims — which is EXACTLY `batch` independent [a, b]
+        // matrix transposes (dst[b·A + a] = src[a·B + b], matching permute_slice's rotation path).
+        // Covers `.mT` / transpose(-1,-2), movedim, and NCHW<->NHWC-style layout swaps. Route each
+        // plane to the AVX2 `transpose_2d_into` kernel (~3x the generic cache-blocked SCALAR
+        // transpose permute_slice would run) in parallel over batches. f64/f32; bit-identical (same
+        // kernel the 2-D [1,0] path uses; the index map is the rotation path's, verified).
+        let ndim = perm.len();
+        if ndim >= 3 && matches!(tensor.typed_storage(), TensorStorage::F64(_) | TensorStorage::F32(_))
         {
             let shape = meta.shape();
-            let a_dim = shape[nd - 2];
-            let b_dim = shape[nd - 1];
-            let plane = a_dim.saturating_mul(b_dim);
-            let batch: usize = shape[..nd - 2].iter().product();
-            let total = batch.saturating_mul(plane);
-            if plane > 0 && total == meta.numel() {
-                use rayon::prelude::*;
-                match tensor.typed_storage() {
-                    TensorStorage::F64(values) => {
-                        let src = Self::checked_storage_slice(values, start, end)?;
-                        let mut dst = vec![0.0f64; total];
-                        dst.par_chunks_mut(plane).enumerate().for_each(|(b, dpl)| {
-                            let so = b * plane;
-                            ft_kernel_cpu::transpose_2d_into_f64(
-                                &src[so..so + plane],
-                                dpl,
-                                a_dim,
-                                b_dim,
-                            );
-                        });
-                        return Ok(TensorStorage::F64(Arc::new(dst)));
+            let mut prefix = 0;
+            while prefix < ndim && perm[prefix] == prefix {
+                prefix += 1;
+            }
+            let mut suffix = 0;
+            while suffix < ndim - prefix && perm[ndim - 1 - suffix] == ndim - 1 - suffix {
+                suffix += 1;
+            }
+            let mid = ndim - prefix - suffix;
+            let rotation = if mid >= 2 {
+                (1..mid).find(|&s| (0..mid).all(|k| perm[prefix + k] == prefix + (s + k) % mid))
+            } else {
+                None
+            };
+            if let Some(s) = rotation {
+                let a_dim: usize = shape[prefix..prefix + s].iter().product();
+                let b_dim: usize = shape[prefix + s..prefix + mid].iter().product();
+                let elem: usize = shape[prefix + mid..ndim].iter().product();
+                let batch: usize = shape[..prefix].iter().product();
+                let plane = a_dim.saturating_mul(b_dim);
+                let total = batch.saturating_mul(plane);
+                if elem == 1 && plane > 0 && total == meta.numel() {
+                    use rayon::prelude::*;
+                    match tensor.typed_storage() {
+                        TensorStorage::F64(values) => {
+                            let src = Self::checked_storage_slice(values, start, end)?;
+                            let mut dst = vec![0.0f64; total];
+                            dst.par_chunks_mut(plane).enumerate().for_each(|(b, dpl)| {
+                                let so = b * plane;
+                                ft_kernel_cpu::transpose_2d_into_f64(
+                                    &src[so..so + plane],
+                                    dpl,
+                                    a_dim,
+                                    b_dim,
+                                );
+                            });
+                            return Ok(TensorStorage::F64(Arc::new(dst)));
+                        }
+                        TensorStorage::F32(values) => {
+                            let src = Self::checked_storage_slice(values, start, end)?;
+                            let mut dst = vec![0.0f32; total];
+                            dst.par_chunks_mut(plane).enumerate().for_each(|(b, dpl)| {
+                                let so = b * plane;
+                                ft_kernel_cpu::transpose_2d_into_f32(
+                                    &src[so..so + plane],
+                                    dpl,
+                                    a_dim,
+                                    b_dim,
+                                );
+                            });
+                            return Ok(TensorStorage::F32(Arc::new(dst)));
+                        }
+                        _ => {}
                     }
-                    TensorStorage::F32(values) => {
-                        let src = Self::checked_storage_slice(values, start, end)?;
-                        let mut dst = vec![0.0f32; total];
-                        dst.par_chunks_mut(plane).enumerate().for_each(|(b, dpl)| {
-                            let so = b * plane;
-                            ft_kernel_cpu::transpose_2d_into_f32(
-                                &src[so..so + plane],
-                                dpl,
-                                a_dim,
-                                b_dim,
-                            );
-                        });
-                        return Ok(TensorStorage::F32(Arc::new(dst)));
-                    }
-                    _ => {}
                 }
             }
         }

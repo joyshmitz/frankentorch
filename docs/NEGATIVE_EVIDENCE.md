@@ -13908,3 +13908,21 @@ serial output alloc dilutes it — par_zeroed rejected under contention, see pri
 ft-autograd 477 + transpose/permute 23 + ft-api 2403 + ft-conformance 276, all 0 failed. ★LESSON: a
 fast SIMD kernel gated on the 2-D case often leaves the BATCHED (identity-prefix) case on a slower
 generic path — route per-plane to the same kernel. AGENT SlateTern.
+
+## 2026-07-01 - ★ WIN: generalize AVX2 transpose routing to ANY elem==1 rotation permute (movedim etc.) — ~1.5x
+
+Agent `SlateTern`. Follow-up to 6fcb6989 (which routed only the last-two-dim swap to AVX2): a permute
+whose `permute_slice` rotation reduces to a SCALAR-element transpose (elem == 1 — identity prefix +
+left-rotation of the middle dims + size-1/empty suffix) is EXACTLY `batch` independent [a, b] matrix
+transposes with `dst[b·A+a] = src[a·B+b]` — i.e. `transpose_2d_into(src_plane, a_dim, b_dim)` per plane
+(index map verified against the rotation path). Generalized the detection to compute prefix/suffix/mid
++ rotation (permute_slice's own logic) and route the elem==1 f64/f32 case to the AVX2 kernel; this now
+covers movedim, NCHW<->NHWC-style layout swaps, and the earlier `.mT` special case in ONE path — AND
+supersedes 544371fb's par_zeroed-scalar rotation path for these (par_zeroed regresses under contention;
+this uses AVX2 with a single serial alloc). f64/f32 only; bit-identical.
+
+★MEASURE (rot_perm_h2h, ORIG via file-swap to HEAD 6fcb6989, same session, load ~18): movedim(0,2)
+[512,512,64] 8.0-11.6ms -> **6.3ms = ~1.5x** (a single huge [512,32768] plane, batch=1, so the 64MB
+serial output alloc dilutes the AVX2 transpose win — bigger for multi-plane shapes); `.mT` [32,8,256,64]
+unchanged (1.6ms, already AVX2 at HEAD — no regression). Tests: ft-autograd 477 + ft-api 2403 +
+ft-conformance 276, all 0 failed. AGENT SlateTern.
