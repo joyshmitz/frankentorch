@@ -13926,3 +13926,29 @@ this uses AVX2 with a single serial alloc). f64/f32 only; bit-identical.
 serial output alloc dilutes the AVX2 transpose win — bigger for multi-plane shapes); `.mT` [32,8,256,64]
 unchanged (1.6ms, already AVX2 at HEAD — no regression). Tests: ft-autograd 477 + ft-api 2403 +
 ft-conformance 276, all 0 failed. AGENT SlateTern.
+
+## 2026-07-01 - ★ WIN: no-grad fused last-dim broadcast add/mul (bias-add/scale) — 1.1x SLOWER -> 2.5-3.1x FASTER
+
+Agent `SlateTern`. The generic binary-op path (ft-autograd `binary`) MATERIALIZES each operand to the
+common shape via reshape+expand before the matching-shape kernel — so a broadcast `[.., M] op [M]`
+allocates + fills a full extra `[.., M]` buffer for the expanded vector, then adds. FT's SAME-shape add
+is ~2x FASTER than torch (6.7ms vs 13ms at [4096,4096]), but the broadcast form LOSES that: the expand
+brings it to ~13ms (**1.1-1.2x SLOWER** than torch for the bias-add/row-broadcast pattern).
+
+★FIX = no-grad fused LAST-DIM broadcast for the COMMUTATIVE ops add/mul (`try_lastdim_bcast_addmul`,
+ft-api): when one operand is contiguous `[.., M]` and the other broadcasts over all leading dims
+(shape `[M]` or `[1,..,1,M]`), op the vector into each row in ONE pass (`out[.., j] = op(big[.., j],
+vec[j])`, vec cache-resident, parallel over rows) — NO expand buffer. f32/f64, contiguous, no-grad;
+commutative so operand order is handled both ways; grad / other shapes (e.g. column `[N,1]`) / other
+dtypes fall through to the tape. Bit-IDENTICAL to expand+op (locked by
+`lastdim_bcast_addmul_fused_matches_expand_path`: fused == grad-path for both orders, `[M]`/`[1,M]`,
+f32+f64).
+
+★MEASURE (bcast_add_h2h [4096,4096] f32, inputs OUTSIDE timer, min-of-7, load ~10): row `[M,M]+[M]`
+~13ms -> **~4.5ms = ~2.9x internal**, flipping 1.1x SLOWER -> **2.5-3.1x FASTER** vs torch (now matches
+FT's fast same-shape add); same-shape `eq` unchanged (fast path skips equal shapes); column `[M,1]`
+broadcast falls through (unchanged). Bias-add / per-channel scale are pervasive in inference. Tests:
+ft-api 2403 + ft-conformance 276 + 109 add/mul/broadcast + the lock test, all 0 failed. ★LESSON: a
+value-semantics tape that MATERIALIZES broadcasts (reshape+expand) before an elementwise kernel pays a
+full extra buffer vs torch's fused broadcast — a no-grad fused per-row path for the common last-dim
+vector broadcast recovers it (grad still uses expand for correct axis-reduction). AGENT SlateTern.
