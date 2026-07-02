@@ -13990,3 +13990,24 @@ ft-api 2404 + ft-conformance 276, all 0 failed. ★VEIN COMPLETE: all four basic
 (add/sub/mul/div) × both common broadcast shapes (last-dim vector [M]/[1,M] + row scalar [N,1]) now
 fuse the broadcast (no expand materialization), ~2-3x FASTER than torch instead of ~parity/slower.
 Div-by-zero → IEEE inf/nan, identical to expand+div (verified). AGENT SlateTern.
+
+## 2026-07-01 - ★★ WIN: no-grad fused FULL-SCALAR broadcast add/sub/mul/div — ~6.5x internal (36ms->5.5ms)
+
+Agent `SlateTern`. The third broadcast pattern: `[.., M] op scalar` where one operand has exactly 1
+element (`[1]`, `[1,..,1]`, 0-d) — the `x - x.mean()` / `x / x.std()` / `x / x.norm()` GLOBAL-
+normalization pattern. My last-dim / row-scalar fused paths don't match it (`[1]`'s last dim is 1, not
+M; rank mismatch for colvec), so it fell through to the tape — and the `[1]->[.., M]` scalar-expand is
+ESPECIALLY slow (~36ms at [4096,4096] f32, MUCH worse than the vector-broadcast expands ~13ms; the
+generic scalar broadcast doesn't hit expand_row_structured's fast fill).
+
+★FIX = `try_fullscalar_bcast` (ft-api): when one operand has numel==1, op the single scalar into every
+element in ONE parallel map (`out[i] = op(big[i], scalar)`), no expand. f32/f64, contiguous, no-grad;
+tracks big_is_lhs for sub/div. Bit-identical (lock test extended to `[1]`/`[1,1]` across all 4 ops ×
+both orders × f32/f64).
+
+★MEASURE (bcast_scalar_ab [4096,4096] op [1] f32, same-process no-grad-fused vs no-grad-EXPAND via
+file-swap to HEAD, min-of-9, load ~22-89, contention-invariant): sub/div **~36ms -> ~5.5ms = ~6.5x**
+(the scalar-expand's ~36ms is far worse than vector-broadcast's ~13ms, so this is the biggest broadcast
+win); ~2.2x FASTER vs torch's ~12ms fused scalar broadcast. Tests: ft-api 2404 + ft-conformance 276,
+all 0 failed. ★BROADCAST-FUSION VEIN NOW COVERS ALL 3 SHAPES × 4 OPS: last-dim vector, row scalar, and
+full scalar, for add/sub/mul/div — the whole common broadcast surface fuses (no expand), 2-6.5x. AGENT SlateTern.
