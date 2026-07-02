@@ -13885,3 +13885,26 @@ contention-inflated) + FT's forbid-unsafe safe-fill floor. A real fix needs a fa
 block-copy kernel (ft-kernel-cpu SIMD), not a par-fill tweak — PEER/deferred. No dead-fill found
 elsewhere (compute_dependencies `pending` vec is used, flip_slice alloc already in its serial branch).
 AGENT SlateTern.
+
+## 2026-07-01 - ★ WIN: batched matrix transpose (.mT) routed to AVX2 kernel — ~1.4-2.0x
+
+Agent `SlateTern`. `permute_typed_storage` used the AVX2 `transpose_2d_into` kernel ONLY for a pure
+2-D `[1,0]` transpose (`perm.len()==2`). A BATCHED matrix transpose — `.mT` / `transpose(-1,-2)` on a
+3-D+ tensor (perm = identity prefix + swap of the final two dims, e.g. `[0,2,1]` / `[0,1,3,2]`) — the
+HOT case in batched matmul / attention (Q@Kᵀ prep) — fell to `permute_slice`'s rotation fast path,
+which uses a SCALAR cache-blocked transpose (~1/3 the AVX2 kernel's throughput per its own comment).
+
+★FIX = detect the batched last-two-dim swap (nd>=3, perm[nd-2]==nd-1 && perm[nd-1]==nd-2 && identity
+prefix) for f64/f32 and route EACH batch plane to `ft_kernel_cpu::transpose_2d_into_f64/f32` (the same
+AVX2 kernel the 2-D path uses) in parallel over batches (`dst.par_chunks_mut(plane)`). Bit-IDENTICAL
+(pure data movement, same kernel; verified correct=true on all shapes). Other dtypes / non-swap perms
+fall through to permute_slice unchanged.
+
+★MEASURE (batched_transpose_h2h f32, inputs OUTSIDE timer, min-of-7, ORIG via file-swap to HEAD, same
+session, load ~18): [32,8,256,64] swap(2,3) 3.4->1.7ms = **2.0x**; [64,512,512] swap(1,2) 9.2->6.2ms =
+**1.4x** (init-bound at 64MB); [1024,128,128] swap(1,2) 8.7->5.1ms = **1.7x**. The win is larger for
+attention-shaped tensors (small planes, big batch) and smaller for huge single-plane-heavy ones (the
+serial output alloc dilutes it — par_zeroed rejected under contention, see prior entry). Tests:
+ft-autograd 477 + transpose/permute 23 + ft-api 2403 + ft-conformance 276, all 0 failed. ★LESSON: a
+fast SIMD kernel gated on the 2-D case often leaves the BATCHED (identity-prefix) case on a slower
+generic path — route per-plane to the same kernel. AGENT SlateTern.

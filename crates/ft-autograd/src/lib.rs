@@ -10151,6 +10151,59 @@ impl TensorTape {
                 _ => {}
             }
         }
+        // Batched last-two-dim swap (perm = identity prefix + swap of the FINAL two dims — the
+        // `.mT` / transpose(-1,-2) case on a 3-D+ tensor, hot in batched matmul / attention). Each
+        // batch plane is an independent [a, b] matrix transpose, so route every plane to the AVX2
+        // `transpose_2d_into` kernel (~3x the generic cache-blocked SCALAR transpose that
+        // `permute_slice`'s rotation path would use) in parallel over batches. f64/f32 only;
+        // bit-identical (pure data movement — the same kernel the 2-D [1,0] path above uses).
+        let nd = perm.len();
+        if nd >= 3
+            && perm[nd - 2] == nd - 1
+            && perm[nd - 1] == nd - 2
+            && (0..nd - 2).all(|i| perm[i] == i)
+        {
+            let shape = meta.shape();
+            let a_dim = shape[nd - 2];
+            let b_dim = shape[nd - 1];
+            let plane = a_dim.saturating_mul(b_dim);
+            let batch: usize = shape[..nd - 2].iter().product();
+            let total = batch.saturating_mul(plane);
+            if plane > 0 && total == meta.numel() {
+                use rayon::prelude::*;
+                match tensor.typed_storage() {
+                    TensorStorage::F64(values) => {
+                        let src = Self::checked_storage_slice(values, start, end)?;
+                        let mut dst = vec![0.0f64; total];
+                        dst.par_chunks_mut(plane).enumerate().for_each(|(b, dpl)| {
+                            let so = b * plane;
+                            ft_kernel_cpu::transpose_2d_into_f64(
+                                &src[so..so + plane],
+                                dpl,
+                                a_dim,
+                                b_dim,
+                            );
+                        });
+                        return Ok(TensorStorage::F64(Arc::new(dst)));
+                    }
+                    TensorStorage::F32(values) => {
+                        let src = Self::checked_storage_slice(values, start, end)?;
+                        let mut dst = vec![0.0f32; total];
+                        dst.par_chunks_mut(plane).enumerate().for_each(|(b, dpl)| {
+                            let so = b * plane;
+                            ft_kernel_cpu::transpose_2d_into_f32(
+                                &src[so..so + plane],
+                                dpl,
+                                a_dim,
+                                b_dim,
+                            );
+                        });
+                        return Ok(TensorStorage::F32(Arc::new(dst)));
+                    }
+                    _ => {}
+                }
+            }
+        }
         Ok(match tensor.typed_storage() {
             TensorStorage::F32(values) => TensorStorage::F32(Arc::new(Self::permute_slice(
                 Self::checked_storage_slice(values, start, end)?,
